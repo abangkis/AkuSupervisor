@@ -1,0 +1,14 @@
+{
+  "name": "@aku-browser/supervisor",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Generic, configuration-driven supervisor for local development services",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "test": "node --test",
+    "check": "node --check src/cli.mjs && node --check src/config.mjs && node --check src/control-server.mjs && node --check src/health.mjs && node --check src/journal.mjs && node --check src/process-tree.mjs && node --check src/supervisor.mjs && node --test"
+  }
+}

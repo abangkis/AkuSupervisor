@@ -1,0 +1,580 @@
+# Generic Local Development Supervisor v0
+
+Status: **Proposed**  
+Primary validation target: **AkuSidecar**  
+Second validation target: **one Geofu service**  
+Audience: implementation thread, AkuBrowser maintainers, Geofu maintainers
+
+## 1. Problem
+
+AkuSidecar must run in a normal Windows host process context. A server started through a restricted command runner can bind its port and pass HTTP health checks but later fail when it launches Codex CLI with `spawn EPERM`.
+
+Starting AkuSidecar manually keeps the process visible and user-owned, but every hard restart then requires user intervention. Starting it as a hidden detached process gives an autonomous agent control, but makes process ownership and lifecycle less transparent to the user.
+
+We need a small, generic local development supervisor that preserves both properties:
+
+1. the user explicitly starts one visible supervisor process;
+2. the supervisor owns project child processes;
+3. an authorized local client may restart a child without restarting the supervisor;
+4. every lifecycle action remains visible and auditable; and
+5. the same supervisor can manage a service outside AkuBrowser, beginning with Geofu.
+
+## 2. Product decision
+
+The supervisor is a **development tool**, not an AkuSidecar responsibility and not a consumer-facing runtime requirement.
+
+The user starts the supervisor manually in a visible terminal. Codex or another local tool may control only registered child services through the supervisor. Codex must not silently create a replacement supervisor when it is unavailable.
+
+If the supervisor stops, user intervention is required once to start it again.
+
+## 3. Goals
+
+- Define services through configuration rather than project-specific code.
+- Start, stop, restart, and inspect one or more named local services.
+- Run child processes in a normal Windows host context.
+- Keep the supervisor terminal visible and stream concise lifecycle events there.
+- Preserve full stdout and stderr logs per service.
+- Track launcher PID, runtime PID tree, port, health, and last lifecycle action.
+- Expose a localhost-only authenticated control interface.
+- Never terminate an unrelated process merely because it occupies an expected port.
+- Support AkuSidecar first and prove portability with one Geofu service.
+- Allow a future desktop launcher to reuse the lifecycle core.
+
+## 4. Non-goals
+
+Version 0 is not:
+
+- a PM2, systemd, Docker Compose, Kubernetes, or Windows Service replacement;
+- a production deployment orchestrator;
+- a dependency graph or distributed service scheduler;
+- a package installer;
+- a secret manager;
+- an arbitrary remote shell;
+- a browser automation layer;
+- responsible for starting Chrome, Brave, AkuBridge, Codex Desktop, or Codex CLI directly;
+- allowed to execute commands that are not already declared in its configuration.
+
+Automatic startup at Windows login, remote access, service groups, dependency ordering, rolling restarts, and multi-machine control are deferred.
+
+## 5. User experience
+
+### 5.1 User-owned startup
+
+The user starts one visible process:
+
+```powershell
+cd <supervisor-project>
+npm run dev -- --config C:\path\to\local-dev-services.json
+```
+
+The terminal prints:
+
+```text
+Local Development Supervisor listening on 127.0.0.1:47820
+Configuration: C:\path\to\local-dev-services.json
+Control token: loaded from local runtime file
+
+SERVICE       STATE      PID     HEALTH     LAST ACTION
+akusidecar    running    28352   healthy    started by user
+geofu-api     stopped    -       unknown    never started
+```
+
+The supervisor remains visible. Service output may be summarized in the terminal while complete logs are written to files.
+
+### 5.2 Autonomous child restart
+
+An authorized local client requests:
+
+```text
+restart akusidecar
+reason: backend source changed; hard restart required
+actor: codex
+```
+
+The supervisor:
+
+1. validates the service name and token;
+2. records the request;
+3. stops only the recorded child process tree;
+4. waits for confirmed termination;
+5. starts the configured command in the configured working directory;
+6. waits for process and health readiness;
+7. records the result; and
+8. exposes the new PIDs and status.
+
+### 5.3 Failure boundary
+
+If the supervisor itself is unavailable, clients report:
+
+```text
+Supervisor unavailable. Start it in the visible development terminal.
+```
+
+They must not silently fall back to a hidden server.
+
+## 6. Architecture
+
+```mermaid
+flowchart LR
+    U["User-visible terminal"] --> S["Local Development Supervisor"]
+    C["Authorized local client"] -->|"localhost control API"| S
+    D["Optional dashboard"] -->|"localhost status/control"| S
+    S --> A["AkuSidecar child process tree"]
+    S --> G["Geofu service child process tree"]
+    S --> L["Lifecycle journal and service logs"]
+    S --> H["Configured health checks"]
+```
+
+The supervisor is the only component allowed to mutate the lifecycle of processes it started. A port observation is diagnostic evidence, not ownership evidence.
+
+## 7. Proposed project shape
+
+The initial implementation should be an independent Node.js project so it can be used across workspaces without importing AkuBrowser or Geofu code.
+
+```text
+AkuSupervisor/
+  package.json
+  src/
+    cli.mjs
+    config.mjs
+    supervisor.mjs
+    process-tree.mjs
+    health.mjs
+    control-server.mjs
+    journal.mjs
+  test/
+  schemas/
+    service-config.schema.json
+  README.md
+```
+
+The repository name is `AkuSupervisor`.
+
+## 8. Configuration contract
+
+### 8.1 Example
+
+```json
+{
+  "version": 1,
+  "control": {
+    "host": "127.0.0.1",
+    "port": 47820,
+    "tokenFile": ".runtime/control-token"
+  },
+  "services": {
+    "akusidecar": {
+      "label": "AkuSidecar",
+      "cwd": "C:\\WorkspaceCodex\\AkuWorkspace\\AkuSidecar",
+      "command": "C:\\nvm4w\\nodejs\\npm.cmd",
+      "args": ["run", "dev"],
+      "environment": {},
+      "health": {
+        "type": "http-json",
+        "url": "http://127.0.0.1:47821/api/health",
+        "timeoutMs": 5000,
+        "startupDeadlineMs": 15000,
+        "expect": {
+          "status": "ok",
+          "version": "0.5.7",
+          "provider": "codex-sdk"
+        }
+      },
+      "ports": [47821],
+      "restartPolicy": "manual",
+      "shutdownGraceMs": 3000
+    },
+    "geofu-api": {
+      "label": "Geofu API",
+      "cwd": "C:\\WorkspaceCodex\\GeofuWorkspace\\Geofu_be",
+      "command": "powershell.exe",
+      "args": ["-NoProfile", "-File", "make.ps1", "serve"],
+      "environment": {},
+      "health": {
+        "type": "http-status",
+        "url": "http://127.0.0.1:8080/health",
+        "expectedStatus": 200,
+        "timeoutMs": 5000,
+        "startupDeadlineMs": 20000
+      },
+      "ports": [8080],
+      "restartPolicy": "manual",
+      "shutdownGraceMs": 5000
+    }
+  }
+}
+```
+
+The Geofu command and health endpoint above are illustrative and must be replaced with the actual selected service during implementation.
+
+### 8.2 Required validation
+
+At startup the supervisor must reject:
+
+- unknown configuration versions;
+- duplicate service names;
+- relative or missing working directories;
+- missing executables;
+- control hosts other than loopback in v0;
+- duplicate declared ports unless explicitly permitted in a future contract;
+- commands assembled as one shell string;
+- environment values outside the declared service entry; and
+- token files outside the supervisor runtime directory unless explicitly allowed.
+
+Commands and arguments remain separate arrays. The supervisor must not evaluate arbitrary shell text received through the API.
+
+## 9. Service lifecycle model
+
+Each service has one of these states:
+
+```text
+stopped -> starting -> running -> stopping -> stopped
+                    -> unhealthy
+          starting -> failed
+          stopping -> failed
+```
+
+Additional observable attributes:
+
+- `desiredState`: `running` or `stopped`;
+- `launcherPid`;
+- `listenerPids` when discoverable;
+- `startedAt`;
+- `lastHealthAt`;
+- `lastExitCode`;
+- `lastAction`;
+- `lastActionActor`;
+- `lastActionReason`;
+- `restartCount` for the current supervisor session; and
+- `configFingerprint`.
+
+Transitions are serialized per service. Concurrent lifecycle mutations for the same service return `409 Conflict`.
+
+## 10. Process ownership and Windows behavior
+
+### 10.1 Ownership rule
+
+The supervisor may stop only a process tree rooted at a PID it started and recorded during the current supervisor session.
+
+It must never kill a process solely because:
+
+- it uses the configured port;
+- its command line resembles the configured command; or
+- it is named `node.exe`, `npm.exe`, `powershell.exe`, or `cmd.exe`.
+
+### 10.2 Port conflict
+
+Before starting a service, the supervisor checks declared ports.
+
+If a port is occupied by an unowned process, startup fails with a diagnostic containing the port and observable PID. The supervisor does not terminate the occupant.
+
+### 10.3 Stop sequence
+
+1. Mark the service `stopping`.
+2. Request graceful termination when supported.
+3. Wait `shutdownGraceMs`.
+4. If descendants remain, terminate only the recorded owned tree.
+5. Confirm the PIDs are gone.
+6. Confirm declared ports are released or report the remaining external owner.
+7. Mark the final state and journal the outcome.
+
+The implementation must test npm's Windows process chain (`npm.cmd -> cmd.exe -> node --watch -> node server`) because stopping only the leaf server allows the watcher to recreate it.
+
+### 10.4 Supervisor shutdown
+
+On Ctrl+C, the default behavior is to stop every child service started by the current supervisor session, then exit. A future `leaveRunningOnExit` option is out of scope for v0.
+
+## 11. Restart policy
+
+Version 0 supports:
+
+- `manual`: restart only after an authenticated request;
+- `on-failure`: at most one automatic restart after an unexpected non-zero exit, followed by `failed` if it exits again within the stability window.
+
+Default: `manual`.
+
+There is no unlimited restart loop. Suggested defaults:
+
+- stability window: 60 seconds;
+- automatic restart cap: 1 per failure episode;
+- manual restart always remains available.
+
+File watching remains the responsibility of the service command, such as Node `--watch` or Vite. The supervisor does not duplicate source-file watching.
+
+## 12. Control interface
+
+### 12.1 Binding and authentication
+
+- Bind only to `127.0.0.1` in v0.
+- Generate a high-entropy token on first startup.
+- Store it in a local runtime file restricted to the current Windows user where feasible.
+- Require `Authorization: Bearer <token>` for every mutation.
+- Do not accept a token through query parameters.
+- Redact the token from logs and error messages.
+- Apply an explicit CORS allowlist if a browser dashboard is enabled.
+
+### 12.2 HTTP API
+
+```text
+GET  /v1/health
+GET  /v1/services
+GET  /v1/services/:id
+GET  /v1/events?after=<sequence>&limit=<n>
+POST /v1/services/:id/start
+POST /v1/services/:id/stop
+POST /v1/services/:id/restart
+```
+
+Mutation body:
+
+```json
+{
+  "actor": "codex",
+  "reason": "backend startup configuration changed"
+}
+```
+
+The API never accepts a command, working directory, executable path, argument list, or environment map. It can operate only on registered service IDs.
+
+### 12.3 CLI
+
+The same lifecycle core exposes:
+
+```text
+supervisor status
+supervisor start <service>
+supervisor stop <service>
+supervisor restart <service> --reason "..."
+supervisor logs <service> --tail 100
+```
+
+CLI and HTTP actions produce the same journal records.
+
+## 13. Health model
+
+Supported v0 health types:
+
+- `process`: owned root or descendant process is alive;
+- `http-status`: endpoint returns the configured status;
+- `http-json`: endpoint returns JSON matching a shallow set of expected fields.
+
+Service status distinguishes:
+
+- `processReady`: process tree exists;
+- `transportReady`: configured port/HTTP endpoint responds;
+- `healthy`: configured health expectations pass.
+
+For AkuSidecar, HTTP health does not prove that Codex CLI can spawn. The supervisor reports transport health only. A real reasoning invocation remains an application-level readiness check performed by AkuSidecar or its existing operational diagnostics.
+
+## 14. Logs and audit journal
+
+Runtime layout:
+
+```text
+.runtime/
+  control-token
+  supervisor.jsonl
+  services/
+    akusidecar.stdout.log
+    akusidecar.stderr.log
+    geofu-api.stdout.log
+    geofu-api.stderr.log
+```
+
+Every lifecycle event contains:
+
+- monotonically increasing sequence;
+- timestamp;
+- supervisor instance ID;
+- service ID;
+- action;
+- actor;
+- reason;
+- previous and resulting state;
+- owned PIDs before and after;
+- result and structured error category; and
+- configuration fingerprint.
+
+Minimum error categories:
+
+- `config_invalid`;
+- `already_running`;
+- `already_stopped`;
+- `port_conflict_external`;
+- `spawn_failed`;
+- `startup_timeout`;
+- `health_failed`;
+- `shutdown_timeout`;
+- `ownership_lost`;
+- `unauthorized`; and
+- `supervisor_internal_error`.
+
+Logs use bounded rotation by size. Suggested default: five files of 5 MB per stream.
+
+## 15. Optional dashboard integration
+
+The initial implementation may ship CLI and API first. Dashboard integration follows without changing the lifecycle core.
+
+A dashboard surface should show:
+
+- supervisor ready/unavailable;
+- service state and health;
+- launcher and listener PIDs;
+- last start/restart reason and actor;
+- recent lifecycle events; and
+- explicit Start, Stop, and Restart controls.
+
+Controls must clearly state that they affect a local development process. The dashboard must not imply that it can restart the supervisor itself.
+
+## 16. AkuSidecar integration
+
+The first service profile must:
+
+- run `npm run dev` from the AkuSidecar repository;
+- inherit the normal user host context;
+- use dashboard-persisted AkuSidecar configuration rather than force `AKU_REASONING_PROVIDER`;
+- verify `/api/health` reports the expected version and provider;
+- record both npm launcher and final listener PIDs when discoverable;
+- stop the complete npm/watch/server process tree on hard restart; and
+- preserve SQLite by default.
+
+Database deletion is never part of restart. It requires a separate explicit development operation outside the supervisor v0 control API.
+
+## 17. Geofu portability proof
+
+After AkuSidecar passes, add exactly one Geofu service profile. Choose a service with:
+
+- one documented startup command;
+- one stable local working directory;
+- a deterministic port or process check; and
+- no dependency on another supervisor-managed service for the first proof.
+
+Passing this proof means no source code changes are required in the supervisor; only configuration and, if necessary, a new generic health-check type may be added.
+
+Multi-service Geofu orchestration and dependency ordering remain deferred.
+
+## 18. Acceptance criteria
+
+### 18.1 Core
+
+- The user can start the supervisor once in a visible terminal.
+- An authenticated client can start, stop, and restart AkuSidecar without user interaction.
+- Every action includes actor and reason in the journal.
+- The supervisor exposes the current service state and owned PID tree.
+- A failed health check is distinct from a failed process spawn.
+- Two simultaneous restart requests cannot create duplicate service trees.
+
+### 18.2 Windows safety
+
+- Restarting AkuSidecar removes the old npm/watch/server tree before starting the new tree.
+- An unrelated process occupying port 47821 is reported and never killed.
+- An unrelated Node process remains untouched during every test.
+- Ctrl+C on the supervisor cleanly stops its owned children.
+- A stale recorded PID that has been reused by another process is not killed without matching current ownership evidence.
+
+### 18.3 AkuSidecar
+
+- `/api/health` passes with the expected version and `codex-sdk` provider.
+- A normal hard restart preserves the existing SQLite database.
+- AkuSidecar can perform one real reasoning invocation without immediate `spawn EPERM`.
+- Lifecycle status remains readable while AkuSidecar itself is restarting.
+
+### 18.4 Portability
+
+- One Geofu service can be managed through configuration only.
+- No AkuBrowser, AkuSidecar, or Geofu-specific import exists in the supervisor core.
+
+## 19. Test strategy
+
+### Unit tests
+
+- configuration validation;
+- lifecycle transition legality;
+- token validation and redaction;
+- journal schema;
+- health matchers;
+- restart cap;
+- command/argument separation; and
+- config fingerprint stability.
+
+### Integration tests
+
+Use fixture child processes that emulate:
+
+- a healthy HTTP service;
+- delayed startup;
+- failed startup;
+- a watcher that spawns a child server;
+- failure followed by successful restart;
+- a port occupied by an external fixture; and
+- graceful and forced shutdown.
+
+### Live validation
+
+1. Start the supervisor visibly.
+2. Start AkuSidecar through it.
+3. Verify PID tree, port, health, and dashboard configuration.
+4. Request a restart through the authenticated interface.
+5. Verify the old tree is gone and the database is preserved.
+6. Run one real AkuBrowser update to verify provider spawn.
+7. Repeat the lifecycle test with the selected Geofu service.
+
+## 20. Delivery plan
+
+### Phase A — core MVP, approximately 4–6 hours
+
+- project scaffold;
+- configuration schema;
+- visible CLI host;
+- single-service process lifecycle;
+- Windows process-tree ownership;
+- file logs and JSONL journal;
+- process and HTTP health checks; and
+- tests with fixture services.
+
+### Phase B — autonomous local control, approximately 2–4 hours
+
+- loopback control server;
+- token generation and authentication;
+- serialized lifecycle mutations;
+- status and event endpoints; and
+- AkuSidecar service profile.
+
+### Phase C — portability proof, approximately 2–4 hours
+
+- selected Geofu service profile;
+- configuration-only validation;
+- fix generic abstraction gaps; and
+- document both workflows.
+
+### Phase D — optional UI, approximately 4–8 hours
+
+- supervisor status panel;
+- lifecycle controls;
+- recent-event display;
+- clear unavailable state; and
+- browser CORS/token handoff appropriate for local development.
+
+Expected engineering effort for the CLI/API MVP plus AkuSidecar and one Geofu proof: **approximately one to two focused engineering days**. A polished dashboard and broader multi-service behavior are additional work.
+
+## 21. Explicit implementation boundaries
+
+Stop and reassess before adding any of the following:
+
+- service dependency graphs;
+- arbitrary shell execution through the API;
+- network binding beyond loopback;
+- Windows login startup;
+- remote agents;
+- database-reset actions;
+- browser lifecycle management;
+- production service installation; or
+- more than one automatic restart per failure episode.
+
+If these become necessary, first compare the expanded requirement with PM2, Docker Compose, and native Windows Service tooling instead of growing an accidental general-purpose orchestrator.
+
+## 22. Implementation-thread starting brief
+
+The implementation thread should begin with this bounded objective:
+
+> Build a generic, configuration-driven Windows local development supervisor. The user starts it once in a visible terminal. It owns and audits registered child service process trees and exposes localhost-authenticated start, stop, restart, status, and event operations. Validate it first with AkuSidecar, including the npm/watch/server process chain and preservation of SQLite, then prove portability with one independently runnable Geofu service. Do not add arbitrary command execution, dependency orchestration, background login startup, or database reset.

@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aku.local/schemas/service-config.schema.json",
+  "title": "AkuSupervisor service configuration",
+  "description": "Placeholder for the version 1 configuration contract defined in the product specification.",
+  "type": "object"
+}

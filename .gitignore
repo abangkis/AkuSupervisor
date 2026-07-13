@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Local runtime state, tokens, journals, and service logs
+.runtime/
+
+# Test and build output
+coverage/
+dist/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+local-dev-services.json
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor and operating-system files
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+Desktop.ini
