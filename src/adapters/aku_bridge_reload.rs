@@ -130,6 +130,40 @@ impl AkuBridgeReloadClient {
             })?;
             match action.get("status").and_then(Value::as_str) {
                 Some("completed") => {
+                    if last_stage == CooperativeActionStage::RelayCreated
+                        && action.get("deliveredAt").and_then(Value::as_str).is_some()
+                    {
+                        last_stage = CooperativeActionStage::Delivered;
+                        self.report_progress(
+                            actor,
+                            reason,
+                            request_id,
+                            progress_from_action(
+                                action,
+                                last_stage,
+                                "AkuBrowser relay page claimed the cooperative action",
+                            ),
+                            progress,
+                        )?;
+                    }
+                    if matches!(
+                        last_stage,
+                        CooperativeActionStage::RelayCreated | CooperativeActionStage::Delivered
+                    ) && action.get("acceptedAt").and_then(Value::as_str).is_some()
+                    {
+                        last_stage = CooperativeActionStage::Accepted;
+                        self.report_progress(
+                            actor,
+                            reason,
+                            request_id,
+                            progress_from_action(
+                                action,
+                                last_stage,
+                                "AkuBridge accepted reload_self",
+                            ),
+                            progress,
+                        )?;
+                    }
                     let observed_build_id = string_field(action, "observedBuildId");
                     if observed_build_id.is_some() && observed_build_id != last_observed_build_id {
                         self.report_progress(
@@ -198,6 +232,7 @@ impl AkuBridgeReloadClient {
                     let observed_build_id = string_field(action, "observedBuildId");
                     if observed_build_id.is_some() && observed_build_id != last_observed_build_id {
                         last_observed_build_id = observed_build_id;
+                        last_stage = CooperativeActionStage::HeartbeatObserved;
                         self.report_progress(
                             actor,
                             reason,

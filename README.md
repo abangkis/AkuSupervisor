@@ -122,12 +122,15 @@ Codex can request the only browser-side mutation exposed by AkuSupervisor:
   --request-id "bridge-reload-20260714-001"
 ```
 
-The command relays `reload_self` through the open AkuBrowser tab, invokes
-`chrome.tabs.reload()` for only that local tab, invokes `chrome.runtime.reload()`,
-and succeeds only after Sidecar observes the expected new build heartbeat.
+The command relays `reload_self` through the open AkuBrowser tab, stores one
+short-lived originating-tab marker, invokes `chrome.runtime.reload()`, and lets
+the new worker invoke `chrome.tabs.reload()` for only that local tab. It
+succeeds only after Sidecar observes the expected new build heartbeat.
 Delivery uses a long poll, so a background AkuBrowser tab does not depend on a
 one-second page timer. The CLI waits by default; use `--no-wait` and later
 `bridge status --request-id <id>` when asynchronous control is preferable.
+Transport failures are retried with bounded backoff only for reads and
+idempotent requests; mutations without a request ID are never retried.
 Use `--json` on any remote command for one machine-readable JSON envelope with
 the configuration path, control API, and response. It does not expose arbitrary
 extension commands, Chrome management, CDP, tab closure, or whole-browser restart. See the

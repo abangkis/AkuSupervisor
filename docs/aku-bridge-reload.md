@@ -2,8 +2,7 @@
 
 Status: **Completed - Gate 5 passed on 2026-07-14**
 
-Reliability follow-up: **Gate 5.1 implementation complete; live background-tab
-validation pending**
+Reliability follow-up: **Gate 5.1 passed on 2026-07-14**
 
 ## Contract
 
@@ -40,12 +39,18 @@ message. Its audit records are written to
    identity and requests one `reload_self` action from AkuSidecar.
 3. The AkuBrowser page holds a bounded long poll, claims the in-memory action,
    and posts the narrow message through its existing same-origin tab bridge.
+   A disconnected HTTP waiter is cancelled immediately and cannot consume a
+   later action.
 4. The service worker validates the sender origin and acknowledges the action
    to Sidecar with the bridge token and contract headers.
-5. The service worker acknowledges acceptance, calls `chrome.tabs.reload()`
-   for the originating AkuBrowser tab, then calls `chrome.runtime.reload()`.
-6. The local AkuBrowser page refreshes once without relying on a throttled page
-   timer. Other tabs, Chrome, the profile, and login sessions remain running.
+5. The service worker stores only the originating tab ID plus a short expiry in
+   extension-local storage, acknowledges acceptance, and calls
+   `chrome.runtime.reload()`.
+6. The new service worker consumes and removes that marker, then calls
+   `chrome.tabs.reload()` for the originating AkuBrowser tab. The new content
+   script therefore belongs to the new runtime and can publish its heartbeat.
+   No page timer is used; other tabs, Chrome, the profile, and login sessions
+   remain running.
 7. The newly injected bridge publishes its capability heartbeat. Sidecar marks
    the action complete only if `buildId` equals the build required by the
    current Sidecar.
@@ -61,7 +66,14 @@ proven: `relay_page_stale`, `relay_not_delivered`,
 `extension_not_accepted`, `reload_heartbeat_timeout`, and `build_mismatch`.
 Audit transitions include `requested`, `relay_created`, `delivered`,
 `accepted`, `heartbeat_observed`, and the terminal state, with the relay action
-ID retained on failures whenever Sidecar created one.
+ID retained on failures whenever Sidecar created one. If a reload completes
+between two Supervisor polls, Sidecar timestamps allow the missing delivery
+and acceptance milestones to be written deterministically.
+
+The AkuBrowser client retries bootstrap after a transient Sidecar restart and
+uses a versioned module URL during development. Long polls are tied to the HTTP
+connection lifetime so a reloaded page cannot leave a waiter that steals the
+next action.
 
 Codex identity is preserved in operation and audit data as
 `{"actorType":"agent","actorId":"codex"}` rather than being flattened to a
@@ -100,7 +112,7 @@ Gate 5 passes only after a real Chrome validation proves:
 Live evidence on 2026-07-14:
 
 - the first handler-capable unpacked build was bootstrapped once manually;
-- AkuBridge announced `aku-bridge-0.5.15-source-fidelity-v17` with
+- AkuBridge announced `aku-bridge-0.5.18-source-fidelity-v20` with
   `reload_self` in its capabilities;
 - `aku-supervisor bridge reload` completed in one request and observed a
   heartbeat timestamp newer than the pre-action heartbeat;
@@ -110,3 +122,16 @@ Live evidence on 2026-07-14:
   IDs; and
 - AkuSidecar remained healthy, running, and owned by AkuSupervisor after the
   reload.
+
+Reliability evidence on the same date:
+
+- request `gate51-live-20260714-013` completed autonomously in under one second;
+- expected and observed build IDs both equalled
+  `aku-bridge-0.5.18-source-fidelity-v20`;
+- the heartbeat age was 82 ms when the command returned; and
+- audit records preserved the structured Codex actor and one relay action ID.
+- after the AkuBrowser tab remained untouched in the background for more than
+  five minutes, request `gate51-live-20260714-014` completed in 1.7 seconds;
+- its journal recorded all six stages in order with relay action ID
+  `78830120-c3ac-4a53-bf87-506d612016a4`; and
+- post-command health remained `healthy` with a 1,025 ms heartbeat age.

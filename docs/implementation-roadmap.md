@@ -307,7 +307,7 @@ Gate 5:
 
 ### Phase 5.1 - Cooperative reload reliability
 
-Status: **Implementation complete; live background-tab validation pending**
+Status: **Completed - Gate 5.1 passed on 2026-07-14**
 
 Current checkpoint:
 
@@ -315,6 +315,10 @@ Current checkpoint:
   background page timer;
 - [x] the service worker reloads only the originating AkuBrowser tab without a
   page-side reload timer;
+- [x] the new extension worker consumes a short-lived persisted tab marker, so
+  runtime reload cannot invalidate the content script needed for heartbeat;
+- [x] disconnected long-poll waiters are cancelled and cannot steal a later
+  action;
 - [x] Supervisor runs the bounded relay in a background worker and keeps status
   requests responsive;
 - [x] request-ID status lookup, terminal replay, and single-flight conflict
@@ -325,9 +329,11 @@ Current checkpoint:
   agent;
 - [x] `--json`, `--wait`, `--no-wait`, and `bridge status` provide automation-
   safe CLI control;
+- [x] transient control transport failures receive bounded retry only when the
+  request is read-only or request-ID idempotent;
 - [x] the AkuWorkspace health profile checks the stable bridge contract and
   provider instead of pinning the frequently changing Sidecar app version; and
-- [ ] prove a real reload after the AkuBrowser relay tab has remained in the
+- [x] prove a real reload after the AkuBrowser relay tab has remained in the
   background for at least five minutes.
 
 Gate 5.1:
@@ -337,6 +343,14 @@ Gate 5.1:
 - a same-ID retry never triggers a second extension reload;
 - a terminal failure names the last unproven relay stage; and
 - background-tab throttling does not prevent delivery or page refresh.
+
+Live evidence used request `gate51-live-20260714-014` after more than five
+minutes without interacting with the AkuBrowser tab. It completed in 1.7
+seconds on `aku-bridge-0.5.18-source-fidelity-v20`. The cooperative journal
+recorded `requested`, `relay_created`, `delivered`, `accepted`,
+`heartbeat_observed`, and `completed` in order with one relay action ID and the
+structured Codex actor. Sidecar health remained `healthy` with the expected
+build ID.
 
 ### Development workflow checkpoint
 

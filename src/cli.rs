@@ -496,7 +496,6 @@ fn remote_request(command: RemoteCommand) -> Result<(), String> {
 
     use crate::adapters::config::SupervisorConfig;
     use crate::adapters::config_path::resolve_config_path;
-    use crate::adapters::control_http::client_request;
     use crate::adapters::runtime_token::{RuntimeToken, resolve_token_path};
 
     let explicit_config = match &command {
@@ -526,10 +525,10 @@ fn remote_request(command: RemoteCommand) -> Result<(), String> {
         .parse()
         .map_err(|error| format!("invalid control address: {error}"))?;
 
-    let (method, target, body, wait_request_id) = prepare_remote_request(command);
+    let (method, target, body, wait_request_id, retry_safe) = prepare_remote_request(command);
     let waited_for_operation = wait_request_id.is_some();
-    let mut response = client_request(address, &token, method, &target, body)
-        .map_err(|error| error.to_string())?;
+    let mut response =
+        control_request_with_retry(address, &token, method, &target, body.as_ref(), retry_safe)?;
     if let Some(request_id) = wait_request_id {
         let reload = config.cooperative_actions.aku_bridge_reload.as_ref();
         let timeout = reload.map_or(25_000, |value| value.timeout_ms.saturating_add(5_000));
@@ -563,14 +562,16 @@ fn prepare_remote_request(
     String,
     Option<serde_json::Value>,
     Option<String>,
+    bool,
 ) {
     match command {
-        RemoteCommand::Status { .. } => ("GET", "/v1/services".to_owned(), None, None),
+        RemoteCommand::Status { .. } => ("GET", "/v1/services".to_owned(), None, None, true),
         RemoteCommand::Events { after, limit, .. } => (
             "GET",
             format!("/v1/events?after={after}&limit={limit}"),
             None,
             None,
+            true,
         ),
         RemoteCommand::Logs {
             service_id,
@@ -588,6 +589,7 @@ fn prepare_remote_request(
             ),
             None,
             None,
+            true,
         ),
         RemoteCommand::Mutate {
             action,
@@ -597,6 +599,7 @@ fn prepare_remote_request(
             request_id,
             ..
         } => {
+            let retry_safe = request_id.is_some();
             let action = match action {
                 ControlAction::Start => "start",
                 ControlAction::Stop => "stop",
@@ -611,6 +614,7 @@ fn prepare_remote_request(
                     "requestId": request_id
                 })),
                 None,
+                retry_safe,
             )
         }
         RemoteCommand::BridgeReload {
@@ -630,6 +634,7 @@ fn prepare_remote_request(
                     "requestId": request_id
                 })),
                 wait_request_id,
+                true,
             )
         }
         RemoteCommand::BridgeStatus { request_id, .. } => (
@@ -637,7 +642,37 @@ fn prepare_remote_request(
             format!("/v1/cooperative-actions/aku-bridge/requests/{request_id}"),
             None,
             None,
+            true,
         ),
+    }
+}
+
+fn control_request_with_retry(
+    address: std::net::SocketAddr,
+    token: &crate::adapters::runtime_token::RuntimeToken,
+    method: &str,
+    target: &str,
+    body: Option<&serde_json::Value>,
+    retry_safe: bool,
+) -> Result<serde_json::Value, String> {
+    const MAX_ATTEMPTS: usize = 5;
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        match crate::adapters::control_http::client_request(
+            address,
+            token,
+            method,
+            target,
+            body.cloned(),
+        ) {
+            Ok(response) => return Ok(response),
+            Err(error) if retry_safe && error.is_transient() && attempt < MAX_ATTEMPTS => {
+                let backoff_ms = 100_u64 << (attempt - 1);
+                std::thread::sleep(std::time::Duration::from_millis(backoff_ms));
+            }
+            Err(error) => return Err(error.to_string()),
+        }
     }
 }
 
@@ -662,14 +697,14 @@ fn wait_for_cooperative_operation(
             ));
         }
         std::thread::sleep(std::time::Duration::from_millis(poll_interval_ms));
-        response = crate::adapters::control_http::client_request(
+        response = control_request_with_retry(
             address,
             token,
             "GET",
             &format!("/v1/cooperative-actions/aku-bridge/requests/{request_id}"),
             None,
-        )
-        .map_err(|error| error.to_string())?;
+            true,
+        )?;
     }
     Ok(response)
 }

@@ -835,6 +835,14 @@ pub enum ControlClientError {
     Rejected { status: u16, body: Value },
 }
 
+impl ControlClientError {
+    /// Returns whether an idempotent request may be retried after this client-side failure.
+    #[must_use]
+    pub const fn is_transient(&self) -> bool {
+        !matches!(self, Self::Serialize(_) | Self::Rejected { .. })
+    }
+}
+
 impl fmt::Display for ControlClientError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -866,6 +874,22 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn client_retry_taxonomy_excludes_rejections() {
+        assert!(ControlClientError::MalformedResponse.is_transient());
+        assert!(
+            ControlClientError::Read(io::Error::from(io::ErrorKind::ConnectionReset))
+                .is_transient()
+        );
+        assert!(
+            !ControlClientError::Rejected {
+                status: 409,
+                body: json!({"error": "conflict"}),
+            }
+            .is_transient()
+        );
+    }
 
     #[derive(Debug, Default)]
     struct FakeControl {
