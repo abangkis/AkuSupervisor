@@ -121,6 +121,18 @@ Gate 1:
 
 Status: **In progress**
 
+Current checkpoint:
+
+- complete: suspended root creation, Job Object assignment before resume, and
+  inherited descendant ownership;
+- complete: graceful Ctrl+Break request, bounded Job Object termination, and
+  kill-on-close cleanup;
+- complete: current Job membership as the destructive-operation authority;
+- complete: read-only IPv4/IPv6 TCP port-to-PID diagnostics;
+- verified: owned parent and child stop while an unrelated process remains;
+- verified: port inspection reports the occupant without disrupting it; and
+- remaining: end-to-end Ctrl+C handling and concurrent lifecycle serialization.
+
 Deliverables:
 
 - process creation in the normal host context;
