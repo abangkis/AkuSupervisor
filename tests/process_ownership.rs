@@ -5,7 +5,8 @@ use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use aku_supervisor::platform::windows::OwnedProcessTree;
+use aku_supervisor::application::{LaunchSpec, ProcessTreeSpawner};
+use aku_supervisor::platform::windows::{OwnedProcessTree, WindowsProcessSpawner};
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
 use windows_sys::Win32::System::Threading::{
     OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
@@ -25,6 +26,15 @@ fn fixture_command(mode: &str) -> Command {
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     command
+}
+
+fn fixture_launch(mode: &str) -> LaunchSpec {
+    LaunchSpec::new(
+        fixture(),
+        [mode],
+        std::env::current_dir().expect("current test directory"),
+        std::iter::empty::<(&str, &str)>(),
+    )
 }
 
 fn wait_for_tree(tree: &OwnedProcessTree, minimum: usize) -> Vec<u32> {
@@ -75,7 +85,8 @@ impl Drop for WaitHandle {
 
 #[test]
 fn owned_tree_contains_root_and_descendant_then_stops_completely() {
-    let mut tree = OwnedProcessTree::spawn(&mut fixture_command("--root"))
+    let mut tree = WindowsProcessSpawner
+        .spawn(&fixture_launch("--root"))
         .expect("owned fixture tree should start");
     let observed = wait_for_tree(&tree, 2);
 

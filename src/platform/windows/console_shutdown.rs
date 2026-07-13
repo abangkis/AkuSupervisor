@@ -6,6 +6,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use windows_sys::Win32::System::Console::{CTRL_BREAK_EVENT, CTRL_C_EVENT, SetConsoleCtrlHandler};
 
+use crate::application::ShutdownSignal;
+
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
@@ -48,6 +50,12 @@ impl ConsoleShutdown {
     #[must_use]
     pub fn is_requested(&self) -> bool {
         SHUTDOWN_REQUESTED.load(Ordering::Acquire)
+    }
+}
+
+impl ShutdownSignal for ConsoleShutdown {
+    fn is_requested(&self) -> bool {
+        Self::is_requested(self)
     }
 }
 
@@ -102,6 +110,8 @@ impl std::error::Error for ConsoleShutdownError {
 
 #[cfg(test)]
 mod tests {
+    use crate::application::ShutdownSignal;
+
     use super::{CTRL_C_EVENT, ConsoleShutdown, console_handler};
 
     #[test]
@@ -112,6 +122,6 @@ mod tests {
         let handled = unsafe { console_handler(CTRL_C_EVENT) };
 
         assert_eq!(handled, 1);
-        assert!(shutdown.is_requested());
+        assert!(ShutdownSignal::is_requested(&shutdown));
     }
 }

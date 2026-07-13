@@ -25,6 +25,8 @@ use windows_sys::Win32::System::Threading::{
     CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED, OpenThread, ResumeThread, THREAD_SUSPEND_RESUME,
 };
 
+use crate::application::{ManagedProcessTree, TreeStopReport};
+
 const MAX_OWNED_PROCESSES: usize = 4_096;
 const FORCE_EXIT_CODE: u32 = 1;
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
@@ -122,10 +124,10 @@ impl OwnedProcessTree {
     /// Returns a Job Object query or termination error, or
     /// [`ProcessTreeError::ShutdownTimeout`] if owned PIDs remain after forced
     /// termination.
-    pub fn stop(&mut self, grace: Duration) -> Result<StopReport, ProcessTreeError> {
+    pub fn stop(&mut self, grace: Duration) -> Result<TreeStopReport, ProcessTreeError> {
         let owned_pids_before = self.owned_pids()?;
         if owned_pids_before.is_empty() {
-            return Ok(StopReport {
+            return Ok(TreeStopReport {
                 owned_pids_before,
                 owned_pids_after: Vec::new(),
                 graceful_signal_sent: false,
@@ -152,7 +154,7 @@ impl OwnedProcessTree {
         }
 
         self.child.try_wait().map_err(ProcessTreeError::Wait)?;
-        Ok(StopReport {
+        Ok(TreeStopReport {
             owned_pids_before,
             owned_pids_after: self.owned_pids()?,
             graceful_signal_sent,
@@ -175,6 +177,26 @@ impl OwnedProcessTree {
     }
 }
 
+impl ManagedProcessTree for OwnedProcessTree {
+    type Error = ProcessTreeError;
+
+    fn root_pid(&self) -> u32 {
+        Self::root_pid(self)
+    }
+
+    fn owned_pids(&self) -> Result<Vec<u32>, Self::Error> {
+        Self::owned_pids(self)
+    }
+
+    fn try_wait(&mut self) -> Result<Option<ExitStatus>, Self::Error> {
+        Self::try_wait(self)
+    }
+
+    fn stop(&mut self, grace: Duration) -> Result<TreeStopReport, Self::Error> {
+        Self::stop(self, grace)
+    }
+}
+
 impl Drop for OwnedProcessTree {
     fn drop(&mut self) {
         if self.owned_pids().is_ok_and(|pids| !pids.is_empty()) {
@@ -184,16 +206,6 @@ impl Drop for OwnedProcessTree {
             let _ = self.child.wait();
         }
     }
-}
-
-/// Observable outcome of an owned-tree stop operation.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StopReport {
-    pub owned_pids_before: Vec<u32>,
-    pub owned_pids_after: Vec<u32>,
-    pub graceful_signal_sent: bool,
-    pub graceful_signal_error: Option<String>,
-    pub forced: bool,
 }
 
 /// Stage-specific Windows process ownership error.

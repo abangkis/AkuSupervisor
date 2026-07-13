@@ -66,8 +66,8 @@ impl<Process> ServiceRuntime<Process> {
 
     /// Starts the service exactly once while concurrent mutations serialize.
     ///
-    /// The callback must return the authoritative process owner, such as an
-    /// [`crate::platform::windows::OwnedProcessTree`]. If spawning fails, the
+    /// The callback must return an authoritative process owner implementing
+    /// [`crate::application::ManagedProcessTree`]. If spawning fails, the
     /// runtime enters `failed` without retaining an owner.
     ///
     /// # Errors

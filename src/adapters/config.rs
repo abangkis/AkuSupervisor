@@ -7,6 +7,8 @@ use serde::de::{MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::application::LaunchSpec;
+
 pub const CONFIG_VERSION: u32 = 1;
 
 /// Versioned `AkuSupervisor` configuration.
@@ -44,6 +46,24 @@ pub struct ServiceConfig {
     pub ports: Vec<u16>,
     pub restart_policy: RestartPolicy,
     pub shutdown_grace_ms: u64,
+}
+
+impl ServiceConfig {
+    /// Maps a registered service to the platform-neutral launch contract.
+    ///
+    /// Callers must validate the containing [`SupervisorConfig`] before using
+    /// this value to spawn a process.
+    #[must_use]
+    pub fn launch_spec(&self) -> LaunchSpec {
+        LaunchSpec::new(
+            self.command.clone(),
+            self.args.iter().cloned(),
+            self.cwd.clone(),
+            self.environment
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone())),
+        )
+    }
 }
 
 /// Supported Phase 1 health-check configuration.
@@ -432,6 +452,7 @@ impl std::error::Error for ConfigError {}
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::ffi::OsStr;
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -496,6 +517,19 @@ mod tests {
     fn valid_local_configuration_passes() {
         let (_directory, config) = valid_config();
         assert_eq!(config.validate(), Ok(()));
+    }
+
+    #[test]
+    fn validated_service_maps_to_platform_neutral_launch_spec() {
+        let (_directory, config) = valid_config();
+        config.validate().expect("fixture configuration is valid");
+        let service = config.services.get("fixture").expect("fixture service");
+
+        let launch = service.launch_spec();
+
+        assert_eq!(launch.executable(), service.command);
+        assert_eq!(launch.cwd(), service.cwd);
+        assert_eq!(launch.args(), [OsStr::new("--serve")]);
     }
 
     #[test]

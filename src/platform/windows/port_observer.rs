@@ -13,59 +13,20 @@ use windows_sys::Win32::NetworkManagement::IpHelper::{
 };
 use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6};
 
+use crate::application::{NetworkFamily, PortDiagnostic, PortInspector, PortOccupant};
+
 const QUERY_ATTEMPTS: usize = 4;
 const TABLE_HEADER_BYTES: u32 = 4;
 
-/// Address family reported for a TCP port occupant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum IpFamily {
-    V4,
-    V6,
-}
+/// Stateless Windows implementation of read-only TCP port diagnostics.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WindowsPortInspector;
 
-/// Read-only evidence that a process currently has a local TCP endpoint.
-///
-/// This is diagnostic evidence only. It is deliberately separate from Job
-/// Object membership and must never authorize process termination.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct PortOccupant {
-    pid: u32,
-    family: IpFamily,
-}
+impl PortInspector for WindowsPortInspector {
+    type Error = PortObserverError;
 
-impl PortOccupant {
-    #[must_use]
-    pub const fn pid(self) -> u32 {
-        self.pid
-    }
-
-    #[must_use]
-    pub const fn family(self) -> IpFamily {
-        self.family
-    }
-}
-
-/// Current read-only diagnostic result for one declared TCP port.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PortDiagnostic {
-    port: u16,
-    occupants: Vec<PortOccupant>,
-}
-
-impl PortDiagnostic {
-    #[must_use]
-    pub const fn port(&self) -> u16 {
-        self.port
-    }
-
-    #[must_use]
-    pub fn occupants(&self) -> &[PortOccupant] {
-        &self.occupants
-    }
-
-    #[must_use]
-    pub fn is_available(&self) -> bool {
-        self.occupants.is_empty()
+    fn inspect_tcp_port(&self, port: u16) -> Result<PortDiagnostic, Self::Error> {
+        inspect_tcp_port(port)
     }
 }
 
@@ -87,7 +48,7 @@ pub fn inspect_tcp_port(port: u16) -> Result<PortDiagnostic, PortObserverError> 
     occupants.sort_unstable();
     occupants.dedup();
 
-    Ok(PortDiagnostic { port, occupants })
+    Ok(PortDiagnostic::new(port, occupants))
 }
 
 fn inspect_ipv4(port: u16, occupants: &mut Vec<PortOccupant>) -> Result<(), PortObserverError> {
@@ -102,10 +63,7 @@ fn inspect_ipv4(port: u16, occupants: &mut Vec<PortOccupant>) -> Result<(), Port
     occupants.extend(
         rows.iter()
             .filter(|row| decode_port(row.dwLocalPort) == port)
-            .map(|row| PortOccupant {
-                pid: row.dwOwningPid,
-                family: IpFamily::V4,
-            }),
+            .map(|row| PortOccupant::new(row.dwOwningPid, NetworkFamily::V4)),
     );
 
     Ok(())
@@ -123,10 +81,7 @@ fn inspect_ipv6(port: u16, occupants: &mut Vec<PortOccupant>) -> Result<(), Port
     occupants.extend(
         rows.iter()
             .filter(|row| decode_port(row.dwLocalPort) == port)
-            .map(|row| PortOccupant {
-                pid: row.dwOwningPid,
-                family: IpFamily::V6,
-            }),
+            .map(|row| PortOccupant::new(row.dwOwningPid, NetworkFamily::V6)),
     );
 
     Ok(())
@@ -259,7 +214,9 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
-    use super::{decode_port, inspect_tcp_port};
+    use crate::application::PortInspector;
+
+    use super::{WindowsPortInspector, decode_port};
 
     const OBSERVATION_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -275,7 +232,9 @@ mod tests {
         let deadline = Instant::now() + OBSERVATION_TIMEOUT;
 
         let diagnostic = loop {
-            let diagnostic = inspect_tcp_port(port).expect("inspect occupied port");
+            let diagnostic = WindowsPortInspector
+                .inspect_tcp_port(port)
+                .expect("inspect occupied port");
             if diagnostic
                 .occupants()
                 .iter()
