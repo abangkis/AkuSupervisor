@@ -49,8 +49,38 @@ Then startup requires no application arguments:
 cargo run
 ```
 
+For this AkuWorkspace pilot, the source profile is checked in at:
+
+```text
+C:\WorkspaceCodex\AkuWorkspace\AkuSupervisor\config\akuworkspace.services.json
+```
+
+It registers `akusidecar` using `C:\nvm4w\nodejs\npm.cmd run dev` from the
+AkuSidecar repository. Startup prints both the absolute selected path and its
+source, for example:
+
+```text
+Configuration: C:\Users\Force\AppData\Local\AkuSupervisor\services.json
+Configuration source: default user configuration
+```
+
 `AKU_SUPERVISOR_CONFIG` may override the default location. An explicit
 `--config` path has the highest priority.
+
+To verify loading without starting AkuSidecar, enter `quit` at the prompt. To
+perform the first manual lifecycle test, use:
+
+```text
+status
+start akusidecar initial supervised launch
+status
+stop akusidecar manual test complete
+quit
+```
+
+The configured `/api/health` expectation is reserved for Phase 4. At the current
+checkpoint, `running` means the owned process tree was launched; it does not yet
+mean the HTTP JSON expectation passed.
 
 The terminal displays the current service table. Available commands are:
 

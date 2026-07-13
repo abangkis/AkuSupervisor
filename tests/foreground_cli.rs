@@ -93,6 +93,8 @@ fn foreground_cli_runs_registered_lifecycle_and_cleans_up() {
     let stderr = String::from_utf8(output.stderr).expect("supervisor stderr is UTF-8");
 
     assert!(stdout.contains("visible interactive supervisor"));
+    assert!(stdout.contains(&format!("Configuration: {}", config_path.display())));
+    assert!(stdout.contains("Configuration source: default user configuration"));
     assert!(stdout.contains("started fixture"));
     assert!(stdout.contains("restart completed for fixture: Restarted"));
     assert!(stdout.contains("stopped fixture"));

@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "control": {
+    "host": "127.0.0.1",
+    "port": 47820,
+    "tokenFile": ".runtime/control-token"
+  },
+  "services": {
+    "akusidecar": {
+      "label": "AkuSidecar",
+      "cwd": "C:\\WorkspaceCodex\\AkuWorkspace\\AkuSidecar",
+      "command": "C:\\nvm4w\\nodejs\\npm.cmd",
+      "args": [
+        "run",
+        "dev"
+      ],
+      "environment": {},
+      "health": {
+        "type": "http-json",
+        "url": "http://127.0.0.1:47821/api/health",
+        "timeoutMs": 5000,
+        "startupDeadlineMs": 20000,
+        "expect": {
+          "status": "ok",
+          "version": "0.5.9",
+          "provider": "codex-sdk"
+        }
+      },
+      "ports": [
+        47821
+      ],
+      "restartPolicy": "manual",
+      "shutdownGraceMs": 3000
+    }
+  }
+}

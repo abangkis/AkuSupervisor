@@ -181,6 +181,10 @@ Current checkpoint:
 - verified: an end-to-end fixture performs start, status, restart, stop, and
   quit without leaving an owned process tree;
 - verified: user stop blocks a later agent start in the shared registry;
+- verified: startup reports the absolute configuration path and its discovery
+  source;
+- prepared: a checked-in AkuWorkspace profile registers AkuSidecar without
+  overriding its persisted dashboard configuration;
 - remaining: persistent journal/events, bounded service logs, authenticated
   loopback HTTP, runtime token handling, and request idempotency.
 

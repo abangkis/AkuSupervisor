@@ -1,12 +1,13 @@
 use std::fmt;
 use std::fs;
 use std::io::{self, BufRead};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::Duration;
 
 use crate::adapters::config::{ConfigError, SupervisorConfig};
+use crate::adapters::config_path::ResolvedConfigPath;
 use crate::application::{
     RegistryBuildError, ServiceRegistry, ServiceSnapshot, StartOutcome, StopOutcome,
 };
@@ -31,7 +32,8 @@ type WindowsRegistry = ServiceRegistry<WindowsProcessSpawner, WindowsPortInspect
 /// # Errors
 ///
 /// Returns a startup, configuration, console-handler, input, or cleanup error.
-pub fn run(config_path: &Path) -> Result<(), ForegroundError> {
+pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> {
+    let config_path = resolved_config.path();
     let source = fs::read_to_string(config_path).map_err(|source| ForegroundError::ReadConfig {
         path: config_path.to_owned(),
         source,
@@ -49,6 +51,7 @@ pub fn run(config_path: &Path) -> Result<(), ForegroundError> {
 
     println!("AkuSupervisor {}", crate::VERSION);
     println!("Configuration: {}", config_path.display());
+    println!("Configuration source: {}", resolved_config.source());
     println!("Fingerprint: {fingerprint}");
     println!("Mode: visible interactive supervisor (Phase 3 CLI checkpoint)");
     print_status(&registry);

@@ -72,7 +72,15 @@ fn resolve_candidates(
     };
 
     if path.is_file() {
-        Ok(ResolvedConfigPath { path, source })
+        let absolute_path =
+            std::path::absolute(&path).map_err(|error| ConfigPathError::Resolve {
+                path: path.clone(),
+                message: error.to_string(),
+            })?;
+        Ok(ResolvedConfigPath {
+            path: absolute_path,
+            source,
+        })
     } else {
         Err(ConfigPathError::NotFound { path, source })
     }
@@ -146,6 +154,10 @@ pub enum ConfigPathError {
         path: PathBuf,
         source: ConfigPathSource,
     },
+    Resolve {
+        path: PathBuf,
+        message: String,
+    },
 }
 
 impl fmt::Display for ConfigPathError {
@@ -172,6 +184,11 @@ impl fmt::Display for ConfigPathError {
                     path.display()
                 )
             }
+            Self::Resolve { path, message } => write!(
+                formatter,
+                "failed to resolve configuration path {}: {message}",
+                path.display()
+            ),
         }
     }
 }

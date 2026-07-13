@@ -22,6 +22,8 @@ AkuSupervisor/
     mcp-integration-notes.md
     platform-portability.md
     testing-guide.md
+  config/
+    akuworkspace.services.json
   examples/
     phase2_process_tree_demo.rs
   scripts/
@@ -74,7 +76,22 @@ Without `--config`, AkuSupervisor resolves configuration in this order:
 2. `%LOCALAPPDATA%\AkuSupervisor\services.json` on Windows.
 
 If the selected file does not exist, startup fails clearly and does not create
-an empty configuration.
+an empty configuration. On successful startup, the terminal prints the
+absolute configuration path and whether it came from `--config`,
+`AKU_SUPERVISOR_CONFIG`, or the default user location.
+
+The checked-in AkuWorkspace pilot profile is
+[`config/akuworkspace.services.json`](config/akuworkspace.services.json). It
+registers AkuSidecar without overriding its persisted dashboard/SQLite
+configuration. Copy it to the default user location for argument-free startup:
+
+```powershell
+New-Item -ItemType Directory -Force "$env:LOCALAPPDATA\AkuSupervisor"
+Copy-Item .\config\akuworkspace.services.json "$env:LOCALAPPDATA\AkuSupervisor\services.json"
+```
+
+The profile's HTTP JSON health contract is validated as configuration, but the
+current Phase 3 foreground checkpoint does not yet evaluate health at runtime.
 
 ## Project documents
 

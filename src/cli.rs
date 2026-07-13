@@ -74,7 +74,7 @@ fn run_foreground(explicit_config: Option<PathBuf>) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match crate::adapters::foreground::run(resolved.path()) {
+    match crate::adapters::foreground::run(&resolved) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("error: {error}");
