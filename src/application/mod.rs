@@ -5,6 +5,7 @@
 
 mod control_api;
 mod cooperative_actions;
+mod cooperative_operations;
 mod platform_ports;
 mod service_registry;
 mod service_runtime;
@@ -14,7 +15,11 @@ pub use control_api::{
 };
 pub use cooperative_actions::{
     CooperativeActionControl, CooperativeActionError, CooperativeActionOutcome,
-    CooperativeActionStatus,
+    CooperativeActionProgress, CooperativeActionStage, CooperativeActionStatus,
+};
+pub use cooperative_operations::{
+    CooperativeOperationError, CooperativeOperationManager, CooperativeOperationSnapshot,
+    CooperativeOperationStatus,
 };
 pub use platform_ports::{
     LaunchSpec, ManagedProcessTree, NetworkFamily, PortDiagnostic, PortInspector, PortOccupant,

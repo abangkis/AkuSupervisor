@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::application::{
-    ControlAction, ControlErrorKind, CooperativeActionControl, SupervisorControl,
+    ControlAction, ControlErrorKind, CooperativeActionControl, CooperativeOperationError,
+    CooperativeOperationManager, CooperativeOperationStatus, SupervisorControl,
 };
 use crate::domain::{Actor, Reason};
 
@@ -37,7 +38,7 @@ impl ApiActor {
     const fn domain_actor(self) -> Actor {
         match self {
             Self::User => Actor::UserCli,
-            Self::Codex => Actor::Agent,
+            Self::Codex => Actor::Codex,
         }
     }
 }
@@ -71,6 +72,9 @@ impl ControlHttpServer {
         let address = listener.local_addr().map_err(ControlHttpError::Configure)?;
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
+        let cooperative = cooperative
+            .map(CooperativeOperationManager::new)
+            .map(Arc::new);
         let thread = thread::Builder::new()
             .name("aku-supervisor-control".to_owned())
             .spawn(move || {
@@ -136,7 +140,7 @@ fn serve(
     listener: &TcpListener,
     token: &RuntimeToken,
     control: &dyn SupervisorControl,
-    cooperative: Option<&dyn CooperativeActionControl>,
+    cooperative: Option<&CooperativeOperationManager>,
     journal: &FileJournal,
     logs: &ServiceLogStore,
     stop: &AtomicBool,
@@ -173,7 +177,7 @@ fn handle_connection(
     stream: &mut TcpStream,
     token: &RuntimeToken,
     control: &dyn SupervisorControl,
-    cooperative: Option<&dyn CooperativeActionControl>,
+    cooperative: Option<&CooperativeOperationManager>,
     journal: &FileJournal,
     logs: &ServiceLogStore,
     idempotency: &mut IdempotencyStore,
@@ -195,7 +199,7 @@ fn route(
     request: &HttpRequest,
     token: &RuntimeToken,
     control: &dyn SupervisorControl,
-    cooperative: Option<&dyn CooperativeActionControl>,
+    cooperative: Option<&CooperativeOperationManager>,
     journal: &FileJournal,
     logs: &ServiceLogStore,
     idempotency: &mut IdempotencyStore,
@@ -214,6 +218,30 @@ fn route(
         return match control.snapshots() {
             Ok(services) => json_response(200, &json!({ "services": services })),
             Err(error) => error_response(500, "internal", error.message()),
+        };
+    }
+
+    if request.method == "GET"
+        && let Some(request_id) = parse_cooperative_operation_target(&request.target)
+    {
+        if !request_is_authorized(request, token) {
+            return error_response(401, "unauthorized", "valid bearer token required");
+        }
+        let Some(cooperative) = cooperative else {
+            return error_response(
+                404,
+                "cooperative_action_disabled",
+                "AkuBridge reload_self is not configured",
+            );
+        };
+        return match cooperative.get(request_id) {
+            Ok(operation) => json_response(200, &json!({ "operation": operation })),
+            Err(CooperativeOperationError::NotFound) => error_response(
+                404,
+                "operation_not_found",
+                "cooperative operation was not found",
+            ),
+            Err(error) => error_response(500, "operation_registry_unavailable", &error.to_string()),
         };
     }
 
@@ -319,7 +347,7 @@ fn route_mutation(
     request: &HttpRequest,
     token: &RuntimeToken,
     control: &dyn SupervisorControl,
-    cooperative: Option<&dyn CooperativeActionControl>,
+    cooperative: Option<&CooperativeOperationManager>,
     idempotency: &mut IdempotencyStore,
 ) -> Response {
     let Some(candidate) = request
@@ -337,14 +365,30 @@ fn route_mutation(
         Ok(mutation) => mutation,
         Err(_) => return error_response(400, "invalid_request", "invalid mutation body"),
     };
+    if let Some(request_id) = mutation.request_id.as_deref()
+        && !valid_request_id(request_id)
+    {
+        return error_response(
+            400,
+            "invalid_request_id",
+            "requestId must be 1-128 URL-safe ASCII characters",
+        );
+    }
+    let reason = match Reason::new(mutation.reason) {
+        Ok(reason) => reason,
+        Err(error) => return error_response(400, "invalid_reason", &error.to_string()),
+    };
+
+    if request.target == "/v1/cooperative-actions/aku-bridge/reload-self" {
+        return route_cooperative_reload(
+            cooperative,
+            mutation.actor,
+            reason,
+            mutation.request_id.as_deref(),
+        );
+    }
+
     if let Some(request_id) = mutation.request_id.as_deref() {
-        if !valid_request_id(request_id) {
-            return error_response(
-                400,
-                "invalid_request_id",
-                "requestId must be 1-128 URL-safe ASCII characters",
-            );
-        }
         match idempotency.lookup(request_id, &request.target, &request.body) {
             IdempotencyLookup::Replay(response) => return response,
             IdempotencyLookup::Conflict => {
@@ -356,21 +400,6 @@ fn route_mutation(
             }
             IdempotencyLookup::Miss => {}
         }
-    }
-    let reason = match Reason::new(mutation.reason) {
-        Ok(reason) => reason,
-        Err(error) => return error_response(400, "invalid_reason", &error.to_string()),
-    };
-
-    if request.target == "/v1/cooperative-actions/aku-bridge/reload-self" {
-        return route_cooperative_reload(
-            request,
-            cooperative,
-            idempotency,
-            mutation.actor,
-            reason,
-            mutation.request_id.as_deref(),
-        );
     }
 
     let Some((service_id, action)) = parse_mutation_target(&request.target) else {
@@ -417,9 +446,7 @@ fn route_mutation(
 }
 
 fn route_cooperative_reload(
-    request: &HttpRequest,
-    cooperative: Option<&dyn CooperativeActionControl>,
-    idempotency: &mut IdempotencyStore,
+    cooperative: Option<&CooperativeOperationManager>,
     actor: ApiActor,
     reason: Reason,
     request_id: Option<&str>,
@@ -438,17 +465,32 @@ fn route_cooperative_reload(
             "AkuBridge reload_self is not configured",
         );
     };
-    let response = match cooperative.reload_aku_bridge(actor.domain_actor(), reason, request_id) {
-        Ok(outcome) => json_response(200, &json!({ "outcome": outcome })),
-        Err(error) => error_response(502, error.category(), error.message()),
-    };
-    idempotency.store(
-        request_id.to_owned(),
-        request.target.clone(),
-        request.body.clone(),
-        response.clone(),
-    );
-    response
+    match cooperative.begin(actor.domain_actor(), reason, request_id) {
+        Ok(operation) => {
+            let status = if operation.status == CooperativeOperationStatus::Running {
+                202
+            } else {
+                200
+            };
+            json_response(status, &json!({ "operation": operation }))
+        }
+        Err(CooperativeOperationError::IdempotencyConflict) => error_response(
+            409,
+            "idempotency_conflict",
+            "requestId was already used for different cooperative-action input",
+        ),
+        Err(CooperativeOperationError::ActionInProgress(_)) => error_response(
+            409,
+            "action_in_progress",
+            "another AkuBridge cooperative action is active",
+        ),
+        Err(error) => error_response(500, "operation_registry_unavailable", &error.to_string()),
+    }
+}
+
+fn parse_cooperative_operation_target(target: &str) -> Option<&str> {
+    let request_id = target.strip_prefix("/v1/cooperative-actions/aku-bridge/requests/")?;
+    valid_request_id(request_id).then_some(request_id)
 }
 
 fn parse_mutation_target(target: &str) -> Option<(&str, ControlAction)> {
@@ -658,6 +700,7 @@ fn error_response(status: u16, code: &str, message: &str) -> Response {
 fn write_response(stream: &mut TcpStream, response: &Response) -> io::Result<()> {
     let reason = match response.status {
         200 => "OK",
+        202 => "Accepted",
         400 => "Bad Request",
         401 => "Unauthorized",
         403 => "Forbidden",
@@ -857,6 +900,7 @@ mod tests {
             _actor: Actor,
             _reason: Reason,
             request_id: &str,
+            _progress: &(dyn Fn(crate::application::CooperativeActionProgress) + Send + Sync),
         ) -> Result<CooperativeActionOutcome, CooperativeActionError> {
             *self.reloads.lock().expect("reload lock") += 1;
             Ok(CooperativeActionOutcome {
@@ -943,7 +987,8 @@ mod tests {
             FileJournal::open(&journal_path, Vec::<String>::new()).expect("create journal");
         let logs = ServiceLogStore::new(&std::env::temp_dir(), ["api".to_owned()]);
         let control = FakeControl::default();
-        let cooperative = FakeCooperativeControl::default();
+        let cooperative = Arc::new(FakeCooperativeControl::default());
+        let manager = CooperativeOperationManager::new(cooperative.clone());
         let request = HttpRequest {
             method: "POST".to_owned(),
             target: "/v1/cooperative-actions/aku-bridge/reload-self".to_owned(),
@@ -955,15 +1000,43 @@ mod tests {
             &request,
             &token,
             &control,
-            Some(&cooperative),
+            Some(&manager),
             &journal,
             &logs,
             &mut IdempotencyStore::default(),
         );
 
-        assert_eq!(response.status, 200);
+        assert!(matches!(response.status, 200 | 202));
+        for _ in 0..100 {
+            if *cooperative.reloads.lock().expect("reload lock") == 1 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
         assert_eq!(*cooperative.reloads.lock().expect("reload lock"), 1);
         assert_eq!(*control.mutations.lock().expect("mutation lock"), 0);
+        let status_request = HttpRequest {
+            method: "GET".to_owned(),
+            target: "/v1/cooperative-actions/aku-bridge/requests/bridge-1".to_owned(),
+            authorization: Some(format!("Bearer {}", "a".repeat(64))),
+            body: Vec::new(),
+        };
+        let status = route(
+            &status_request,
+            &token,
+            &control,
+            Some(&manager),
+            &journal,
+            &logs,
+            &mut IdempotencyStore::default(),
+        );
+        assert_eq!(status.status, 200);
+        let payload: Value = serde_json::from_slice(&status.body).expect("status JSON");
+        assert_eq!(payload["operation"]["status"], "completed");
+        assert_eq!(
+            payload["operation"]["actor"],
+            json!({"actorType": "agent", "actorId": "codex"})
+        );
         std::fs::remove_file(token_path).ok();
         std::fs::remove_file(journal_path).ok();
     }

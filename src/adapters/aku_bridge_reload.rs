@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 
 use crate::application::{
     CooperativeActionControl, CooperativeActionError, CooperativeActionOutcome,
-    CooperativeActionStatus,
+    CooperativeActionProgress, CooperativeActionStage, CooperativeActionStatus,
 };
 use crate::domain::{Actor, Reason};
 
@@ -51,11 +51,16 @@ impl AkuBridgeReloadClient {
         })
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the relay state machine is kept contiguous so stage transitions remain auditable"
+    )]
     fn execute(
         &self,
         actor: Actor,
         reason: &Reason,
         request_id: &str,
+        progress: &(dyn Fn(CooperativeActionProgress) + Send + Sync),
     ) -> Result<CooperativeActionOutcome, CooperativeActionError> {
         let bootstrap = self.request("GET", "/api/bootstrap", &[], None)?;
         let token = bootstrap
@@ -97,6 +102,21 @@ impl AkuBridgeReloadClient {
                 CooperativeActionError::new("relay_contract", "Sidecar action omitted ID")
             })?
             .to_owned();
+        let mut last_stage = CooperativeActionStage::RelayCreated;
+        let mut last_observed_build_id = string_field(action, "observedBuildId");
+        self.report_progress(
+            actor,
+            reason,
+            request_id,
+            CooperativeActionProgress {
+                stage: last_stage,
+                relay_action_id: Some(action_id.clone()),
+                expected_build_id: string_field(action, "expectedBuildId"),
+                observed_build_id: last_observed_build_id.clone(),
+                message: "Sidecar created the bounded reload_self relay action".to_owned(),
+            },
+            progress,
+        )?;
         let started = Instant::now();
         loop {
             let response = self.request(
@@ -110,6 +130,20 @@ impl AkuBridgeReloadClient {
             })?;
             match action.get("status").and_then(Value::as_str) {
                 Some("completed") => {
+                    let observed_build_id = string_field(action, "observedBuildId");
+                    if observed_build_id.is_some() && observed_build_id != last_observed_build_id {
+                        self.report_progress(
+                            actor,
+                            reason,
+                            request_id,
+                            progress_from_action(
+                                action,
+                                CooperativeActionStage::HeartbeatObserved,
+                                "Sidecar observed the expected post-reload heartbeat",
+                            ),
+                            progress,
+                        )?;
+                    }
                     return Ok(outcome_from_action(
                         action,
                         CooperativeActionStatus::Completed,
@@ -117,14 +151,66 @@ impl AkuBridgeReloadClient {
                 }
                 Some("failed") => {
                     return Err(CooperativeActionError::new(
-                        "extension_unreachable",
+                        sidecar_error_category(action),
                         action
                             .get("message")
                             .and_then(Value::as_str)
                             .unwrap_or("AkuBridge reload_self failed"),
+                    )
+                    .with_context(
+                        Some(action_id.clone()),
+                        string_field(action, "observedBuildId"),
                     ));
                 }
-                Some("pending" | "delivered" | "accepted") => {}
+                Some("delivered") if last_stage == CooperativeActionStage::RelayCreated => {
+                    last_stage = CooperativeActionStage::Delivered;
+                    self.report_progress(
+                        actor,
+                        reason,
+                        request_id,
+                        progress_from_action(
+                            action,
+                            last_stage,
+                            "AkuBrowser relay page claimed the cooperative action",
+                        ),
+                        progress,
+                    )?;
+                }
+                Some("pending" | "delivered") => {}
+                Some("accepted") => {
+                    if matches!(
+                        last_stage,
+                        CooperativeActionStage::RelayCreated | CooperativeActionStage::Delivered
+                    ) {
+                        last_stage = CooperativeActionStage::Accepted;
+                        self.report_progress(
+                            actor,
+                            reason,
+                            request_id,
+                            progress_from_action(
+                                action,
+                                last_stage,
+                                "AkuBridge accepted reload_self",
+                            ),
+                            progress,
+                        )?;
+                    }
+                    let observed_build_id = string_field(action, "observedBuildId");
+                    if observed_build_id.is_some() && observed_build_id != last_observed_build_id {
+                        last_observed_build_id = observed_build_id;
+                        self.report_progress(
+                            actor,
+                            reason,
+                            request_id,
+                            progress_from_action(
+                                action,
+                                CooperativeActionStage::HeartbeatObserved,
+                                "Sidecar observed a post-acceptance heartbeat",
+                            ),
+                            progress,
+                        )?;
+                    }
+                }
                 _ => {
                     return Err(CooperativeActionError::new(
                         "relay_contract",
@@ -136,7 +222,8 @@ impl AkuBridgeReloadClient {
                 return Err(CooperativeActionError::new(
                     "relay_timeout",
                     "AkuBridge reload_self did not produce the expected heartbeat before the supervisor deadline",
-                ));
+                )
+                .with_context(Some(action_id.clone()), last_observed_build_id));
             }
             thread::sleep(self.poll_interval);
         }
@@ -203,12 +290,17 @@ impl AkuBridgeReloadClient {
             request_id: request_id.to_owned(),
             configuration_fingerprint: self.configuration_fingerprint.clone(),
             status: status.to_owned(),
-            relay_action_id: result
+            relay_action_id: result.and_then(|value| match value {
+                Ok(outcome) => outcome.relay_action_id.clone(),
+                Err(error) => error.relay_action_id().map(str::to_owned),
+            }),
+            expected_build_id: result
                 .and_then(|value| value.as_ref().ok())
-                .and_then(|value| value.relay_action_id.clone()),
-            observed_build_id: result
-                .and_then(|value| value.as_ref().ok())
-                .and_then(|value| value.observed_build_id.clone()),
+                .and_then(|value| value.expected_build_id.clone()),
+            observed_build_id: result.and_then(|value| match value {
+                Ok(outcome) => outcome.observed_build_id.clone(),
+                Err(error) => error.observed_build_id().map(str::to_owned),
+            }),
             error_category: result
                 .and_then(|value| value.as_ref().err())
                 .map(|error| error.category().to_owned()),
@@ -223,6 +315,38 @@ impl AkuBridgeReloadClient {
             ),
         })
     }
+
+    fn report_progress(
+        &self,
+        actor: Actor,
+        reason: &Reason,
+        request_id: &str,
+        update: CooperativeActionProgress,
+        progress: &(dyn Fn(CooperativeActionProgress) + Send + Sync),
+    ) -> Result<(), CooperativeActionError> {
+        let mut audit = self.audit.lock().map_err(|_| {
+            CooperativeActionError::new("audit_unavailable", "cooperative audit lock is poisoned")
+        })?;
+        audit.append(CooperativeAuditRecord {
+            sequence: 0,
+            timestamp: unix_timestamp(),
+            target: "aku-bridge".to_owned(),
+            action: "reload_self".to_owned(),
+            actor,
+            reason: reason.as_str().to_owned(),
+            request_id: request_id.to_owned(),
+            configuration_fingerprint: self.configuration_fingerprint.clone(),
+            status: stage_name(update.stage).to_owned(),
+            relay_action_id: update.relay_action_id.clone(),
+            expected_build_id: update.expected_build_id.clone(),
+            observed_build_id: update.observed_build_id.clone(),
+            error_category: None,
+            message: update.message.clone(),
+        })?;
+        drop(audit);
+        progress(update);
+        Ok(())
+    }
 }
 
 impl CooperativeActionControl for AkuBridgeReloadClient {
@@ -231,9 +355,10 @@ impl CooperativeActionControl for AkuBridgeReloadClient {
         actor: Actor,
         reason: Reason,
         request_id: &str,
+        progress: &(dyn Fn(CooperativeActionProgress) + Send + Sync),
     ) -> Result<CooperativeActionOutcome, CooperativeActionError> {
         self.audit_record(actor, &reason, request_id, "requested", None)?;
-        let result = self.execute(actor, &reason, request_id);
+        let result = self.execute(actor, &reason, request_id, progress);
         self.audit_record(
             actor,
             &reason,
@@ -276,6 +401,43 @@ fn outcome_from_action(
 
 fn string_field(value: &Value, name: &str) -> Option<String> {
     value.get(name).and_then(Value::as_str).map(str::to_owned)
+}
+
+fn progress_from_action(
+    action: &Value,
+    stage: CooperativeActionStage,
+    message: &str,
+) -> CooperativeActionProgress {
+    CooperativeActionProgress {
+        stage,
+        relay_action_id: string_field(action, "id"),
+        expected_build_id: string_field(action, "expectedBuildId"),
+        observed_build_id: string_field(action, "observedBuildId"),
+        message: message.to_owned(),
+    }
+}
+
+fn sidecar_error_category(action: &Value) -> &'static str {
+    match action.get("errorCategory").and_then(Value::as_str) {
+        Some("relay_page_stale") => "relay_page_stale",
+        Some("relay_not_delivered") => "relay_not_delivered",
+        Some("extension_not_accepted") => "extension_not_accepted",
+        Some("reload_heartbeat_timeout") => "reload_heartbeat_timeout",
+        Some("build_mismatch") => "build_mismatch",
+        _ => "relay_failed",
+    }
+}
+
+const fn stage_name(stage: CooperativeActionStage) -> &'static str {
+    match stage {
+        CooperativeActionStage::Requested => "requested",
+        CooperativeActionStage::RelayCreated => "relay_created",
+        CooperativeActionStage::Delivered => "delivered",
+        CooperativeActionStage::Accepted => "accepted",
+        CooperativeActionStage::HeartbeatObserved => "heartbeat_observed",
+        CooperativeActionStage::Completed => "completed",
+        CooperativeActionStage::Failed => "failed",
+    }
 }
 
 fn parse_loopback_origin(origin: &str) -> Result<SocketAddr, CooperativeActionError> {
@@ -355,6 +517,7 @@ struct CooperativeAuditRecord {
     configuration_fingerprint: String,
     status: String,
     relay_action_id: Option<String>,
+    expected_build_id: Option<String>,
     observed_build_id: Option<String>,
     error_category: Option<String>,
     message: String,
@@ -422,7 +585,9 @@ fn unix_timestamp() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_loopback_origin, parse_response};
+    use serde_json::json;
+
+    use super::{parse_loopback_origin, parse_response, sidecar_error_category};
 
     #[test]
     fn relay_accepts_only_pathless_loopback_http_origins() {
@@ -436,5 +601,22 @@ mod tests {
     fn relay_rejects_non_success_json_responses() {
         let response = b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\n\r\n{\"message\":\"denied\"}";
         assert_eq!(parse_response(response).unwrap_err().message(), "denied");
+    }
+
+    #[test]
+    fn relay_preserves_sidecar_stage_error_taxonomy() {
+        for category in [
+            "relay_page_stale",
+            "relay_not_delivered",
+            "extension_not_accepted",
+            "reload_heartbeat_timeout",
+            "build_mismatch",
+        ] {
+            assert_eq!(
+                sidecar_error_category(&json!({"errorCategory": category})),
+                category
+            );
+        }
+        assert_eq!(sidecar_error_category(&json!({})), "relay_failed");
     }
 }

@@ -2,6 +2,9 @@
 
 Status: **Completed - Gate 5 passed on 2026-07-14**
 
+Reliability follow-up: **Gate 5.1 implementation complete; live background-tab
+validation pending**
+
 ## Contract
 
 AkuSupervisor exposes exactly one browser cooperative action:
@@ -16,6 +19,14 @@ The authenticated control route is
 request ID. The request ID provides replay protection at the Supervisor and
 Sidecar boundaries.
 
+The POST starts a single-flight background operation and returns `202` while it
+is running. Progress remains queryable at
+`GET /v1/cooperative-actions/aku-bridge/requests/{requestId}` or through
+`aku-supervisor bridge status --request-id <id>`. The CLI waits for terminal
+status by default and supports `--no-wait`. A second request ID is rejected
+with `action_in_progress`; replaying the same request ID returns its current or
+terminal snapshot without a second reload.
+
 The action is separate from service lifecycle control. It cannot supply a
 command, executable, URL, tab ID, Chrome profile, or arbitrary extension
 message. Its audit records are written to
@@ -27,13 +38,14 @@ message. Its audit records are written to
    and writes a `requested` audit record before any external effect.
 2. The platform-neutral Sidecar relay adapter reads the existing local bridge
    identity and requests one `reload_self` action from AkuSidecar.
-3. The AkuBrowser page claims the in-memory action and posts the narrow message
-   through its existing same-origin tab bridge.
+3. The AkuBrowser page holds a bounded long poll, claims the in-memory action,
+   and posts the narrow message through its existing same-origin tab bridge.
 4. The service worker validates the sender origin and acknowledges the action
    to Sidecar with the bridge token and contract headers.
-5. The service worker calls `chrome.runtime.reload()`.
-6. The local AkuBrowser page refreshes once. Other tabs, Chrome, the profile,
-   and login sessions remain running.
+5. The service worker acknowledges acceptance, calls `chrome.tabs.reload()`
+   for the originating AkuBrowser tab, then calls `chrome.runtime.reload()`.
+6. The local AkuBrowser page refreshes once without relying on a throttled page
+   timer. Other tabs, Chrome, the profile, and login sessions remain running.
 7. The newly injected bridge publishes its capability heartbeat. Sidecar marks
    the action complete only if `buildId` equals the build required by the
    current Sidecar.
@@ -43,6 +55,18 @@ message. Its audit records are written to
 An extension that is disabled, unreachable, missing the handler, or does not
 publish the expected heartbeat fails closed after a bounded deadline. No
 Computer Use fallback runs automatically.
+
+The retained failure categories identify the last boundary that was not
+proven: `relay_page_stale`, `relay_not_delivered`,
+`extension_not_accepted`, `reload_heartbeat_timeout`, and `build_mismatch`.
+Audit transitions include `requested`, `relay_created`, `delivered`,
+`accepted`, `heartbeat_observed`, and the terminal state, with the relay action
+ID retained on failures whenever Sidecar created one.
+
+Codex identity is preserved in operation and audit data as
+`{"actorType":"agent","actorId":"codex"}` rather than being flattened to a
+generic agent. Legacy string actor values remain readable when old journals are
+reopened.
 
 ## One-time bootstrap
 

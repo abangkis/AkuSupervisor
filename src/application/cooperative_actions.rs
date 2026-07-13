@@ -11,6 +11,28 @@ pub enum CooperativeActionStatus {
     Failed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CooperativeActionStage {
+    Requested,
+    RelayCreated,
+    Delivered,
+    Accepted,
+    HeartbeatObserved,
+    Completed,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CooperativeActionProgress {
+    pub stage: CooperativeActionStage,
+    pub relay_action_id: Option<String>,
+    pub expected_build_id: Option<String>,
+    pub observed_build_id: Option<String>,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CooperativeActionOutcome {
@@ -36,6 +58,7 @@ pub trait CooperativeActionControl: Send + Sync {
         actor: Actor,
         reason: Reason,
         request_id: &str,
+        progress: &(dyn Fn(CooperativeActionProgress) + Send + Sync),
     ) -> Result<CooperativeActionOutcome, CooperativeActionError>;
 }
 
@@ -43,6 +66,8 @@ pub trait CooperativeActionControl: Send + Sync {
 pub struct CooperativeActionError {
     category: &'static str,
     message: String,
+    relay_action_id: Option<String>,
+    observed_build_id: Option<String>,
 }
 
 impl CooperativeActionError {
@@ -51,7 +76,20 @@ impl CooperativeActionError {
         Self {
             category,
             message: message.into(),
+            relay_action_id: None,
+            observed_build_id: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_context(
+        mut self,
+        relay_action_id: Option<String>,
+        observed_build_id: Option<String>,
+    ) -> Self {
+        self.relay_action_id = relay_action_id;
+        self.observed_build_id = observed_build_id;
+        self
     }
 
     #[must_use]
@@ -62,6 +100,16 @@ impl CooperativeActionError {
     #[must_use]
     pub fn message(&self) -> &str {
         &self.message
+    }
+
+    #[must_use]
+    pub fn relay_action_id(&self) -> Option<&str> {
+        self.relay_action_id.as_deref()
+    }
+
+    #[must_use]
+    pub fn observed_build_id(&self) -> Option<&str> {
+        self.observed_build_id.as_deref()
     }
 }
 

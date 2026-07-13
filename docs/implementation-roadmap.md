@@ -305,6 +305,39 @@ Gate 5:
 - disabled or unreachable extension state fails closed to a manual fallback; and
 - no `chrome.management`, CDP, or whole-browser restart is introduced.
 
+### Phase 5.1 - Cooperative reload reliability
+
+Status: **Implementation complete; live background-tab validation pending**
+
+Current checkpoint:
+
+- [x] Sidecar action delivery uses a bounded long poll instead of a one-second
+  background page timer;
+- [x] the service worker reloads only the originating AkuBrowser tab without a
+  page-side reload timer;
+- [x] Supervisor runs the bounded relay in a background worker and keeps status
+  requests responsive;
+- [x] request-ID status lookup, terminal replay, and single-flight conflict
+  behavior are exposed through HTTP and CLI;
+- [x] progress and audit preserve relay creation, delivery, acceptance,
+  heartbeat, terminal state, relay ID, and stage-specific failure categories;
+- [x] Codex is retained as structured actor identity instead of a generic
+  agent;
+- [x] `--json`, `--wait`, `--no-wait`, and `bridge status` provide automation-
+  safe CLI control;
+- [x] the AkuWorkspace health profile checks the stable bridge contract and
+  provider instead of pinning the frequently changing Sidecar app version; and
+- [ ] prove a real reload after the AkuBrowser relay tab has remained in the
+  background for at least five minutes.
+
+Gate 5.1:
+
+- status remains queryable while reload is active;
+- an unrelated second request is rejected while the first is active;
+- a same-ID retry never triggers a second extension reload;
+- a terminal failure names the last unproven relay stage; and
+- background-tab throttling does not prevent delivery or page refresh.
+
 ### Development workflow checkpoint
 
 Status: **Completed and live-validated on 2026-07-14**

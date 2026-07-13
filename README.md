@@ -61,6 +61,7 @@ cargo run -- events --limit 20
 cargo run -- logs akusidecar --stream stdout --tail 100
 cargo run -- restart akusidecar --actor codex --reason "source changed"
 cargo run -- bridge reload --actor codex --reason "load updated unpacked extension" --request-id "bridge-reload-001"
+cargo run -- bridge status --request-id "bridge-reload-001" --json
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets --all-features
@@ -122,16 +123,22 @@ Codex can request the only browser-side mutation exposed by AkuSupervisor:
 ```
 
 The command relays `reload_self` through the open AkuBrowser tab, invokes
-`chrome.runtime.reload()`, refreshes only that local tab so the new content
-script is injected, and succeeds only after Sidecar observes the expected new
-build heartbeat. It does not expose arbitrary extension commands, Chrome
-management, CDP, tab closure, or whole-browser restart. See the
+`chrome.tabs.reload()` for only that local tab, invokes `chrome.runtime.reload()`,
+and succeeds only after Sidecar observes the expected new build heartbeat.
+Delivery uses a long poll, so a background AkuBrowser tab does not depend on a
+one-second page timer. The CLI waits by default; use `--no-wait` and later
+`bridge status --request-id <id>` when asynchronous control is preferable.
+Use `--json` on any remote command for one machine-readable JSON envelope with
+the configuration path, control API, and response. It does not expose arbitrary
+extension commands, Chrome management, CDP, tab closure, or whole-browser restart. See the
 [AkuBridge reload design](docs/aku-bridge-reload.md).
 
 `user` is the default client actor. Codex must pass `--actor codex`. Every
 mutation requires an explicit reason and can select only a service already
 registered in configuration; executable paths and arguments are never accepted
-by the control protocol. Use `--request-id <id>` when a caller may retry a
+by the control protocol. Audit and operation responses preserve Codex as
+`{"actorType":"agent","actorId":"codex"}` while older string-valued journal
+records remain readable. Use `--request-id <id>` when a caller may retry a
 mutation; an identical retry replays the original response, while reusing the
 ID for different input is rejected. A user stop creates a hold that blocks a later Codex
 start or restart until a user explicitly starts or restarts the service.

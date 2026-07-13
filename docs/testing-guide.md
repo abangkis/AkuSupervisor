@@ -123,6 +123,23 @@ working-directory input.
 Read-only service status is loopback-visible. Start, stop, and restart require a
 valid bearer token read from the runtime file. The token itself is never printed.
 
+For AkuBridge reload, the CLI waits for the terminal heartbeat by default:
+
+```powershell
+.\target\aku-supervisor.exe bridge reload --actor codex `
+  --reason "load updated extension" --request-id "bridge-reload-1"
+```
+
+To separate submission from observation, add `--no-wait`, then query:
+
+```powershell
+.\target\aku-supervisor.exe bridge status --request-id "bridge-reload-1" --json
+```
+
+`--json` emits one JSON envelope and no human metadata on stdout. During an
+active reload, the same request ID must replay its current snapshot and a new
+request ID must fail with `action_in_progress`.
+
 ## 4. Visible manual process-tree demo
 
 Build the demo, then execute it directly so Cargo is not an intermediary for

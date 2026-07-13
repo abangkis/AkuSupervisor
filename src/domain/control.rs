@@ -1,14 +1,14 @@
 use std::fmt;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Authenticated principal category used for policy and audit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Actor {
     UserCli,
     UserUi,
     Agent,
+    Codex,
     Recovery,
 }
 
@@ -16,6 +16,86 @@ impl Actor {
     #[must_use]
     pub const fn is_user(self) -> bool {
         matches!(self, Self::UserCli | Self::UserUi)
+    }
+
+    #[must_use]
+    pub const fn is_agent(self) -> bool {
+        matches!(self, Self::Agent | Self::Codex)
+    }
+
+    const fn identity(self) -> (&'static str, &'static str) {
+        match self {
+            Self::UserCli => ("user", "cli"),
+            Self::UserUi => ("user", "ui"),
+            Self::Agent => ("agent", "generic"),
+            Self::Codex => ("agent", "codex"),
+            Self::Recovery => ("recovery", "supervisor"),
+        }
+    }
+}
+
+impl Serialize for Actor {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct ActorIdentity {
+            actor_type: &'static str,
+            actor_id: &'static str,
+        }
+
+        let (actor_type, actor_id) = self.identity();
+        ActorIdentity {
+            actor_type,
+            actor_id,
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Actor {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct ActorIdentity {
+            actor_type: String,
+            actor_id: String,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum ActorWire {
+            Legacy(String),
+            Identity(ActorIdentity),
+        }
+
+        let wire = ActorWire::deserialize(deserializer)?;
+        let actor = match wire {
+            ActorWire::Legacy(value) => match value.as_str() {
+                "user_cli" => Some(Self::UserCli),
+                "user_ui" => Some(Self::UserUi),
+                "agent" => Some(Self::Agent),
+                "codex" => Some(Self::Codex),
+                "recovery" => Some(Self::Recovery),
+                _ => None,
+            },
+            ActorWire::Identity(identity) => {
+                match (identity.actor_type.as_str(), identity.actor_id.as_str()) {
+                    ("user", "cli") => Some(Self::UserCli),
+                    ("user", "ui") => Some(Self::UserUi),
+                    ("agent", "generic") => Some(Self::Agent),
+                    ("agent", "codex") => Some(Self::Codex),
+                    ("recovery", "supervisor") => Some(Self::Recovery),
+                    _ => None,
+                }
+            }
+        };
+        actor.ok_or_else(|| serde::de::Error::custom("unknown actor identity"))
     }
 }
 
@@ -139,7 +219,7 @@ impl ControlPolicy {
             if self.operator_hold == OperatorHold::Stopped && !actor.is_user() {
                 return Err(AuthorizationError::OperatorHoldStopped);
             }
-            if actor == Actor::Agent && !self.agent_start_allowed {
+            if actor.is_agent() && !self.agent_start_allowed {
                 return Err(AuthorizationError::AgentStartDisabled);
             }
         }
@@ -240,5 +320,24 @@ mod tests {
         assert_eq!(reason.as_str(), "backend configuration changed");
         assert!(Reason::new("   ").is_err());
         assert!(Reason::new("x".repeat(Reason::MAX_BYTES + 1)).is_err());
+    }
+
+    #[test]
+    fn actor_serializes_as_identity_and_reads_legacy_journals() {
+        assert_eq!(
+            serde_json::to_value(Actor::Codex).expect("serialize actor"),
+            serde_json::json!({"actorType": "agent", "actorId": "codex"})
+        );
+        assert_eq!(
+            serde_json::from_str::<Actor>(r#""agent""#).expect("legacy actor"),
+            Actor::Agent
+        );
+        assert_eq!(
+            serde_json::from_value::<Actor>(
+                serde_json::json!({"actorType": "agent", "actorId": "codex"})
+            )
+            .expect("structured actor"),
+            Actor::Codex
+        );
     }
 }

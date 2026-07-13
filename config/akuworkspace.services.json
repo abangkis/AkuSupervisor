@@ -29,7 +29,7 @@
         "startupDeadlineMs": 20000,
         "expect": {
           "status": "ok",
-          "version": "0.5.15",
+          "bridgeContractVersion": "aku-browser.bridge.v1",
           "provider": "codex-sdk"
         }
       },
