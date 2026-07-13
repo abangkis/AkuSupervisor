@@ -3,8 +3,9 @@
 AkuSupervisor is a generic, configuration-driven supervisor for local development services.
 
 Roadmap Phase 2 and its Windows process-ownership safety gate are complete.
-The current binary still exposes only help and version information; the visible
-lifecycle CLI begins in Phase 3.
+Phase 3 now has a visible foreground CLI checkpoint with validated
+configuration, status, start, stop, restart, operator holds, and exit cleanup.
+The authenticated HTTP control adapter is not implemented yet.
 
 Rust is the implementation language, targeting `x86_64-pc-windows-msvc` for the
 initial AkuWorkspace pilot. Platform-neutral application ports and separate
@@ -47,12 +48,13 @@ AkuSupervisor/
 
 ```powershell
 cargo run -- --help
+cargo run -- run --config C:\path\to\services.json
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets --all-features
 ```
 
-Run the complete Phase 2 check through the convenience script:
+Run the complete verification suite through the convenience script:
 
 ```powershell
 .\scripts\test-phase2.ps1
@@ -60,6 +62,10 @@ Run the complete Phase 2 check through the convenience script:
 
 For a visible process-tree and Ctrl+C cleanup demo, follow the
 [testing guide](docs/testing-guide.md).
+
+While `run` is active, use `status`, `start <service> [reason]`,
+`stop <service> [reason]`, `restart <service> [reason]`, and `quit` in the same
+terminal.
 
 ## Project documents
 

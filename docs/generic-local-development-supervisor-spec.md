@@ -64,7 +64,7 @@ The user starts one visible process:
 
 ```powershell
 cd <supervisor-project>
-cargo run -- --config C:\path\to\local-dev-services.json
+cargo run -- run --config C:\path\to\local-dev-services.json
 ```
 
 The terminal prints:

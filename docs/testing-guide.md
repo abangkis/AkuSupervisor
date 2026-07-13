@@ -1,10 +1,10 @@
 # AkuSupervisor Testing Guide
 
-Current test scope: **Phase 2 Windows process ownership**
+Current test scope: **Phase 2 ownership and Phase 3 foreground CLI checkpoint**
 
-The Phase 3 CLI has not been implemented yet. You can verify the lifecycle
-engine and operating-system safety boundary now, but commands such as
-`start akusidecar` and `restart akusidecar` are not available yet.
+The visible CLI can now load a validated configuration and accept lifecycle
+commands in its own terminal. Authenticated control from a separate CLI or HTTP
+client is not implemented yet.
 
 ## 1. Automated verification
 
@@ -26,8 +26,33 @@ The important behavioral tests prove that:
 - a port occupant is reported without being stopped;
 - sixteen concurrent starts create only one owner; and
 - console interruption cleans the owned tree before the fixture supervisor exits.
+- the foreground CLI completes start, status, restart, stop, and quit against a
+  real owned fixture tree.
 
-## 2. Visible manual process-tree demo
+## 2. Foreground supervisor
+
+Given a valid service configuration:
+
+```powershell
+cargo run -- run --config C:\path\to\services.json
+```
+
+The terminal displays the current service table. Available commands are:
+
+```text
+status
+start <service> [reason]
+stop <service> [reason]
+restart <service> [reason]
+help
+quit
+```
+
+Executable, arguments, working directory, and environment always come from the
+validated configuration. Interactive input can select only a registered
+service and supply an auditable reason.
+
+## 3. Visible manual process-tree demo
 
 Build the demo, then execute it directly so Cargo is not an intermediary for
 the Ctrl+C signal:
@@ -63,9 +88,9 @@ After cleanup, the same command should report that those processes no longer
 exist. Do not substitute unrelated PIDs into any termination command; the demo
 itself only operates on its Job Object.
 
-## 3. Current limitation
+## 4. Current limitation
 
-This demo uses self-contained fixture processes. Testing AkuSidecar itself
-begins after the Phase 3 visible CLI can resolve a validated service profile.
-The Phase 4 acceptance test will then include a real reasoning invocation, not
-only `/api/health`.
+The foreground CLI checkpoint does not yet expose HTTP authentication,
+persistent event retrieval, or bounded log commands. AkuSidecar live validation
+remains Phase 4 and will include a real reasoning invocation, not only
+`/api/health`.

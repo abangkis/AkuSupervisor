@@ -166,7 +166,21 @@ live Job Object owner; observed PIDs and ports have no termination API.
 
 ### Phase 3 - Visible CLI and local control API
 
-Status: **Ready**
+Status: **In progress - foreground CLI checkpoint complete**
+
+Current checkpoint:
+
+- complete: validated configuration maps to platform-neutral service
+  registrations;
+- complete: one shared application registry owns start, stop, restart, status,
+  port checks, operator holds, actor, and reason;
+- complete: visible `run --config <path>` foreground supervisor with an
+  interactive status table and Ctrl+C/quit cleanup;
+- verified: an end-to-end fixture performs start, status, restart, stop, and
+  quit without leaving an owned process tree;
+- verified: user stop blocks a later agent start in the shared registry;
+- remaining: persistent journal/events, bounded service logs, authenticated
+  loopback HTTP, runtime token handling, and request idempotency.
 
 Deliverables:
 
