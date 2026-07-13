@@ -21,6 +21,7 @@ Usage:\n\
   aku-supervisor <start|stop|restart> <service> --reason <text> [--actor <user|codex>] [--request-id <id>] [--json] [--config <path>]\n\
   aku-supervisor bridge reload --reason <text> --request-id <id> [--actor <user|codex>] [--wait|--no-wait] [--json] [--config <path>]\n\
   aku-supervisor bridge status --request-id <id> [--json] [--config <path>]\n\
+  aku-supervisor bridge validate --request-id <id> [--actor <user|codex>] [--config <path>]\n\
   aku-supervisor --help\n\
   aku-supervisor --version\n\n\
 Without --config, AkuSupervisor checks AKU_SUPERVISOR_CONFIG and then the default user configuration.";
@@ -29,7 +30,14 @@ Without --config, AkuSupervisor checks AKU_SUPERVISOR_CONFIG and then the defaul
 enum Command {
     Help,
     Version,
-    Run { config: Option<PathBuf> },
+    Run {
+        config: Option<PathBuf>,
+    },
+    BridgeValidate {
+        actor: ApiActor,
+        request_id: String,
+        config: Option<PathBuf>,
+    },
     Remote(RemoteCommand),
 }
 
@@ -88,6 +96,11 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
             ExitCode::SUCCESS
         }
         Ok(Command::Run { config }) => run_foreground(config),
+        Ok(Command::BridgeValidate {
+            actor,
+            request_id,
+            config,
+        }) => run_bridge_validate(actor, &request_id, config.as_ref()),
         Ok(Command::Remote(command)) => run_remote(command),
         Err(message) => {
             eprintln!("error: {message}\n\n{HELP}");
@@ -120,6 +133,9 @@ fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, Strin
         [bridge, status, rest @ ..] if bridge == "bridge" && status == "status" => {
             parse_bridge_status(rest)
         }
+        [bridge, validate, rest @ ..] if bridge == "bridge" && validate == "validate" => {
+            parse_bridge_validate(rest)
+        }
         [action, rest @ ..] if action == "start" || action == "stop" || action == "restart" => {
             parse_remote_mutation(action, rest)
         }
@@ -129,6 +145,52 @@ fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, Strin
         )),
         _ => Err("expected run, a lifecycle client command, --help, or --version".to_owned()),
     }
+}
+
+fn parse_bridge_validate(arguments: &[OsString]) -> Result<Command, String> {
+    let mut actor = ApiActor::User;
+    let mut actor_seen = false;
+    let mut request_id = None;
+    let mut config = None;
+    let mut index = 0;
+    while index < arguments.len() {
+        match arguments[index].to_str() {
+            Some("--actor") if !actor_seen => {
+                actor = match option_value(arguments, index)?.to_str() {
+                    Some("user") => ApiActor::User,
+                    Some("codex") => ApiActor::Codex,
+                    _ => return Err("actor must be user or codex".to_owned()),
+                };
+                actor_seen = true;
+                index += 2;
+            }
+            Some("--request-id") if request_id.is_none() => {
+                request_id = Some(parse_request_id(option_value(arguments, index)?)?);
+                index += 2;
+            }
+            Some("--config") if config.is_none() => {
+                config = Some(PathBuf::from(option_value(arguments, index)?));
+                index += 2;
+            }
+            Some("--actor" | "--request-id" | "--config") => {
+                return Err(format!(
+                    "duplicate option: {}",
+                    arguments[index].to_string_lossy()
+                ));
+            }
+            _ => {
+                return Err(format!(
+                    "unsupported option: {}",
+                    arguments[index].to_string_lossy()
+                ));
+            }
+        }
+    }
+    Ok(Command::BridgeValidate {
+        actor,
+        request_id: request_id.ok_or_else(|| "bridge validate requires --request-id".to_owned())?,
+        config,
+    })
 }
 
 fn parse_bridge_reload(arguments: &[OsString]) -> Result<Command, String> {
@@ -487,6 +549,184 @@ fn run_remote(command: RemoteCommand) -> ExitCode {
             eprintln!("error: {error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+fn run_bridge_validate(
+    actor: ApiActor,
+    request_id: &str,
+    explicit_config: Option<&PathBuf>,
+) -> ExitCode {
+    match bridge_validation(actor, request_id, explicit_config.cloned()) {
+        Ok((configuration, address, report)) => {
+            println!(
+                "{}",
+                serde_json::to_string(&serde_json::json!({
+                    "configuration": configuration,
+                    "controlApi": format!("http://{address}"),
+                    "validation": report,
+                }))
+                .expect("bridge validation JSON serialization cannot fail")
+            );
+            ExitCode::from(report.exit_code)
+        }
+        Err(message) => {
+            println!(
+                "{}",
+                serde_json::to_string(&serde_json::json!({
+                    "configuration": explicit_config,
+                    "controlApi": serde_json::Value::Null,
+                    "validation": {
+                        "schemaVersion": 1,
+                        "command": "bridge_validate",
+                        "status": "error",
+                        "exitCode": 1,
+                        "requestId": request_id,
+                        "actor": validation_actor(actor),
+                        "checks": [],
+                        "operation": serde_json::Value::Null,
+                        "error": {
+                            "code": "validation_execution_failed",
+                            "message": message,
+                        }
+                    }
+                }))
+                .expect("bridge validation error JSON serialization cannot fail")
+            );
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn bridge_validation(
+    actor: ApiActor,
+    request_id: &str,
+    explicit_config: Option<PathBuf>,
+) -> Result<
+    (
+        PathBuf,
+        std::net::SocketAddr,
+        crate::application::BridgeValidationReport,
+    ),
+    String,
+> {
+    use std::fs;
+
+    use crate::adapters::config::SupervisorConfig;
+    use crate::adapters::config_path::resolve_config_path;
+    use crate::adapters::runtime_token::{RuntimeToken, resolve_token_path};
+
+    let resolved = resolve_config_path(explicit_config).map_err(|error| error.to_string())?;
+    let source = fs::read_to_string(resolved.path())
+        .map_err(|error| format!("failed to read {}: {error}", resolved.path().display()))?;
+    let config = SupervisorConfig::parse_json(&source).map_err(|error| error.to_string())?;
+    config.validate().map_err(|error| error.to_string())?;
+    let token_path = resolve_token_path(resolved.path(), &config.control.token_file);
+    let token = RuntimeToken::load(&token_path).map_err(|error| error.to_string())?;
+    let address = format!("{}:{}", config.control.host, config.control.port)
+        .parse::<std::net::SocketAddr>()
+        .map_err(|error| format!("invalid control address: {error}"))?;
+    ensure_fresh_bridge_validation_request(address, &token, request_id)?;
+    let reason = format!("release gate bridge validation {request_id}");
+    let initial = control_request_with_retry(
+        address,
+        &token,
+        "POST",
+        "/v1/cooperative-actions/aku-bridge/reload-self",
+        Some(&serde_json::json!({
+            "actor": actor,
+            "reason": reason,
+            "requestId": request_id,
+        })),
+        true,
+    )?;
+    let reload = config.cooperative_actions.aku_bridge_reload.as_ref();
+    let timeout = reload.map_or(25_000, |value| value.timeout_ms.saturating_add(5_000));
+    let poll_interval = reload.map_or(250, |value| value.poll_interval_ms);
+    let terminal = wait_for_cooperative_operation(
+        address,
+        &token,
+        request_id,
+        timeout,
+        poll_interval,
+        initial,
+    )?;
+    let operation = terminal
+        .get("operation")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let active = control_request_with_retry(
+        address,
+        &token,
+        "GET",
+        "/v1/cooperative-actions/aku-bridge/active",
+        None,
+        true,
+    )?;
+    let active_operation = active
+        .get("operation")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let audit_path = token_path
+        .parent()
+        .ok_or_else(|| "control token path has no runtime directory".to_owned())?
+        .join("cooperative-actions.jsonl");
+    let audit_source = fs::read_to_string(&audit_path)
+        .map_err(|error| format!("failed to read {}: {error}", audit_path.display()))?;
+    let mut audit_records = Vec::new();
+    for (index, line) in audit_source.lines().enumerate() {
+        let record: serde_json::Value = serde_json::from_str(line).map_err(|error| {
+            format!(
+                "invalid cooperative audit record {} in {}: {error}",
+                index + 1,
+                audit_path.display()
+            )
+        })?;
+        if record.get("requestId").and_then(serde_json::Value::as_str) == Some(request_id) {
+            audit_records.push(record);
+        }
+    }
+    let report = crate::application::validate_bridge_release(
+        request_id,
+        validation_actor(actor),
+        operation,
+        active_operation,
+        &audit_records,
+    );
+    Ok((resolved.path().to_owned(), address, report))
+}
+
+fn ensure_fresh_bridge_validation_request(
+    address: std::net::SocketAddr,
+    token: &crate::adapters::runtime_token::RuntimeToken,
+    request_id: &str,
+) -> Result<(), String> {
+    use crate::adapters::control_http::{ControlClientError, client_request};
+
+    const MAX_ATTEMPTS: usize = 5;
+    let target = format!("/v1/cooperative-actions/aku-bridge/requests/{request_id}");
+    for attempt in 1..=MAX_ATTEMPTS {
+        match client_request(address, token, "GET", &target, None) {
+            Err(ControlClientError::Rejected { status: 404, .. }) => return Ok(()),
+            Ok(_) => {
+                return Err(format!(
+                    "bridge validate requires a fresh request ID; {request_id} already exists"
+                ));
+            }
+            Err(error) if error.is_transient() && attempt < MAX_ATTEMPTS => {
+                let backoff_ms = 100_u64 << (attempt - 1);
+                std::thread::sleep(std::time::Duration::from_millis(backoff_ms));
+            }
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    unreachable!("bounded validation preflight returns from every final attempt")
+}
+
+fn validation_actor(actor: ApiActor) -> serde_json::Value {
+    match actor {
+        ApiActor::User => serde_json::json!({"actorType": "user", "actorId": "cli"}),
+        ApiActor::Codex => serde_json::json!({"actorType": "agent", "actorId": "codex"}),
     }
 }
 
@@ -912,5 +1152,40 @@ mod tests {
             }))
         );
         assert!(parse(args(&["status", "--json", "--json"])).is_err());
+    }
+
+    #[test]
+    fn bridge_validate_requires_identity_and_has_machine_contract() {
+        assert!(parse(args(&["bridge", "validate"])).is_err());
+        assert_eq!(
+            parse(args(&[
+                "bridge",
+                "validate",
+                "--actor",
+                "codex",
+                "--request-id",
+                "release-gate-1",
+                "--config",
+                "services.json",
+            ])),
+            Ok(Command::BridgeValidate {
+                actor: ApiActor::Codex,
+                request_id: "release-gate-1".to_owned(),
+                config: Some(PathBuf::from("services.json")),
+            })
+        );
+        assert!(
+            parse(args(&[
+                "bridge",
+                "validate",
+                "--request-id",
+                "release-gate-1",
+                "--actor",
+                "user",
+                "--actor",
+                "codex",
+            ]))
+            .is_err()
+        );
     }
 }

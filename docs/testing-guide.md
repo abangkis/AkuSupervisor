@@ -268,3 +268,28 @@ This runner is a Windows adapter. The Rust file-signal adapter itself uses only
 portable standard-library APIs, so a later Linux/macOS runner can preserve the
 same build-first and graceful-handoff contract using `watchexec`, a shell
 script, or a native host adapter.
+
+## 8. Stable release promotion
+
+The development watcher never overwrites `target\aku-supervisor.exe`. Promote
+the current constant development build only through:
+
+```powershell
+.\scripts\promote-stable.ps1
+```
+
+Use `-Config` for a non-default profile, `-Actor codex` when Codex owns the
+release action, and `-RequestId` only when an external release system supplies
+a guaranteed-fresh ID. Otherwise the script creates a unique bounded ID.
+
+Before copying, the development executable runs `bridge validate`. Its JSON
+contract contains `schemaVersion`, `status`, `exitCode`, the structured actor,
+request ID, terminal operation, and five named checks. The six required audit
+stages are `requested`, `relay_created`, `delivered`, `accepted`,
+`heartbeat_observed`, and `completed`. A reused request ID, mismatched build,
+missing audit stage, active operation, malformed JSON, or nonzero exit leaves
+the stable executable byte-for-byte unchanged.
+
+The validator and audit evaluator are platform-neutral. The PowerShell copy is
+the Windows release adapter; Linux and macOS can enforce the same JSON and exit
+contract in their native promotion scripts.

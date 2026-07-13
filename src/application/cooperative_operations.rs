@@ -131,6 +131,22 @@ impl CooperativeOperationManager {
             .ok_or(CooperativeOperationError::NotFound)
     }
 
+    /// Returns the active single-flight operation, if one still exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns a registry error when the shared state is unavailable.
+    pub fn active(
+        &self,
+    ) -> Result<Option<CooperativeOperationSnapshot>, CooperativeOperationError> {
+        let state = self.lock()?;
+        Ok(state
+            .active_request_id
+            .as_ref()
+            .and_then(|request_id| state.operations.get(request_id))
+            .cloned())
+    }
+
     fn execute(&self, actor: Actor, reason: Reason, request_id: &str) {
         let progress_manager = self.clone();
         let progress_request_id = request_id.to_owned();
@@ -360,6 +376,7 @@ mod tests {
         assert_eq!(completed.status, CooperativeOperationStatus::Completed);
         assert_eq!(completed.stage, CooperativeActionStage::Completed);
         assert_eq!(control.calls.load(Ordering::Relaxed), 1);
+        assert_eq!(manager.active().expect("active operation"), None);
         assert_eq!(
             manager
                 .begin(Actor::Codex, reason, "request-1")

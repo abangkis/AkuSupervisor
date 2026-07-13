@@ -372,6 +372,28 @@ Live evidence used an isolated control port. The Supervisor PID changed from
 `42056`, and the final cleanup left neither the test listener nor known fixture
 processes alive. The normal stable Supervisor remained active throughout.
 
+### Release validation checkpoint
+
+Status: **Completed and live-validated on 2026-07-14**
+
+- [x] `bridge validate` performs a fresh cooperative reload and emits one
+  deterministic JSON result;
+- [x] the gate verifies six ordered audit stages, structured actor/request
+  identity, expected/observed heartbeat equality, and no active zombie action;
+- [x] success exits `0`, validation/execution failure exits `1`, and CLI usage
+  errors exit `2`;
+- [x] `scripts/promote-stable.ps1` refuses to copy `target/dev` on nonzero,
+  failed, or malformed validation output; and
+- [x] release evaluation remains platform-neutral while PowerShell owns only
+  the Windows copy adapter.
+
+Live request `bridge-validate-live-20260714-002` passed all five checks against
+`aku-bridge-0.5.19-source-fidelity-v21`. Reusing that request ID with a
+different actor returned JSON status `error` and exit code `1` without a
+second reload. The promotion script rejected the result and a before/after
+SHA-256 comparison proved the stable executable remained byte-for-byte
+unchanged.
+
 ### Phase 6 - MCP adapter
 
 Status: **Deferred until Gate 4; preferably after Gate 5**

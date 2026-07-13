@@ -109,6 +109,21 @@ Gate 5 passes only after a real Chrome validation proves:
 - `cooperative-actions.jsonl` contains requested and completed records; and
 - disabled/unreachable behavior times out without broader browser control.
 
+The repeatable machine gate is:
+
+```powershell
+.\target\dev\aku-supervisor.exe bridge validate `
+  --actor codex `
+  --request-id bridge-release-20260714-001
+```
+
+It always emits JSON. Exit `0` requires the terminal cooperative reload, the
+six ordered audit stages, matching structured actor and request ID, equal
+non-null expected/observed heartbeat build IDs, and a null active-operation
+snapshot. Exit `1` is a validation or execution failure. The stable promotion
+script refuses to copy the development executable unless both exit code and
+JSON status pass.
+
 Live evidence on 2026-07-14:
 
 - the first handler-capable unpacked build was bootstrapped once manually;

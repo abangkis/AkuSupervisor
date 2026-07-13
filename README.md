@@ -62,6 +62,7 @@ cargo run -- logs akusidecar --stream stdout --tail 100
 cargo run -- restart akusidecar --actor codex --reason "source changed"
 cargo run -- bridge reload --actor codex --reason "load updated unpacked extension" --request-id "bridge-reload-001"
 cargo run -- bridge status --request-id "bridge-reload-001" --json
+cargo run -- bridge validate --actor codex --request-id "bridge-release-001"
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets --all-features
@@ -92,6 +93,21 @@ The watcher owns stdin; use the control CLI from a second terminal for
 It prefers the complete project-local Rust toolchain over any rustup shim found
 on `PATH`, and prints the selected Cargo and Rust compiler paths before build.
 See the [testing guide](docs/testing-guide.md#7-development-watcher).
+
+Promoting the constant development binary to the normal stable path is a
+separate, fail-closed release action:
+
+```powershell
+.\scripts\promote-stable.ps1
+```
+
+The script runs `target\dev\aku-supervisor.exe bridge validate` with a fresh
+request ID before copying anything. Validation emits one JSON document and
+requires cooperative completion, all six audit stages, matching actor/request
+identity, matching expected/observed heartbeat builds, and no active zombie
+operation. Exit code `0` means passed; `1` means validation/execution failed;
+CLI usage errors remain exit code `2`. A failed or malformed result leaves
+`target\aku-supervisor.exe` unchanged.
 
 For a visible process-tree and Ctrl+C cleanup demo, follow the
 [testing guide](docs/testing-guide.md).

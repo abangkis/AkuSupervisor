@@ -221,6 +221,23 @@ fn route(
         };
     }
 
+    if request.method == "GET" && request.target == "/v1/cooperative-actions/aku-bridge/active" {
+        if !request_is_authorized(request, token) {
+            return error_response(401, "unauthorized", "valid bearer token required");
+        }
+        let Some(cooperative) = cooperative else {
+            return error_response(
+                404,
+                "cooperative_action_disabled",
+                "AkuBridge reload_self is not configured",
+            );
+        };
+        return match cooperative.active() {
+            Ok(operation) => json_response(200, &json!({ "operation": operation })),
+            Err(error) => error_response(500, "operation_registry_unavailable", &error.to_string()),
+        };
+    }
+
     if request.method == "GET"
         && let Some(request_id) = parse_cooperative_operation_target(&request.target)
     {
@@ -1061,6 +1078,24 @@ mod tests {
             payload["operation"]["actor"],
             json!({"actorType": "agent", "actorId": "codex"})
         );
+        let active_request = HttpRequest {
+            method: "GET".to_owned(),
+            target: "/v1/cooperative-actions/aku-bridge/active".to_owned(),
+            authorization: Some(format!("Bearer {}", "a".repeat(64))),
+            body: Vec::new(),
+        };
+        let active = route(
+            &active_request,
+            &token,
+            &control,
+            Some(&manager),
+            &journal,
+            &logs,
+            &mut IdempotencyStore::default(),
+        );
+        assert_eq!(active.status, 200);
+        let active_payload: Value = serde_json::from_slice(&active.body).expect("active JSON");
+        assert!(active_payload["operation"].is_null());
         std::fs::remove_file(token_path).ok();
         std::fs::remove_file(journal_path).ok();
     }
