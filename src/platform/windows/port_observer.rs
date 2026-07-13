@@ -8,8 +8,8 @@ use std::slice;
 
 use windows_sys::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, NO_ERROR};
 use windows_sys::Win32::NetworkManagement::IpHelper::{
-    GetExtendedTcpTable, MIB_TCP6ROW_OWNER_PID, MIB_TCP6TABLE_OWNER_PID, MIB_TCPROW_OWNER_PID,
-    MIB_TCPTABLE_OWNER_PID, TCP_TABLE_OWNER_PID_ALL,
+    GetExtendedTcpTable, MIB_TCP_STATE_LISTEN, MIB_TCP6ROW_OWNER_PID, MIB_TCP6TABLE_OWNER_PID,
+    MIB_TCPROW_OWNER_PID, MIB_TCPTABLE_OWNER_PID, TCP_TABLE_OWNER_PID_ALL,
 };
 use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6};
 
@@ -62,7 +62,7 @@ fn inspect_ipv4(port: u16, occupants: &mut Vec<PortOccupant>) -> Result<(), Port
     let rows = unsafe { slice::from_raw_parts(rows_pointer, count) };
     occupants.extend(
         rows.iter()
-            .filter(|row| decode_port(row.dwLocalPort) == port)
+            .filter(|row| is_listener_state(row.dwState) && decode_port(row.dwLocalPort) == port)
             .map(|row| PortOccupant::new(row.dwOwningPid, NetworkFamily::V4)),
     );
 
@@ -80,7 +80,7 @@ fn inspect_ipv6(port: u16, occupants: &mut Vec<PortOccupant>) -> Result<(), Port
     let rows = unsafe { slice::from_raw_parts(rows_pointer, count) };
     occupants.extend(
         rows.iter()
-            .filter(|row| decode_port(row.dwLocalPort) == port)
+            .filter(|row| is_listener_state(row.dwState) && decode_port(row.dwLocalPort) == port)
             .map(|row| PortOccupant::new(row.dwOwningPid, NetworkFamily::V6)),
     );
 
@@ -164,6 +164,10 @@ const fn decode_port(raw_port: u32) -> u16 {
     u16::from_be_bytes([first, second])
 }
 
+const fn is_listener_state(state: u32) -> bool {
+    state == MIB_TCP_STATE_LISTEN.cast_unsigned()
+}
+
 #[derive(Debug)]
 struct TableBuffer {
     storage: Vec<usize>,
@@ -216,13 +220,19 @@ mod tests {
 
     use crate::application::PortInspector;
 
-    use super::{WindowsPortInspector, decode_port};
+    use super::{WindowsPortInspector, decode_port, is_listener_state};
 
     const OBSERVATION_TIMEOUT: Duration = Duration::from_secs(2);
 
     #[test]
     fn decodes_windows_network_byte_order_port() {
         assert_eq!(decode_port(0x0000_901f), 8_080);
+    }
+
+    #[test]
+    fn only_listeners_block_a_service_port() {
+        assert!(is_listener_state(2));
+        assert!(!is_listener_state(11));
     }
 
     #[test]
