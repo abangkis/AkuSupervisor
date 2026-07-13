@@ -10,9 +10,11 @@ use std::time::Duration;
 use crate::adapters::config::{ConfigError, SupervisorConfig};
 use crate::adapters::config_path::ResolvedConfigPath;
 use crate::adapters::control_http::{ControlHttpError, ControlHttpServer};
+use crate::adapters::journal::{AuditedControl, FileJournal, FileJournalError};
 use crate::adapters::runtime_token::{RuntimeToken, RuntimeTokenError, resolve_token_path};
+use crate::adapters::service_logs::ServiceLogStore;
 use crate::application::{
-    RegistryBuildError, ServiceRegistry, ServiceSnapshot, StartOutcome, StopOutcome,
+    ControlAction, ControlMutationOutcome, RegistryBuildError, ServiceRegistry, ServiceSnapshot,
     SupervisorControl,
 };
 use crate::domain::{Actor, Reason};
@@ -51,19 +53,49 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
         crate::platform::windows::generate_control_token,
     )
     .map_err(ForegroundError::RuntimeToken)?;
+    crate::platform::windows::harden_runtime_token_permissions(&token_path)
+        .map_err(ForegroundError::TokenPermissions)?;
+    let runtime_directory = token_path
+        .parent()
+        .ok_or_else(|| ForegroundError::RuntimeLayout(token_path.clone()))?;
+    let journal_path = runtime_directory.join("supervisor.jsonl");
+    let runtime_services_directory = runtime_directory.join("services");
+    let journal = Arc::new(
+        FileJournal::open(
+            &journal_path,
+            [token.expose_for_authorization_header().to_owned()],
+        )
+        .map_err(ForegroundError::Journal)?,
+    );
     let registry = Arc::new(
         WindowsRegistry::new(
-            config.service_registrations(),
+            config.service_registrations_with_logs(&runtime_services_directory),
             WindowsProcessSpawner,
             WindowsPortInspector,
         )
         .map_err(ForegroundError::RegistryBuild)?,
     );
     let shutdown = ConsoleShutdown::install().map_err(ForegroundError::Console)?;
-    let control: Arc<dyn SupervisorControl> = registry.clone();
-    let mut control_server =
-        ControlHttpServer::start(&config.control.host, config.control.port, token, control)
-            .map_err(ForegroundError::ControlApi)?;
+    let registry_control: Arc<dyn SupervisorControl> = registry;
+    let audited = Arc::new(AuditedControl::new(
+        registry_control,
+        Arc::clone(&journal),
+        fingerprint.clone(),
+    ));
+    let control: Arc<dyn SupervisorControl> = audited;
+    let logs = Arc::new(ServiceLogStore::new(
+        &runtime_services_directory,
+        config.services.keys().cloned(),
+    ));
+    let mut control_server = ControlHttpServer::start(
+        &config.control.host,
+        config.control.port,
+        token,
+        Arc::clone(&control),
+        journal,
+        logs,
+    )
+    .map_err(ForegroundError::ControlApi)?;
 
     println!("AkuSupervisor {}", crate::VERSION);
     println!("Configuration: {}", config_path.display());
@@ -71,8 +103,10 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
     println!("Fingerprint: {fingerprint}");
     println!("Control API: http://{}", control_server.address());
     println!("Control token: {}", token_path.display());
+    println!("Lifecycle journal: {}", journal_path.display());
+    println!("Service logs: {}", runtime_services_directory.display());
     println!("Mode: visible interactive supervisor (Phase 3 local-control checkpoint)");
-    print_status(&registry);
+    print_status(control.as_ref());
     println!("{INTERACTIVE_HELP}");
 
     let (input_sender, input_receiver) = mpsc::channel();
@@ -85,7 +119,7 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
         }
         match input_receiver.recv_timeout(INPUT_POLL_INTERVAL) {
             Ok(InputEvent::Line(line)) => {
-                if handle_line(&registry, &line) {
+                if handle_line(control.as_ref(), &line) {
                     break;
                 }
             }
@@ -96,7 +130,7 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
     }
 
     let server_result = control_server.shutdown();
-    let cleanup_result = cleanup(&registry);
+    let cleanup_result = cleanup(control.as_ref());
     if let Err(error) = server_result {
         cleanup_result?;
         return Err(ForegroundError::ControlApi(error));
@@ -122,25 +156,31 @@ fn read_input(sender: &mpsc::Sender<InputEvent>) {
     sender.send(InputEvent::End).ok();
 }
 
-fn handle_line(registry: &WindowsRegistry, line: &str) -> bool {
+fn handle_line(control: &dyn SupervisorControl, line: &str) -> bool {
     match parse_interactive(line) {
-        Ok(InteractiveCommand::Status) => print_status(registry),
+        Ok(InteractiveCommand::Status) => print_status(control),
         Ok(InteractiveCommand::Start { service_id, reason }) => {
-            match registry.start(&service_id, Actor::UserCli, reason) {
-                Ok(StartOutcome::Started) => println!("started {service_id}"),
-                Ok(StartOutcome::AlreadyRunning) => println!("already running: {service_id}"),
+            match control.mutate(ControlAction::Start, &service_id, Actor::UserCli, reason) {
+                Ok(ControlMutationOutcome::Started) => println!("started {service_id}"),
+                Ok(ControlMutationOutcome::AlreadyRunning) => {
+                    println!("already running: {service_id}");
+                }
+                Ok(outcome) => println!("start completed for {service_id}: {outcome:?}"),
                 Err(error) => eprintln!("start failed for {service_id}: {error}"),
             }
         }
         Ok(InteractiveCommand::Stop { service_id, reason }) => {
-            match registry.stop(&service_id, Actor::UserCli, reason) {
-                Ok(StopOutcome::Stopped) => println!("stopped {service_id}"),
-                Ok(StopOutcome::AlreadyStopped) => println!("already stopped: {service_id}"),
+            match control.mutate(ControlAction::Stop, &service_id, Actor::UserCli, reason) {
+                Ok(ControlMutationOutcome::Stopped) => println!("stopped {service_id}"),
+                Ok(ControlMutationOutcome::AlreadyStopped) => {
+                    println!("already stopped: {service_id}");
+                }
+                Ok(outcome) => println!("stop completed for {service_id}: {outcome:?}"),
                 Err(error) => eprintln!("stop failed for {service_id}: {error}"),
             }
         }
         Ok(InteractiveCommand::Restart { service_id, reason }) => {
-            match registry.restart(&service_id, Actor::UserCli, reason) {
+            match control.mutate(ControlAction::Restart, &service_id, Actor::UserCli, reason) {
                 Ok(outcome) => println!("restart completed for {service_id}: {outcome:?}"),
                 Err(error) => eprintln!("restart failed for {service_id}: {error}"),
             }
@@ -152,8 +192,8 @@ fn handle_line(registry: &WindowsRegistry, line: &str) -> bool {
     false
 }
 
-fn print_status(registry: &WindowsRegistry) {
-    match registry.snapshots() {
+fn print_status(control: &dyn SupervisorControl) {
+    match control.snapshots() {
         Ok(snapshots) => {
             println!();
             println!("SERVICE              STATE       ROOT PID   OWNED PIDS       HOLD");
@@ -198,11 +238,18 @@ fn print_snapshot(snapshot: &ServiceSnapshot) {
     }
 }
 
-fn cleanup(registry: &WindowsRegistry) -> Result<(), ForegroundError> {
+fn cleanup(control: &dyn SupervisorControl) -> Result<(), ForegroundError> {
     let mut failures = Vec::new();
-    for service_id in registry.service_ids() {
+    let service_ids = control
+        .snapshots()
+        .map_err(|error| ForegroundError::Cleanup(vec![error.to_string()]))?
+        .into_iter()
+        .map(|snapshot| snapshot.id)
+        .collect::<Vec<_>>();
+    for service_id in service_ids {
         let reason = Reason::new("visible supervisor shutdown").expect("static reason is valid");
-        if let Err(error) = registry.stop(&service_id, Actor::UserCli, reason) {
+        if let Err(error) = control.mutate(ControlAction::Stop, &service_id, Actor::UserCli, reason)
+        {
             failures.push(format!("{service_id}: {error}"));
         }
     }
@@ -273,9 +320,12 @@ enum InputEvent {
 #[derive(Debug)]
 pub enum ForegroundError {
     ReadConfig { path: PathBuf, source: io::Error },
+    RuntimeLayout(PathBuf),
     Config(ConfigError),
     RegistryBuild(RegistryBuildError),
     RuntimeToken(RuntimeTokenError),
+    TokenPermissions(crate::platform::windows::TokenPermissionError),
+    Journal(FileJournalError),
     ControlApi(ControlHttpError),
     Console(ConsoleShutdownError),
     Input(io::Error),
@@ -288,9 +338,16 @@ impl fmt::Display for ForegroundError {
             Self::ReadConfig { path, source } => {
                 write!(formatter, "failed to read {}: {source}", path.display())
             }
+            Self::RuntimeLayout(path) => write!(
+                formatter,
+                "runtime token path has no parent directory: {}",
+                path.display()
+            ),
             Self::Config(error) => error.fmt(formatter),
             Self::RegistryBuild(error) => error.fmt(formatter),
             Self::RuntimeToken(error) => error.fmt(formatter),
+            Self::TokenPermissions(error) => error.fmt(formatter),
+            Self::Journal(error) => error.fmt(formatter),
             Self::ControlApi(error) => error.fmt(formatter),
             Self::Console(error) => error.fmt(formatter),
             Self::Input(error) => write!(formatter, "interactive input failed: {error}"),

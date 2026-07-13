@@ -6,6 +6,7 @@ use std::process::ExitCode;
 
 use crate::VERSION;
 use crate::adapters::control_http::ApiActor;
+use crate::adapters::service_logs::LogStream;
 use crate::application::ControlAction;
 
 const HELP: &str = "AkuSupervisor - local development service supervisor\n\n\
@@ -15,7 +16,9 @@ Usage:\n\
   aku-supervisor run\n\
   aku-supervisor run --config <path>\n\
   aku-supervisor status [--config <path>]\n\
-  aku-supervisor <start|stop|restart> <service> --reason <text> [--actor <user|codex>] [--config <path>]\n\
+  aku-supervisor events [--after <sequence>] [--limit <n>] [--config <path>]\n\
+  aku-supervisor logs <service> [--stream <stdout|stderr>] [--tail <n>] [--config <path>]\n\
+  aku-supervisor <start|stop|restart> <service> --reason <text> [--actor <user|codex>] [--request-id <id>] [--config <path>]\n\
   aku-supervisor --help\n\
   aku-supervisor --version\n\n\
 Without --config, AkuSupervisor checks AKU_SUPERVISOR_CONFIG and then the default user configuration.";
@@ -33,11 +36,23 @@ enum RemoteCommand {
     Status {
         config: Option<PathBuf>,
     },
+    Events {
+        after: u64,
+        limit: usize,
+        config: Option<PathBuf>,
+    },
+    Logs {
+        service_id: String,
+        stream: LogStream,
+        tail: usize,
+        config: Option<PathBuf>,
+    },
     Mutate {
         action: ControlAction,
         service_id: String,
         reason: String,
         actor: ApiActor,
+        request_id: Option<String>,
         config: Option<PathBuf>,
     },
 }
@@ -78,6 +93,8 @@ fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, Strin
             })
         }
         [status, rest @ ..] if status == "status" => parse_remote_status(rest),
+        [events, rest @ ..] if events == "events" => parse_remote_events(rest),
+        [logs, rest @ ..] if logs == "logs" => parse_remote_logs(rest),
         [action, rest @ ..] if action == "start" || action == "stop" || action == "restart" => {
             parse_remote_mutation(action, rest)
         }
@@ -96,6 +113,92 @@ fn parse_remote_status(arguments: &[OsString]) -> Result<Command, String> {
         _ => return Err("status accepts only an optional --config <path>".to_owned()),
     };
     Ok(Command::Remote(RemoteCommand::Status { config }))
+}
+
+fn parse_remote_events(arguments: &[OsString]) -> Result<Command, String> {
+    let mut after = 0_u64;
+    let mut limit = 50_usize;
+    let mut config = None;
+    let mut index = 0;
+    while index < arguments.len() {
+        let flag = &arguments[index];
+        let value = arguments
+            .get(index + 1)
+            .ok_or_else(|| format!("{} requires a value", flag.to_string_lossy()))?;
+        match flag.to_str() {
+            Some("--after") => {
+                after = value
+                    .to_str()
+                    .and_then(|value| value.parse().ok())
+                    .ok_or_else(|| "--after must be a non-negative integer".to_owned())?;
+            }
+            Some("--limit") => {
+                limit = value
+                    .to_str()
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .filter(|value| (1..=200).contains(value))
+                    .ok_or_else(|| "--limit must be between 1 and 200".to_owned())?;
+            }
+            Some("--config") if config.is_none() => config = Some(PathBuf::from(value)),
+            Some("--config") => return Err("duplicate option: --config".to_owned()),
+            _ => return Err(format!("unsupported option: {}", flag.to_string_lossy())),
+        }
+        index += 2;
+    }
+    Ok(Command::Remote(RemoteCommand::Events {
+        after,
+        limit,
+        config,
+    }))
+}
+
+fn parse_remote_logs(arguments: &[OsString]) -> Result<Command, String> {
+    let service_id = arguments
+        .first()
+        .and_then(|value| value.to_str())
+        .filter(|value| {
+            !value.is_empty()
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        })
+        .ok_or_else(|| "valid service ID is required".to_owned())?
+        .to_owned();
+    let mut stream = LogStream::Stdout;
+    let mut tail = 100_usize;
+    let mut config = None;
+    let mut index = 1;
+    while index < arguments.len() {
+        let flag = &arguments[index];
+        let value = arguments
+            .get(index + 1)
+            .ok_or_else(|| format!("{} requires a value", flag.to_string_lossy()))?;
+        match flag.to_str() {
+            Some("--stream") => {
+                stream = value
+                    .to_str()
+                    .and_then(LogStream::parse)
+                    .ok_or_else(|| "--stream must be stdout or stderr".to_owned())?;
+            }
+            Some("--tail") => {
+                tail = value
+                    .to_str()
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .filter(|value| (1..=1_000).contains(value))
+                    .ok_or_else(|| "--tail must be between 1 and 1000".to_owned())?;
+            }
+            Some("--config") if config.is_none() => config = Some(PathBuf::from(value)),
+            Some("--config") => return Err("duplicate option: --config".to_owned()),
+            _ => return Err(format!("unsupported option: {}", flag.to_string_lossy())),
+        }
+        index += 2;
+    }
+    Ok(Command::Remote(RemoteCommand::Logs {
+        service_id,
+        stream,
+        tail,
+        config,
+    }))
 }
 
 fn parse_remote_mutation(action: &OsString, arguments: &[OsString]) -> Result<Command, String> {
@@ -118,6 +221,7 @@ fn parse_remote_mutation(action: &OsString, arguments: &[OsString]) -> Result<Co
 
     let mut reason = None;
     let mut actor = ApiActor::User;
+    let mut request_id = None;
     let mut config = None;
     let mut index = 1;
     while index < arguments.len() {
@@ -141,8 +245,22 @@ fn parse_remote_mutation(action: &OsString, arguments: &[OsString]) -> Result<Co
                     _ => return Err("actor must be user or codex".to_owned()),
                 };
             }
+            Some("--request-id") if request_id.is_none() => {
+                let value = value
+                    .to_str()
+                    .ok_or_else(|| "request ID must be UTF-8".to_owned())?;
+                if value.is_empty()
+                    || value.len() > 128
+                    || !value.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':')
+                    })
+                {
+                    return Err("request ID must be 1-128 URL-safe ASCII characters".to_owned());
+                }
+                request_id = Some(value.to_owned());
+            }
             Some("--config") if config.is_none() => config = Some(PathBuf::from(value)),
-            Some("--reason" | "--config") => {
+            Some("--reason" | "--request-id" | "--config") => {
                 return Err(format!("duplicate option: {}", flag.to_string_lossy()));
             }
             _ => return Err(format!("unsupported option: {}", flag.to_string_lossy())),
@@ -161,6 +279,7 @@ fn parse_remote_mutation(action: &OsString, arguments: &[OsString]) -> Result<Co
         service_id,
         reason,
         actor,
+        request_id,
         config,
     }))
 }
@@ -205,7 +324,10 @@ fn remote_request(command: RemoteCommand) -> Result<(), String> {
     use crate::adapters::runtime_token::{RuntimeToken, resolve_token_path};
 
     let explicit_config = match &command {
-        RemoteCommand::Status { config } | RemoteCommand::Mutate { config, .. } => config.clone(),
+        RemoteCommand::Status { config }
+        | RemoteCommand::Events { config, .. }
+        | RemoteCommand::Logs { config, .. }
+        | RemoteCommand::Mutate { config, .. } => config.clone(),
     };
     let resolved = resolve_config_path(explicit_config).map_err(|error| error.to_string())?;
     let source = fs::read_to_string(resolved.path())
@@ -220,11 +342,33 @@ fn remote_request(command: RemoteCommand) -> Result<(), String> {
 
     let (method, target, body) = match command {
         RemoteCommand::Status { .. } => ("GET", "/v1/services".to_owned(), None),
+        RemoteCommand::Events { after, limit, .. } => (
+            "GET",
+            format!("/v1/events?after={after}&limit={limit}"),
+            None,
+        ),
+        RemoteCommand::Logs {
+            service_id,
+            stream,
+            tail,
+            ..
+        } => (
+            "GET",
+            format!(
+                "/v1/services/{service_id}/logs?stream={}&tail={tail}",
+                match stream {
+                    LogStream::Stdout => "stdout",
+                    LogStream::Stderr => "stderr",
+                }
+            ),
+            None,
+        ),
         RemoteCommand::Mutate {
             action,
             service_id,
             reason,
             actor,
+            request_id,
             ..
         } => {
             let action = match action {
@@ -235,7 +379,11 @@ fn remote_request(command: RemoteCommand) -> Result<(), String> {
             (
                 "POST",
                 format!("/v1/services/{service_id}/{action}"),
-                Some(json!({ "actor": actor, "reason": reason })),
+                Some(json!({
+                    "actor": actor,
+                    "reason": reason,
+                    "requestId": request_id
+                })),
             )
         }
     };
@@ -305,7 +453,43 @@ mod tests {
                 service_id: "akusidecar".to_owned(),
                 reason: "source changed".to_owned(),
                 actor: ApiActor::Codex,
+                request_id: None,
                 config: Some(PathBuf::from("services.json")),
+            }))
+        );
+    }
+
+    #[test]
+    fn events_and_idempotency_arguments_are_bounded() {
+        assert!(parse(args(&["events", "--limit", "0"])).is_err());
+        assert_eq!(
+            parse(args(&["events", "--after", "7", "--limit", "20"])),
+            Ok(Command::Remote(RemoteCommand::Events {
+                after: 7,
+                limit: 20,
+                config: None,
+            }))
+        );
+        assert!(
+            parse(args(&[
+                "start",
+                "api",
+                "--reason",
+                "retry",
+                "--request-id",
+                "contains space",
+            ]))
+            .is_err()
+        );
+        assert_eq!(
+            parse(args(
+                &["logs", "api", "--stream", "stderr", "--tail", "25",]
+            )),
+            Ok(Command::Remote(RemoteCommand::Logs {
+                service_id: "api".to_owned(),
+                stream: crate::adapters::service_logs::LogStream::Stderr,
+                tail: 25,
+                config: None,
             }))
         );
     }

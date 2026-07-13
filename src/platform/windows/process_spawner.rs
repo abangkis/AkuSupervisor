@@ -17,6 +17,6 @@ impl ProcessTreeSpawner for WindowsProcessSpawner {
             .args(launch.args())
             .current_dir(launch.cwd())
             .envs(launch.environment());
-        OwnedProcessTree::spawn(&mut command)
+        OwnedProcessTree::spawn_with_logs(&mut command, launch.stdout_log(), launch.stderr_log())
     }
 }

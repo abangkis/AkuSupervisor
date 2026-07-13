@@ -34,6 +34,10 @@ pub enum ControlMutationOutcome {
 pub enum ControlErrorKind {
     ServiceNotFound,
     Unauthorized,
+    PortConflictExternal,
+    SpawnFailed,
+    ShutdownTimeout,
+    OwnershipLost,
     Internal,
 }
 
@@ -45,6 +49,14 @@ pub struct ControlError {
 }
 
 impl ControlError {
+    #[must_use]
+    pub(crate) fn internal(message: impl Into<String>) -> Self {
+        Self {
+            kind: ControlErrorKind::Internal,
+            message: message.into(),
+        }
+    }
+
     #[must_use]
     pub const fn kind(&self) -> ControlErrorKind {
         self.kind
@@ -142,11 +154,29 @@ where
     let kind = match &error {
         RegistryError::ServiceNotFound(_) => ControlErrorKind::ServiceNotFound,
         RegistryError::Unauthorized(_) => ControlErrorKind::Unauthorized,
+        RegistryError::Runtime(super::ServiceRuntimeError::Start(
+            super::BackendOperationError::PortConflict { .. },
+        )) => ControlErrorKind::PortConflictExternal,
+        RegistryError::Runtime(super::ServiceRuntimeError::Start(
+            super::BackendOperationError::Process(_),
+        )) => ControlErrorKind::SpawnFailed,
+        RegistryError::Runtime(super::ServiceRuntimeError::Stop(_)) => {
+            ControlErrorKind::ShutdownTimeout
+        }
+        RegistryError::Observation(_)
+        | RegistryError::Runtime(super::ServiceRuntimeError::Inspect(_)) => {
+            ControlErrorKind::OwnershipLost
+        }
         RegistryError::LockPoisoned
         | RegistryError::Transition(_)
         | RegistryError::InternalState
-        | RegistryError::Observation(_)
-        | RegistryError::Runtime(_) => ControlErrorKind::Internal,
+        | RegistryError::Runtime(
+            super::ServiceRuntimeError::Poisoned
+            | super::ServiceRuntimeError::Transition(_)
+            | super::ServiceRuntimeError::Start(super::BackendOperationError::PortInspection {
+                ..
+            }),
+        ) => ControlErrorKind::Internal,
     };
     ControlError {
         kind,

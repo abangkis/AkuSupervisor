@@ -85,7 +85,7 @@ not considered a portable guarantee.
 | Port diagnostics | IP Helper TCP tables | netlink or `/proc` adapter | `sysctl` or `libproc` adapter |
 | Supervisor shutdown | console handler | POSIX signal adapter | POSIX signal adapter |
 | Secure token entropy | CNG `BCryptGenRandom` | `getrandom(2)` or equivalent OS API | `SecRandomCopyBytes` or equivalent OS API |
-| Token-file permissions | restricted current-user DACL (hardening pending) | mode `0600` (future) | mode `0600` (future) |
+| Token-file permissions | protected current-user-only DACL | mode `0600` (future) | mode `0600` (future) |
 | HTTP control/client | shared `std::net` adapter | same shared adapter | same shared adapter |
 
 The Linux and macOS entries are design candidates, not implemented promises.

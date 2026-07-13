@@ -13,6 +13,8 @@ fn main() -> ExitCode {
 }
 
 fn root() -> ExitCode {
+    println!("process fixture root started");
+    eprintln!("process fixture stderr ready");
     let Ok(executable) = std::env::current_exe() else {
         return ExitCode::FAILURE;
     };

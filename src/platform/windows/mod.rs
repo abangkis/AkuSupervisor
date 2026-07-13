@@ -9,9 +9,11 @@ mod port_observer;
 mod process_spawner;
 mod process_tree;
 mod secure_random;
+mod token_permissions;
 
 pub use console_shutdown::{ConsoleShutdown, ConsoleShutdownError};
 pub use port_observer::{PortObserverError, WindowsPortInspector, inspect_tcp_port};
 pub use process_spawner::WindowsProcessSpawner;
 pub use process_tree::{OwnedProcessTree, ProcessTreeError};
 pub use secure_random::generate_control_token;
+pub use token_permissions::{TokenPermissionError, harden_runtime_token_permissions};

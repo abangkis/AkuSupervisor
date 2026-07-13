@@ -104,6 +104,21 @@ fn foreground_cli_runs_registered_lifecycle_and_cleans_up() {
     assert!(stdout.contains("stopped fixture"));
     assert!(stdout.contains("Owned service cleanup complete."));
     assert!(stderr.is_empty(), "unexpected supervisor error: {stderr}");
+    let runtime = config_directory.join(".runtime");
+    let journal = fs::read_to_string(runtime.join("supervisor.jsonl"))
+        .expect("read persisted lifecycle journal");
+    assert!(journal.lines().count() >= 7);
+    assert!(journal.contains("\"configFingerprint\":\"sha256:"));
+    assert!(
+        fs::read_to_string(runtime.join("services/fixture.stdout.log"))
+            .expect("read captured stdout")
+            .contains("process fixture root started")
+    );
+    assert!(
+        fs::read_to_string(runtime.join("services/fixture.stderr.log"))
+            .expect("read captured stderr")
+            .contains("process fixture stderr ready")
+    );
 }
 
 fn verify_remote_control(local_app_data: &std::path::Path) {
@@ -119,10 +134,30 @@ fn verify_remote_control(local_app_data: &std::path::Path) {
             "codex",
             "--reason",
             "remote integration start",
+            "--request-id",
+            "foreground-remote-start-1",
         ],
     );
     assert!(started.status.success(), "remote start failed: {started:?}");
     assert!(String::from_utf8_lossy(&started.stdout).contains("\"outcome\": \"started\""));
+    let replayed = run_client(
+        local_app_data,
+        &[
+            "start",
+            "fixture",
+            "--actor",
+            "codex",
+            "--reason",
+            "remote integration start",
+            "--request-id",
+            "foreground-remote-start-1",
+        ],
+    );
+    assert!(
+        replayed.status.success(),
+        "idempotent replay failed: {replayed:?}"
+    );
+    assert!(String::from_utf8_lossy(&replayed.stdout).contains("\"outcome\": \"started\""));
 
     let running = run_client(local_app_data, &["status"]);
     assert!(
@@ -130,6 +165,12 @@ fn verify_remote_control(local_app_data: &std::path::Path) {
         "remote status failed: {running:?}"
     );
     assert!(String::from_utf8_lossy(&running.stdout).contains("\"lifecycle\": \"running\""));
+    let logs = run_client(
+        local_app_data,
+        &["logs", "fixture", "--stream", "stdout", "--tail", "10"],
+    );
+    assert!(logs.status.success(), "remote logs failed: {logs:?}");
+    assert!(String::from_utf8_lossy(&logs.stdout).contains("process fixture root started"));
 
     let stopped = run_client(
         local_app_data,
@@ -150,6 +191,12 @@ fn verify_remote_control(local_app_data: &std::path::Path) {
     );
     assert_eq!(blocked.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&blocked.stderr).contains("HTTP 403"));
+
+    let events = run_client(local_app_data, &["events", "--limit", "20"]);
+    assert!(events.status.success(), "remote events failed: {events:?}");
+    let events = String::from_utf8_lossy(&events.stdout);
+    assert!(events.contains("\"sequence\": 1"));
+    assert!(events.contains("\"errorCategory\": \"unauthorized\""));
 }
 
 fn wait_for_control_client(local_app_data: &std::path::Path) -> std::process::Output {

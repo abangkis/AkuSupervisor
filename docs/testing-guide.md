@@ -159,9 +159,32 @@ After cleanup, the same command should report that those processes no longer
 exist. Do not substitute unrelated PIDs into any termination command; the demo
 itself only operates on its Job Object.
 
-## 5. Current limitation
+## 5. Gate 3 operational checks
 
-The local-control checkpoint does not yet expose persistent event retrieval,
-bounded log commands, request idempotency, or runtime health evaluation.
-AkuSidecar live validation remains Phase 4 and will include a real reasoning
-invocation, not only `/api/health`.
+With the visible supervisor running, use a second terminal:
+
+```powershell
+.\target\aku-supervisor.exe events --limit 20
+.\target\aku-supervisor.exe logs akusidecar --stream stdout --tail 100
+.\target\aku-supervisor.exe restart akusidecar --actor codex `
+  --reason "idempotency check" --request-id "manual-restart-1"
+```
+
+Repeating the last command with the same ID and body must replay its original
+response without creating another lifecycle event. Reusing that ID with a
+different reason must fail with HTTP `409`.
+
+The token file must have a protected current-user-only Windows DACL. The
+default suite verifies this in the normal host context because a restricted
+sandbox is not permitted to change file DACLs.
+
+Service output is captured beneath `.runtime/services`. Each active file is
+limited to 5 MB and keeps five rotated generations. `logs` reads only the
+active file and bounds output to 1,000 lines.
+
+## 6. Remaining runtime-health boundary
+
+AkuSidecar live validation passed with `/api/health`, a real `codex-sdk`
+reasoning invocation, hard restart, old-tree cleanup, and SQLite preservation.
+AkuSupervisor does not yet turn configured HTTP health into automatic
+lifecycle decisions; that remains outside the completed MVP gates.

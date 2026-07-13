@@ -1,3 +1,4 @@
+use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
@@ -12,7 +13,9 @@ use serde_json::{Value, json};
 use crate::application::{ControlAction, ControlErrorKind, SupervisorControl};
 use crate::domain::{Actor, Reason};
 
+use super::journal::FileJournal;
 use super::runtime_token::RuntimeToken;
+use super::service_logs::{LogStream, ServiceLogError, ServiceLogStore};
 
 const MAX_HEADER_BYTES: usize = 16 * 1024;
 const MAX_BODY_BYTES: usize = 4 * 1024;
@@ -55,6 +58,8 @@ impl ControlHttpServer {
         port: u16,
         token: RuntimeToken,
         control: Arc<dyn SupervisorControl>,
+        journal: Arc<FileJournal>,
+        logs: Arc<ServiceLogStore>,
     ) -> Result<Self, ControlHttpError> {
         let listener = TcpListener::bind((host, port)).map_err(ControlHttpError::Bind)?;
         listener
@@ -65,7 +70,16 @@ impl ControlHttpServer {
         let thread_stop = Arc::clone(&stop);
         let thread = thread::Builder::new()
             .name("aku-supervisor-control".to_owned())
-            .spawn(move || serve(&listener, &token, control.as_ref(), &thread_stop))
+            .spawn(move || {
+                serve(
+                    &listener,
+                    &token,
+                    control.as_ref(),
+                    &journal,
+                    &logs,
+                    &thread_stop,
+                )
+            })
             .map_err(ControlHttpError::SpawnThread)?;
         Ok(Self {
             address,
@@ -118,14 +132,19 @@ fn serve(
     listener: &TcpListener,
     token: &RuntimeToken,
     control: &dyn SupervisorControl,
+    journal: &FileJournal,
+    logs: &ServiceLogStore,
     stop: &AtomicBool,
 ) -> Result<(), ControlHttpError> {
+    let mut idempotency = IdempotencyStore::default();
     while !stop.load(Ordering::Acquire) {
         match listener.accept() {
             Ok((mut stream, _peer)) => {
                 stream.set_read_timeout(Some(IO_TIMEOUT)).ok();
                 stream.set_write_timeout(Some(IO_TIMEOUT)).ok();
-                if let Err(error) = handle_connection(&mut stream, token, control) {
+                if let Err(error) =
+                    handle_connection(&mut stream, token, control, journal, logs, &mut idempotency)
+                {
                     let response = error_response(400, "bad_request", &error.to_string());
                     write_response(&mut stream, &response).ok();
                 }
@@ -143,13 +162,23 @@ fn handle_connection(
     stream: &mut TcpStream,
     token: &RuntimeToken,
     control: &dyn SupervisorControl,
+    journal: &FileJournal,
+    logs: &ServiceLogStore,
+    idempotency: &mut IdempotencyStore,
 ) -> Result<(), RequestError> {
     let request = read_request(stream)?;
-    let response = route(&request, token, control);
+    let response = route(&request, token, control, journal, logs, idempotency);
     write_response(stream, &response).map_err(RequestError::Write)
 }
 
-fn route(request: &HttpRequest, token: &RuntimeToken, control: &dyn SupervisorControl) -> Response {
+fn route(
+    request: &HttpRequest,
+    token: &RuntimeToken,
+    control: &dyn SupervisorControl,
+    journal: &FileJournal,
+    logs: &ServiceLogStore,
+    idempotency: &mut IdempotencyStore,
+) -> Response {
     if request.method == "GET" && request.target == "/v1/health" {
         return json_response(
             200,
@@ -164,6 +193,33 @@ fn route(request: &HttpRequest, token: &RuntimeToken, control: &dyn SupervisorCo
         return match control.snapshots() {
             Ok(services) => json_response(200, &json!({ "services": services })),
             Err(error) => error_response(500, "internal", error.message()),
+        };
+    }
+
+    if request.method == "GET"
+        && let Some((after, limit)) = parse_events_target(&request.target)
+    {
+        if !request_is_authorized(request, token) {
+            return error_response(401, "unauthorized", "valid bearer token required");
+        }
+        return match journal.events(after, limit) {
+            Ok(events) => json_response(200, &json!({ "events": events })),
+            Err(error) => error_response(500, "journal_unavailable", &error.to_string()),
+        };
+    }
+
+    if request.method == "GET"
+        && let Some((service_id, stream, tail)) = parse_logs_target(&request.target)
+    {
+        if !request_is_authorized(request, token) {
+            return error_response(401, "unauthorized", "valid bearer token required");
+        }
+        return match logs.tail(service_id, stream, tail) {
+            Ok(log) => json_response(200, &json!({ "log": log })),
+            Err(ServiceLogError::ServiceNotFound(_)) => {
+                error_response(404, "service_not_found", "unknown service")
+            }
+            Err(error) => error_response(500, "log_unavailable", &error.to_string()),
         };
     }
 
@@ -186,16 +242,63 @@ fn route(request: &HttpRequest, token: &RuntimeToken, control: &dyn SupervisorCo
     }
 
     if request.method == "POST" {
-        return route_mutation(request, token, control);
+        return route_mutation(request, token, control, idempotency);
     }
 
     error_response(404, "not_found", "route not found")
+}
+
+fn request_is_authorized(request: &HttpRequest, token: &RuntimeToken) -> bool {
+    request
+        .authorization
+        .as_deref()
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .is_some_and(|candidate| token.bearer_matches(candidate))
+}
+
+fn parse_logs_target(target: &str) -> Option<(&str, LogStream, usize)> {
+    let suffix = target.strip_prefix("/v1/services/")?;
+    let (service_id, query) = suffix.split_once("/logs?")?;
+    if service_id.is_empty() || service_id.contains('/') {
+        return None;
+    }
+    let mut stream = LogStream::Stdout;
+    let mut tail = 100_usize;
+    for field in query.split('&') {
+        let (name, value) = field.split_once('=')?;
+        match name {
+            "stream" => stream = LogStream::parse(value)?,
+            "tail" => tail = value.parse::<usize>().ok()?.clamp(1, 1_000),
+            _ => return None,
+        }
+    }
+    Some((service_id, stream, tail))
+}
+
+fn parse_events_target(target: &str) -> Option<(u64, usize)> {
+    let query = target.strip_prefix("/v1/events")?;
+    if query.is_empty() {
+        return Some((0, 50));
+    }
+    let query = query.strip_prefix('?')?;
+    let mut after = 0_u64;
+    let mut limit = 50_usize;
+    for field in query.split('&') {
+        let (name, value) = field.split_once('=')?;
+        match name {
+            "after" => after = value.parse().ok()?,
+            "limit" => limit = value.parse::<usize>().ok()?.clamp(1, 200),
+            _ => return None,
+        }
+    }
+    Some((after, limit))
 }
 
 fn route_mutation(
     request: &HttpRequest,
     token: &RuntimeToken,
     control: &dyn SupervisorControl,
+    idempotency: &mut IdempotencyStore,
 ) -> Response {
     let Some(candidate) = request
         .authorization
@@ -215,12 +318,32 @@ fn route_mutation(
         Ok(mutation) => mutation,
         Err(_) => return error_response(400, "invalid_request", "invalid mutation body"),
     };
+    if let Some(request_id) = mutation.request_id.as_deref() {
+        if !valid_request_id(request_id) {
+            return error_response(
+                400,
+                "invalid_request_id",
+                "requestId must be 1-128 URL-safe ASCII characters",
+            );
+        }
+        match idempotency.lookup(request_id, &request.target, &request.body) {
+            IdempotencyLookup::Replay(response) => return response,
+            IdempotencyLookup::Conflict => {
+                return error_response(
+                    409,
+                    "idempotency_conflict",
+                    "requestId was already used for a different mutation",
+                );
+            }
+            IdempotencyLookup::Miss => {}
+        }
+    }
     let reason = match Reason::new(mutation.reason) {
         Ok(reason) => reason,
         Err(error) => return error_response(400, "invalid_reason", &error.to_string()),
     };
 
-    match control.mutate(action, service_id, mutation.actor.domain_actor(), reason) {
+    let response = match control.mutate(action, service_id, mutation.actor.domain_actor(), reason) {
         Ok(outcome) => json_response(
             200,
             &json!({
@@ -235,9 +358,28 @@ fn route_mutation(
             ControlErrorKind::Unauthorized => {
                 error_response(403, "operation_forbidden", error.message())
             }
+            ControlErrorKind::PortConflictExternal => {
+                error_response(409, "port_conflict_external", error.message())
+            }
+            ControlErrorKind::SpawnFailed => error_response(500, "spawn_failed", error.message()),
+            ControlErrorKind::ShutdownTimeout => {
+                error_response(500, "shutdown_timeout", error.message())
+            }
+            ControlErrorKind::OwnershipLost => {
+                error_response(500, "ownership_lost", error.message())
+            }
             ControlErrorKind::Internal => error_response(500, "internal", error.message()),
         },
+    };
+    if let Some(request_id) = mutation.request_id {
+        idempotency.store(
+            request_id,
+            request.target.clone(),
+            request.body.clone(),
+            response.clone(),
+        );
     }
+    response
 }
 
 fn parse_mutation_target(target: &str) -> Option<(&str, ControlAction)> {
@@ -257,10 +399,74 @@ fn parse_mutation_target(target: &str) -> Option<(&str, ControlAction)> {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct MutationRequest {
     actor: ApiActor,
     reason: String,
+    #[serde(default)]
+    request_id: Option<String>,
+}
+
+fn valid_request_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
+}
+
+const IDEMPOTENCY_CAPACITY: usize = 1_024;
+
+#[derive(Debug, Default)]
+struct IdempotencyStore {
+    entries: HashMap<String, CachedMutation>,
+    order: VecDeque<String>,
+}
+
+impl IdempotencyStore {
+    fn lookup(&self, request_id: &str, target: &str, body: &[u8]) -> IdempotencyLookup {
+        match self.entries.get(request_id) {
+            Some(cached) if cached.target == target && cached.body == body => {
+                IdempotencyLookup::Replay(cached.response.clone())
+            }
+            Some(_) => IdempotencyLookup::Conflict,
+            None => IdempotencyLookup::Miss,
+        }
+    }
+
+    fn store(&mut self, request_id: String, target: String, body: Vec<u8>, response: Response) {
+        if self.entries.contains_key(&request_id) {
+            return;
+        }
+        while self.entries.len() >= IDEMPOTENCY_CAPACITY {
+            if let Some(oldest) = self.order.pop_front() {
+                self.entries.remove(&oldest);
+            }
+        }
+        self.order.push_back(request_id.clone());
+        self.entries.insert(
+            request_id,
+            CachedMutation {
+                target,
+                body,
+                response,
+            },
+        );
+    }
+}
+
+#[derive(Debug)]
+enum IdempotencyLookup {
+    Replay(Response),
+    Conflict,
+    Miss,
+}
+
+#[derive(Debug)]
+struct CachedMutation {
+    target: String,
+    body: Vec<u8>,
+    response: Response,
 }
 
 #[derive(Debug)]
@@ -360,7 +566,7 @@ fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|window| window == needle)
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Response {
     status: u16,
     body: Vec<u8>,
@@ -387,6 +593,7 @@ fn write_response(stream: &mut TcpStream, response: &Response) -> io::Result<()>
         401 => "Unauthorized",
         403 => "Forbidden",
         404 => "Not Found",
+        409 => "Conflict",
         500 => "Internal Server Error",
         _ => "Unknown",
     };
@@ -584,6 +791,11 @@ mod tests {
         std::fs::remove_file(&token_path).ok();
         let token =
             RuntimeToken::load_or_create(&token_path, || Ok("a".repeat(64))).expect("create token");
+        let journal_path = token_path.with_extension("jsonl");
+        std::fs::remove_file(&journal_path).ok();
+        let journal =
+            FileJournal::open(&journal_path, Vec::<String>::new()).expect("create test journal");
+        let logs = ServiceLogStore::new(&std::env::temp_dir(), ["api".to_owned()]);
         let control = FakeControl::default();
         let request = HttpRequest {
             method: "POST".to_owned(),
@@ -592,10 +804,88 @@ mod tests {
             body: br#"{"actor":"codex","reason":"source changed"}"#.to_vec(),
         };
 
-        let response = route(&request, &token, &control);
+        let response = route(
+            &request,
+            &token,
+            &control,
+            &journal,
+            &logs,
+            &mut IdempotencyStore::default(),
+        );
 
         assert_eq!(response.status, 401);
         assert_eq!(*control.mutations.lock().expect("mutation lock"), 0);
         std::fs::remove_file(token_path).ok();
+        std::fs::remove_file(journal_path).ok();
+    }
+
+    #[test]
+    fn events_query_is_bounded_and_rejects_unknown_fields() {
+        assert_eq!(parse_events_target("/v1/events"), Some((0, 50)));
+        assert_eq!(
+            parse_events_target("/v1/events?after=7&limit=999"),
+            Some((7, 200))
+        );
+        assert!(parse_events_target("/v1/events?cursor=7").is_none());
+    }
+
+    #[test]
+    fn identical_request_id_replays_without_a_second_mutation() {
+        let token_path = std::env::temp_dir().join(format!(
+            "aku-supervisor-idempotency-token-{}",
+            std::process::id()
+        ));
+        let journal_path = token_path.with_extension("jsonl");
+        std::fs::remove_file(&token_path).ok();
+        std::fs::remove_file(&journal_path).ok();
+        let token =
+            RuntimeToken::load_or_create(&token_path, || Ok("a".repeat(64))).expect("create token");
+        let journal =
+            FileJournal::open(&journal_path, Vec::<String>::new()).expect("create journal");
+        let logs = ServiceLogStore::new(&std::env::temp_dir(), ["api".to_owned()]);
+        let control = FakeControl::default();
+        let request = HttpRequest {
+            method: "POST".to_owned(),
+            target: "/v1/services/api/start".to_owned(),
+            authorization: Some(format!("Bearer {}", "a".repeat(64))),
+            body: br#"{"actor":"codex","reason":"source changed","requestId":"same-1"}"#.to_vec(),
+        };
+        let mut idempotency = IdempotencyStore::default();
+
+        let first = route(
+            &request,
+            &token,
+            &control,
+            &journal,
+            &logs,
+            &mut idempotency,
+        );
+        let second = route(
+            &request,
+            &token,
+            &control,
+            &journal,
+            &logs,
+            &mut idempotency,
+        );
+        let conflicting = HttpRequest {
+            body: br#"{"actor":"codex","reason":"different","requestId":"same-1"}"#.to_vec(),
+            ..request
+        };
+        let conflict = route(
+            &conflicting,
+            &token,
+            &control,
+            &journal,
+            &logs,
+            &mut idempotency,
+        );
+
+        assert_eq!(first.status, 200);
+        assert_eq!(second.body, first.body);
+        assert_eq!(conflict.status, 409);
+        assert_eq!(*control.mutations.lock().expect("mutation lock"), 1);
+        std::fs::remove_file(token_path).ok();
+        std::fs::remove_file(journal_path).ok();
     }
 }

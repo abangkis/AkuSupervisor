@@ -10,3 +10,4 @@ pub mod control_http;
 pub mod foreground;
 pub mod journal;
 pub mod runtime_token;
+pub mod service_logs;

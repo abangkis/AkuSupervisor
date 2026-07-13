@@ -29,12 +29,12 @@ try {
         throw 'cargo is not available. Install Rust or restart Visual Studio after Rust installation.'
     }
 
-    Write-Host 'AkuSupervisor verification through the Phase 3 foreground checkpoint' -ForegroundColor Green
+    Write-Host 'AkuSupervisor verification through the Gate 4 AkuWorkspace MVP' -ForegroundColor Green
     Invoke-CargoChecked @('fmt', '--check')
     Invoke-CargoChecked @('clippy', '--all-targets', '--all-features', '--', '-D', 'warnings')
     Invoke-CargoChecked @('test', '--all-targets', '--all-features')
 
-    Write-Host "`nPASS: formatting, linting, contracts, process ownership, foreground lifecycle, concurrency, and cleanup." -ForegroundColor Green
+    Write-Host "`nPASS: formatting, linting, contracts, ACL, audit events, bounded logs, idempotency, ownership, foreground lifecycle, concurrency, and cleanup." -ForegroundColor Green
 }
 finally {
     Pop-Location

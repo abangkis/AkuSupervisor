@@ -256,6 +256,31 @@ impl SupervisorConfig {
             })
             .collect()
     }
+
+    /// Maps services to registrations whose output is captured beneath the
+    /// supplied runtime services directory.
+    #[must_use]
+    pub fn service_registrations_with_logs(
+        &self,
+        runtime_services_directory: &Path,
+    ) -> Vec<ServiceRegistration> {
+        self.services
+            .iter()
+            .map(|(service_id, service)| {
+                let launch = service.launch_spec().with_log_files(
+                    runtime_services_directory.join(format!("{service_id}.stdout.log")),
+                    runtime_services_directory.join(format!("{service_id}.stderr.log")),
+                );
+                ServiceRegistration::new(
+                    service_id.clone(),
+                    service.label.clone(),
+                    launch,
+                    service.ports.clone(),
+                    Duration::from_millis(service.shutdown_grace_ms),
+                )
+            })
+            .collect()
+    }
 }
 
 fn validate_directory(path: &Path, prefix: &str, issues: &mut Vec<ConfigIssue>) {

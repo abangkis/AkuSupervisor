@@ -2,12 +2,12 @@
 
 AkuSupervisor is a generic, configuration-driven supervisor for local development services.
 
-Roadmap Phase 2 and its Windows process-ownership safety gate are complete.
-Phase 3 now has a visible foreground CLI checkpoint with validated
-configuration, status, start, stop, restart, operator holds, and exit cleanup.
-It also exposes a loopback HTTP control checkpoint with bearer-authenticated
-mutations and a bounded client CLI for control from another terminal or Codex.
-Persistent journal/events, bounded logs, and request idempotency remain.
+Roadmap Gates 0 through 4 are complete, making this the first usable
+AkuWorkspace MVP. The visible foreground supervisor provides validated
+configuration, status, start, stop, restart, operator holds, exit cleanup,
+authenticated local control, durable lifecycle events, bounded service logs,
+and idempotent mutations. AkuSidecar has passed live start, reasoning, hard
+restart, old-tree cleanup, and SQLite-preservation validation.
 
 Rust is the implementation language, targeting `x86_64-pc-windows-msvc` for the
 initial AkuWorkspace pilot. Platform-neutral application ports and separate
@@ -55,6 +55,8 @@ cargo run -- --help
 cargo run
 cargo run -- --config C:\path\to\services.json
 cargo run -- status
+cargo run -- events --limit 20
+cargo run -- logs akusidecar --stream stdout --tail 100
 cargo run -- restart akusidecar --actor codex --reason "source changed"
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
@@ -81,13 +83,17 @@ continues running visibly:
 cargo run -- status
 cargo run -- start akusidecar --reason "manual development start"
 cargo run -- restart akusidecar --actor codex --reason "backend source changed"
+cargo run -- events --after 0 --limit 20
+cargo run -- logs akusidecar --stream stderr --tail 100
 cargo run -- stop akusidecar --reason "manual development stop"
 ```
 
 `user` is the default client actor. Codex must pass `--actor codex`. Every
 mutation requires an explicit reason and can select only a service already
 registered in configuration; executable paths and arguments are never accepted
-by the control protocol. A user stop creates a hold that blocks a later Codex
+by the control protocol. Use `--request-id <id>` when a caller may retry a
+mutation; an identical retry replays the original response, while reusing the
+ID for different input is rejected. A user stop creates a hold that blocks a later Codex
 start or restart until a user explicitly starts or restarts the service.
 
 Without `--config`, AkuSupervisor resolves configuration in this order:
@@ -100,10 +106,26 @@ an empty configuration. On successful startup, the terminal prints the
 absolute configuration path and whether it came from `--config`,
 `AKU_SUPERVISOR_CONFIG`, or the default user location.
 
-Startup also prints the loopback API address and token-file path. A 256-bit
-token is generated on first startup using Windows CNG. The token value is never
-printed and must not be pasted into commands; the client reads it from the
-configured runtime file.
+Startup also prints the loopback API address, token-file path, lifecycle
+journal, and service-log directory. A 256-bit token is generated on first
+startup using Windows CNG and its file receives a protected current-user-only
+DACL. The token value is never printed and must not be pasted into commands;
+the client reads it from the configured runtime file.
+
+Runtime artifacts use this layout:
+
+```text
+.runtime/
+  control-token
+  supervisor.jsonl
+  services/
+    akusidecar.stdout.log
+    akusidecar.stderr.log
+```
+
+Each output stream rotates continuously at 5 MB and retains five generations.
+The `events` command returns at most 200 records per request; `logs` returns at
+most 1,000 lines from the active generation.
 
 The checked-in AkuWorkspace pilot profile is
 [`config/akuworkspace.services.json`](config/akuworkspace.services.json). It
@@ -115,8 +137,9 @@ New-Item -ItemType Directory -Force "$env:LOCALAPPDATA\AkuSupervisor"
 Copy-Item .\config\akuworkspace.services.json "$env:LOCALAPPDATA\AkuSupervisor\services.json"
 ```
 
-The profile's HTTP JSON health contract is validated as configuration, but the
-current Phase 3 foreground checkpoint does not yet evaluate health at runtime.
+The profile's HTTP JSON health contract is validated as configuration. Runtime
+health evaluation inside AkuSupervisor remains a later enhancement; Gate 4 used
+the declared endpoint plus one real AkuSidecar reasoning invocation.
 
 ## Project documents
 

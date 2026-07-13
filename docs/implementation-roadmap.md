@@ -166,7 +166,7 @@ live Job Object owner; observed PIDs and ports have no termination API.
 
 ### Phase 3 - Visible CLI and local control API
 
-Status: **In progress - authenticated local-control checkpoint complete**
+Status: **Completed - Gate 3 passed**
 
 Current checkpoint:
 
@@ -196,8 +196,13 @@ Current checkpoint:
   later Codex start through the HTTP boundary;
 - verified: shared HTTP, client, token, and application control code contains
   no Windows implementation import;
-- remaining: persistent journal/events, bounded service logs, token-file ACL
-  hardening, and request idempotency.
+- complete: persistent monotonic JSONL journal and bounded `events` retrieval;
+- complete: continuously rotated per-service stdout/stderr logs and bounded
+  `logs` retrieval;
+- complete: protected current-user-only token-file DACL through the Windows
+  security adapter; and
+- complete: bounded request IDs replay identical mutations and reject reuse
+  with different input.
 
 Deliverables:
 
@@ -220,7 +225,19 @@ Gate 3:
 
 ### Phase 4 - AkuSidecar live validation
 
-Status: **Pending Gate 3**
+Status: **Completed - Gate 4 passed on 2026-07-14**
+
+Live evidence:
+
+- AkuSidecar `0.5.13` started under the authenticated local client;
+- its port `47821` listener PID was a member of the supervisor-owned Job Object;
+- `/api/health` returned `status=ok` and `provider=codex-sdk`;
+- a synthetic bounded run completed a real `candidate_evaluation` with
+  `gpt-5.6-terra` at high reasoning effort;
+- restart removed every PID from the old npm/cmd/watcher/server tree and
+  produced a disjoint owned tree; and
+- SQLite remained healthy with integrity `ok`, zero foreign-key violations,
+  unchanged table counts, and the completed validation run still readable.
 
 Deliverables:
 

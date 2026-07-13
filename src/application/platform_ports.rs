@@ -16,6 +16,8 @@ pub struct LaunchSpec {
     args: Vec<OsString>,
     cwd: PathBuf,
     environment: BTreeMap<OsString, OsString>,
+    stdout_log: Option<PathBuf>,
+    stderr_log: Option<PathBuf>,
 }
 
 impl LaunchSpec {
@@ -34,7 +36,20 @@ impl LaunchSpec {
                 .into_iter()
                 .map(|(key, value)| (key.into(), value.into()))
                 .collect(),
+            stdout_log: None,
+            stderr_log: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_log_files(
+        mut self,
+        stdout_log: impl Into<PathBuf>,
+        stderr_log: impl Into<PathBuf>,
+    ) -> Self {
+        self.stdout_log = Some(stdout_log.into());
+        self.stderr_log = Some(stderr_log.into());
+        self
     }
 
     #[must_use]
@@ -56,6 +71,16 @@ impl LaunchSpec {
         self.environment
             .iter()
             .map(|(key, value)| (key.as_os_str(), value.as_os_str()))
+    }
+
+    #[must_use]
+    pub fn stdout_log(&self) -> Option<&Path> {
+        self.stdout_log.as_deref()
+    }
+
+    #[must_use]
+    pub fn stderr_log(&self) -> Option<&Path> {
+        self.stderr_log.as_deref()
     }
 }
 
