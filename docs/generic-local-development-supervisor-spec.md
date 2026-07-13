@@ -64,7 +64,7 @@ The user starts one visible process:
 
 ```powershell
 cd <supervisor-project>
-npm run dev -- --config C:\path\to\local-dev-services.json
+cargo run -- --config C:\path\to\local-dev-services.json
 ```
 
 The terminal prints:
@@ -127,28 +127,36 @@ flowchart LR
 
 The supervisor is the only component allowed to mutate the lifecycle of processes it started. A port observation is diagnostic evidence, not ownership evidence.
 
-## 7. Proposed project shape
+## 7. Project shape
 
-The initial implementation should be an independent Node.js project so it can be used across workspaces without importing AkuBrowser or Geofu code.
+AkuSupervisor is an independent Rust project. Domain and application code are
+platform-neutral; operating-system process ownership is implemented through
+separate adapters.
 
 ```text
 AkuSupervisor/
-  package.json
-  src/
-    cli.mjs
-    config.mjs
-    supervisor.mjs
-    process-tree.mjs
-    health.mjs
-    control-server.mjs
-    journal.mjs
-  test/
+  Cargo.toml
+  docs/
   schemas/
-    service-config.schema.json
+  src/
+    domain/
+    application/
+      platform_ports.rs
+      service_runtime.rs
+    adapters/
+    platform/
+      windows/
+      linux/
+      macos/
+    cli.rs
+    main.rs
+  tests/
   README.md
 ```
 
-The repository name is `AkuSupervisor`.
+The repository name is `AkuSupervisor`. Windows is the first implemented
+backend; Linux and macOS adapter boundaries are reserved without weakening the
+Windows MVP safety requirements.
 
 ## 8. Configuration contract
 

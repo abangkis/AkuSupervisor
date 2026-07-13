@@ -38,7 +38,10 @@ flowchart TB
     UI["Future human dashboard"] --> APP
     MCP["Deferred MCP adapter"] -.-> APP
     APP --> CFG["Validated configuration"]
-    APP --> WIN["Windows process ownership"]
+    APP --> PORTS["Platform-neutral ports"]
+    PORTS --> WIN["Windows adapter"]
+    PORTS -. future .-> LINUX["Linux adapter"]
+    PORTS -. future .-> MAC["macOS adapter"]
     APP --> HEALTH["Health checks"]
     APP --> JOURNAL["Journal and logs"]
     WIN --> SIDE["AkuSidecar process tree"]
@@ -135,6 +138,8 @@ Current checkpoint:
   starts and retains ownership after a failed stop; and
 - verified: the Ctrl+C handler uses a lock-free request flag, while a targeted
   console-interruption fixture proves cleanup finishes before supervisor exit.
+- complete: platform-neutral process, port, and shutdown contracts isolate the
+  application layer from Windows implementation types.
 
 Deliverables:
 
@@ -275,6 +280,29 @@ Potential future targets:
 
 Begin with exactly one independently runnable service profile. Add the remaining profiles only after the first portability proof passes without project-specific changes to the lifecycle core.
 
+### Phase 9 - Linux and macOS platform adapters
+
+Status: **Boundary prepared; implementation deferred until the Windows MVP is stable**
+
+The shared contracts and proposed adapter strategies are maintained in
+[Platform Portability Boundary](platform-portability.md).
+
+Deliverables:
+
+- implement Linux and macOS process ownership behind `ProcessTreeSpawner` and
+  `ManagedProcessTree` without changing lifecycle application code;
+- implement platform-native port diagnostics and shutdown signals;
+- add native CI jobs and process-tree fixtures for each operating system;
+- prove unrelated-process and PID-reuse safety independently on each OS; and
+- document any capability difference rather than weakening the shared contract.
+
+Gate 9:
+
+- the application and domain layers compile unchanged on all three OS targets;
+- each native backend passes equivalent ownership, concurrency, port, and
+  shutdown tests; and
+- no backend claims support by falling back to process-name or port-based kill.
+
 ## 5. Cross-phase testing strategy
 
 Every phase must preserve:
@@ -282,6 +310,8 @@ Every phase must preserve:
 - unit tests for domain rules;
 - integration fixtures for process behavior;
 - Windows-specific tests for ownership and shutdown;
+- architecture tests that reject OS imports in domain and application code;
+- native Linux and macOS jobs when their adapters are implemented;
 - an unrelated-process safety test;
 - authentication and redaction regression tests;
 - deterministic journal assertions; and
@@ -299,6 +329,7 @@ The following items require an explicit roadmap update before implementation:
 - automatic Windows login startup;
 - tray application or Windows Service;
 - Geofu-family validation;
+- Linux and macOS platform implementations;
 - remote network access;
 - dependency graphs or service groups;
 - database reset operations;
