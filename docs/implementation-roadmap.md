@@ -131,7 +131,9 @@ Current checkpoint:
 - complete: read-only IPv4/IPv6 TCP port-to-PID diagnostics;
 - verified: owned parent and child stop while an unrelated process remains;
 - verified: port inspection reports the occupant without disrupting it; and
-- remaining: end-to-end Ctrl+C handling and concurrent lifecycle serialization.
+- complete: per-service lifecycle serialization prevents duplicate concurrent
+  starts and retains ownership after a failed stop; and
+- remaining: end-to-end Ctrl+C handling.
 
 Deliverables:
 

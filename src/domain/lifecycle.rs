@@ -21,6 +21,7 @@ impl LifecycleState {
         matches!(
             (self, next),
             (Self::Stopped | Self::Failed, Self::Starting)
+                | (Self::Failed, Self::Stopping)
                 | (
                     Self::Starting,
                     Self::Running | Self::Unhealthy | Self::Failed | Self::Stopping
