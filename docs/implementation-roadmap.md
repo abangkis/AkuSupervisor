@@ -75,7 +75,7 @@ Suggested baseline commands:
 ```text
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets
+cargo test --all-targets --all-features
 ```
 
 Gate 0:
@@ -119,7 +119,7 @@ Gate 1:
 
 ### Phase 2 - Windows process ownership vertical slice
 
-Status: **Pending Gate 1**
+Status: **In progress**
 
 Deliverables:
 

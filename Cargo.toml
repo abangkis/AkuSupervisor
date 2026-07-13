@@ -7,6 +7,10 @@ description = "Generic, configuration-driven supervisor for local development se
 license = "UNLICENSED"
 publish = false
 
+[features]
+default = []
+test-fixtures = []
+
 [lib]
 name = "aku_supervisor"
 path = "src/lib.rs"
@@ -15,10 +19,23 @@ path = "src/lib.rs"
 name = "aku-supervisor"
 path = "src/main.rs"
 
+[[bin]]
+name = "aku-supervisor-process-fixture"
+path = "tests/fixtures/process_tree.rs"
+required-features = ["test-fixtures"]
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Console",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
 
 [lints.rust]
 missing_debug_implementations = "warn"

@@ -35,7 +35,7 @@ AkuSupervisor/
 cargo run -- --help
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets
+cargo test --all-targets --all-features
 ```
 
 ## Project documents
