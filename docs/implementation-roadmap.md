@@ -87,7 +87,17 @@ Gate 0:
 
 ### Phase 1 - Domain model, configuration, and journal
 
-Status: **Pending Gate 0**
+Status: **Completed - Gate 1 passed**
+
+Completed checkpoint:
+
+- [x] Lifecycle states and legal-transition tests.
+- [x] Typed actor, reason, desired-state, and operator-hold policy.
+- [x] Versioned JSON parsing with duplicate service-ID rejection.
+- [x] Loopback, runtime-token, filesystem, health, and port validation.
+- [x] Stable SHA-256 configuration fingerprint.
+- [x] Deterministic JSONL journal contract and known-secret redaction.
+- [x] Checked-in JSON Schema aligned with the typed field names.
 
 Deliverables:
 

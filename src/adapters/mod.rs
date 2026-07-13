@@ -2,3 +2,6 @@
 //!
 //! The visible CLI is the first adapter. HTTP, journal persistence, and MCP are
 //! added only at their roadmap gates.
+
+pub mod config;
+pub mod journal;

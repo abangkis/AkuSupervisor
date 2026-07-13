@@ -2,7 +2,7 @@
 
 AkuSupervisor is a generic, configuration-driven supervisor for local development services on Windows.
 
-The Rust foundation is complete. The current binary exposes only help and version information; service lifecycle behavior begins in Roadmap Phase 1.
+The Rust foundation and Roadmap Phase 1 domain contracts are complete. The current binary still exposes only help and version information; process lifecycle execution begins in Roadmap Phase 2.
 
 Rust is the implementation language, targeting `x86_64-pc-windows-msvc` for the initial AkuWorkspace pilot.
 

@@ -2,6 +2,188 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://aku.local/schemas/service-config.schema.json",
   "title": "AkuSupervisor service configuration",
-  "description": "Placeholder for the version 1 configuration contract defined in the product specification.",
-  "type": "object"
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "control", "services"],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "control": {
+      "$ref": "#/$defs/control"
+    },
+    "services": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[a-z0-9-]+$"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/service"
+      }
+    }
+  },
+  "$defs": {
+    "control": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["host", "port", "tokenFile"],
+      "properties": {
+        "host": {
+          "const": "127.0.0.1"
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "tokenFile": {
+          "type": "string",
+          "pattern": "^\\.runtime[\\\\/][^/\\\\]+(?:[\\\\/][^/\\\\]+)*$"
+        }
+      }
+    },
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "label",
+        "cwd",
+        "command",
+        "health",
+        "restartPolicy",
+        "shutdownGraceMs"
+      ],
+      "properties": {
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cwd": {
+          "type": "string",
+          "minLength": 1
+        },
+        "command": {
+          "type": "string",
+          "minLength": 1
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "environment": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "health": {
+          "$ref": "#/$defs/health"
+        },
+        "ports": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65535
+          },
+          "uniqueItems": true,
+          "default": []
+        },
+        "restartPolicy": {
+          "enum": ["manual", "on-failure"]
+        },
+        "shutdownGraceMs": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "health": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type"],
+          "properties": {
+            "type": {
+              "const": "process"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "url",
+            "expectedStatus",
+            "timeoutMs",
+            "startupDeadlineMs"
+          ],
+          "properties": {
+            "type": {
+              "const": "http-status"
+            },
+            "url": {
+              "type": "string",
+              "pattern": "^https?://"
+            },
+            "expectedStatus": {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 599
+            },
+            "timeoutMs": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "startupDeadlineMs": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "url",
+            "timeoutMs",
+            "startupDeadlineMs",
+            "expect"
+          ],
+          "properties": {
+            "type": {
+              "const": "http-json"
+            },
+            "url": {
+              "type": "string",
+              "pattern": "^https?://"
+            },
+            "timeoutMs": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "startupDeadlineMs": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "expect": {
+              "type": "object",
+              "minProperties": 1,
+              "additionalProperties": {
+                "type": ["string", "number", "integer", "boolean", "null"]
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
 }
