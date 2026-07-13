@@ -219,6 +219,12 @@ and `Cargo.lock`, with a short debounce. Its rebuild sequence is:
 6. copy the staged build over the constant development executable;
 7. launch it and restore the previously running services.
 
+Before the first build, the watcher prints its selected `Cargo:` and `Rustc:`
+paths. It deliberately prefers the complete toolchain under
+`target/rustup-home/toolchains` over a `cargo` or `rustc` rustup shim on
+`PATH`. This prevents an incomplete user-level rustup selection from changing
+the repository's development compiler.
+
 The signal exists only when the watcher sets
 `AKU_SUPERVISOR_DEV_SHUTDOWN_FILE`. AkuSupervisor accepts only an absolute path
 whose filename is exactly `shutdown-request`, consumes at most 1 KiB, and uses

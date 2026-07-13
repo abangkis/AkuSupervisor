@@ -37,21 +37,27 @@ function Resolve-ConfigPath {
 }
 
 function Resolve-Cargo {
-    $command = Get-Command cargo -ErrorAction SilentlyContinue
-    if ($command) {
-        return $command.Source
-    }
-
+    # Prefer the project-local, complete toolchain. A rustup shim on PATH may
+    # exist while its selected toolchain is missing or only partially installed.
     $localToolchains = Join-Path $repository 'target\rustup-home\toolchains'
     if (Test-Path $localToolchains) {
         $candidate = Get-ChildItem $localToolchains -Directory |
             Sort-Object Name -Descending |
+            Where-Object {
+                (Test-Path (Join-Path $_.FullName 'bin\cargo.exe')) -and
+                (Test-Path (Join-Path $_.FullName 'bin\rustc.exe')) -and
+                (Test-Path (Join-Path $_.FullName 'lib\rustlib'))
+            } |
             ForEach-Object { Join-Path $_.FullName 'bin\cargo.exe' } |
-            Where-Object { Test-Path $_ } |
             Select-Object -First 1
         if ($candidate) {
             return $candidate
         }
+    }
+
+    $command = Get-Command cargo -CommandType Application -ErrorAction SilentlyContinue
+    if ($command) {
+        return $command.Source
     }
 
     $userCargo = Join-Path $HOME '.cargo\bin\cargo.exe'
@@ -59,6 +65,20 @@ function Resolve-Cargo {
         return $userCargo
     }
     throw 'cargo was not found on PATH, in the project-local toolchain, or under ~/.cargo/bin.'
+}
+
+function Assert-RustToolchain {
+    Write-Host "[watch] Cargo: $script:cargo" -ForegroundColor DarkGray
+    Write-Host "[watch] Rustc: $env:RUSTC" -ForegroundColor DarkGray
+
+    & $script:cargo --version
+    if ($LASTEXITCODE -ne 0) {
+        throw "Selected Cargo is not runnable: $script:cargo"
+    }
+    & $env:RUSTC --version
+    if ($LASTEXITCODE -ne 0) {
+        throw "Selected Rust compiler is not runnable: $env:RUSTC"
+    }
 }
 
 function Test-ControlPort {
@@ -213,7 +233,14 @@ try {
     if (Test-Path (Join-Path $toolchainBin 'rustc.exe')) {
         $env:RUSTC = Join-Path $toolchainBin 'rustc.exe'
         $env:RUSTFMT = Join-Path $toolchainBin 'rustfmt.exe'
+    } else {
+        $rustcCommand = Get-Command rustc -CommandType Application -ErrorAction SilentlyContinue
+        if (-not $rustcCommand) {
+            throw "rustc was not found beside the selected Cargo or on PATH: $script:cargo"
+        }
+        $env:RUSTC = $rustcCommand.Source
     }
+    Assert-RustToolchain
     $env:CARGO_TARGET_DIR = $buildDirectory
     $env:AKU_SUPERVISOR_DEV_SHUTDOWN_FILE = $shutdownRequest
 

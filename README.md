@@ -88,6 +88,8 @@ supervisor and its services untouched. It never replaces the normal
 Studio Code users can also run the `AkuSupervisor: development watcher` task.
 The watcher owns stdin; use the control CLI from a second terminal for
 `status`, `start`, `stop`, or `restart` while it is active.
+It prefers the complete project-local Rust toolchain over any rustup shim found
+on `PATH`, and prints the selected Cargo and Rust compiler paths before build.
 See the [testing guide](docs/testing-guide.md#7-development-watcher).
 
 For a visible process-tree and Ctrl+C cleanup demo, follow the
