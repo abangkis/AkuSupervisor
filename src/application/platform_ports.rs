@@ -109,7 +109,6 @@ pub trait ManagedProcessTree: Debug + Send {
 /// Platform adapter capable of creating an authoritative owned process tree.
 pub trait ProcessTreeSpawner: Debug + Send + Sync {
     type Process: ManagedProcessTree;
-    type Error: std::error::Error + Send + Sync + 'static;
 
     /// Creates an owned process tree from a validated launch contract.
     ///
@@ -117,7 +116,10 @@ pub trait ProcessTreeSpawner: Debug + Send + Sync {
     ///
     /// Returns a platform error if the ownership boundary cannot be active
     /// before the root process begins normal execution.
-    fn spawn(&self, launch: &LaunchSpec) -> Result<Self::Process, Self::Error>;
+    fn spawn(
+        &self,
+        launch: &LaunchSpec,
+    ) -> Result<Self::Process, <Self::Process as ManagedProcessTree>::Error>;
 }
 
 /// Platform-neutral network address family used in port diagnostics.

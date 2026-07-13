@@ -10,9 +10,8 @@ pub struct WindowsProcessSpawner;
 
 impl ProcessTreeSpawner for WindowsProcessSpawner {
     type Process = OwnedProcessTree;
-    type Error = ProcessTreeError;
 
-    fn spawn(&self, launch: &LaunchSpec) -> Result<Self::Process, Self::Error> {
+    fn spawn(&self, launch: &LaunchSpec) -> Result<Self::Process, ProcessTreeError> {
         let mut command = Command::new(launch.executable());
         command
             .args(launch.args())

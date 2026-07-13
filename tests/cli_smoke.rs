@@ -14,7 +14,7 @@ fn help_is_visible_and_bounded() {
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).expect("help output should be UTF-8");
     assert!(stdout.contains("AkuSupervisor"));
-    assert!(stdout.contains("Roadmap Phase 3"));
+    assert!(stdout.contains("run --config <path>"));
     assert!(output.stderr.is_empty());
 }
 

@@ -4,4 +4,6 @@
 //! added only at their roadmap gates.
 
 pub mod config;
+#[cfg(windows)]
+pub mod foreground;
 pub mod journal;

@@ -2,12 +2,13 @@ use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
+use std::time::Duration;
 
 use serde::de::{MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::application::LaunchSpec;
+use crate::application::{LaunchSpec, ServiceRegistration};
 
 pub const CONFIG_VERSION: u32 = 1;
 
@@ -235,6 +236,25 @@ impl SupervisorConfig {
         let bytes = serde_json::to_vec(self)
             .map_err(|error| ConfigError::Fingerprint(error.to_string()))?;
         Ok(format!("sha256:{:x}", Sha256::digest(bytes)))
+    }
+
+    /// Maps validated configuration to platform-neutral service definitions.
+    ///
+    /// Callers must invoke [`Self::validate`] before using these registrations.
+    #[must_use]
+    pub fn service_registrations(&self) -> Vec<ServiceRegistration> {
+        self.services
+            .iter()
+            .map(|(service_id, service)| {
+                ServiceRegistration::new(
+                    service_id.clone(),
+                    service.label.clone(),
+                    service.launch_spec(),
+                    service.ports.clone(),
+                    Duration::from_millis(service.shutdown_grace_ms),
+                )
+            })
+            .collect()
     }
 }
 
@@ -530,6 +550,18 @@ mod tests {
         assert_eq!(launch.executable(), service.command);
         assert_eq!(launch.cwd(), service.cwd);
         assert_eq!(launch.args(), [OsStr::new("--serve")]);
+    }
+
+    #[test]
+    fn validated_config_maps_every_registered_service() {
+        let (_directory, config) = valid_config();
+        config.validate().expect("fixture configuration is valid");
+
+        let registrations = config.service_registrations();
+
+        assert_eq!(registrations.len(), 1);
+        assert_eq!(registrations[0].id(), "fixture");
+        assert_eq!(registrations[0].label(), "Fixture service");
     }
 
     #[test]

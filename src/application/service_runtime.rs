@@ -17,6 +17,13 @@ pub enum StopOutcome {
     AlreadyStopped,
 }
 
+/// Result of a serialized restart request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestartOutcome {
+    Restarted,
+    Started,
+}
+
 /// Per-service process owner and lifecycle serialization boundary.
 ///
 /// The start and stop callbacks execute while the service lock is held. This
@@ -62,6 +69,19 @@ impl<Process> ServiceRuntime<Process> {
     /// poisoned.
     pub fn has_process(&self) -> Result<bool, ServiceRuntimeError<()>> {
         Ok(self.lock()?.process.is_some())
+    }
+
+    /// Inspects lifecycle state and the retained owner under the service lock.
+    ///
+    /// # Errors
+    ///
+    /// Returns the callback error or [`ServiceRuntimeError::Poisoned`].
+    pub fn inspect_with<Value, Error>(
+        &self,
+        inspect: impl FnOnce(LifecycleState, Option<&Process>) -> Result<Value, Error>,
+    ) -> Result<Value, ServiceRuntimeError<Error>> {
+        let inner = self.lock()?;
+        inspect(inner.lifecycle, inner.process.as_ref()).map_err(ServiceRuntimeError::Inspect)
     }
 
     /// Starts the service exactly once while concurrent mutations serialize.
@@ -153,6 +173,74 @@ impl<Process> ServiceRuntime<Process> {
         }
     }
 
+    /// Stops any retained owner and starts its replacement under one lock.
+    ///
+    /// If no process is currently retained, restart behaves as a start. A
+    /// failed stop keeps the old owner; a failed replacement spawn leaves the
+    /// runtime in `failed` without an owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns a lifecycle transition error, a callback error, or a
+    /// poisoned-lock error.
+    pub fn restart_with<Error>(
+        &self,
+        stop: impl FnOnce(&mut Process) -> Result<(), Error>,
+        spawn: impl FnOnce() -> Result<Process, Error>,
+    ) -> Result<RestartOutcome, ServiceRuntimeError<Error>> {
+        let mut inner = self.lock()?;
+        let had_process = inner.process.is_some();
+
+        if had_process {
+            inner.lifecycle = inner
+                .lifecycle
+                .transition_to(LifecycleState::Stopping)
+                .map_err(ServiceRuntimeError::Transition)?;
+            let stop_result = match inner.process.as_mut() {
+                Some(process) => stop(process),
+                None => return Err(ServiceRuntimeError::Poisoned),
+            };
+            if let Err(error) = stop_result {
+                inner.lifecycle = inner
+                    .lifecycle
+                    .transition_to(LifecycleState::Failed)
+                    .map_err(ServiceRuntimeError::Transition)?;
+                return Err(ServiceRuntimeError::Stop(error));
+            }
+            inner.process = None;
+            inner.lifecycle = inner
+                .lifecycle
+                .transition_to(LifecycleState::Stopped)
+                .map_err(ServiceRuntimeError::Transition)?;
+        }
+
+        inner.lifecycle = inner
+            .lifecycle
+            .transition_to(LifecycleState::Starting)
+            .map_err(ServiceRuntimeError::Transition)?;
+        match spawn() {
+            Ok(process) => {
+                inner.process = Some(process);
+                inner.lifecycle = inner
+                    .lifecycle
+                    .transition_to(LifecycleState::Running)
+                    .map_err(ServiceRuntimeError::Transition)?;
+                Ok(if had_process {
+                    RestartOutcome::Restarted
+                } else {
+                    RestartOutcome::Started
+                })
+            }
+            Err(error) => {
+                inner.lifecycle = inner
+                    .lifecycle
+                    .transition_to(LifecycleState::Failed)
+                    .map_err(ServiceRuntimeError::Transition)?;
+                Err(ServiceRuntimeError::Start(error))
+            }
+        }
+    }
+
     fn lock<Error>(
         &self,
     ) -> Result<MutexGuard<'_, RuntimeState<Process>>, ServiceRuntimeError<Error>> {
@@ -173,6 +261,7 @@ pub enum ServiceRuntimeError<Error> {
     Transition(TransitionError),
     Start(Error),
     Stop(Error),
+    Inspect(Error),
 }
 
 impl<Error: fmt::Display> fmt::Display for ServiceRuntimeError<Error> {
@@ -182,6 +271,7 @@ impl<Error: fmt::Display> fmt::Display for ServiceRuntimeError<Error> {
             Self::Transition(error) => error.fmt(formatter),
             Self::Start(error) => write!(formatter, "service start failed: {error}"),
             Self::Stop(error) => write!(formatter, "service stop failed: {error}"),
+            Self::Inspect(error) => write!(formatter, "service inspection failed: {error}"),
         }
     }
 }
@@ -193,7 +283,7 @@ where
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Transition(error) => Some(error),
-            Self::Start(error) | Self::Stop(error) => Some(error),
+            Self::Start(error) | Self::Stop(error) | Self::Inspect(error) => Some(error),
             Self::Poisoned => None,
         }
     }
@@ -209,7 +299,7 @@ mod tests {
 
     use crate::domain::LifecycleState;
 
-    use super::{ServiceRuntime, ServiceRuntimeError, StartOutcome, StopOutcome};
+    use super::{RestartOutcome, ServiceRuntime, ServiceRuntimeError, StartOutcome, StopOutcome};
 
     const CONCURRENT_REQUESTS: usize = 16;
 
@@ -271,5 +361,27 @@ mod tests {
         );
         assert_eq!(runtime.has_process(), Ok(false));
         assert_eq!(runtime.lifecycle(), Ok(LifecycleState::Stopped));
+    }
+
+    #[test]
+    fn restart_replaces_owner_under_one_serialized_mutation() {
+        let runtime = ServiceRuntime::new();
+        runtime
+            .start_with(|| Ok::<_, &'static str>(7_u32))
+            .expect("initial start");
+
+        let outcome = runtime.restart_with(
+            |process| {
+                assert_eq!(*process, 7);
+                Ok::<_, &'static str>(())
+            },
+            || Ok::<_, &'static str>(8_u32),
+        );
+
+        assert_eq!(outcome, Ok(RestartOutcome::Restarted));
+        assert_eq!(
+            runtime.inspect_with(|state, process| Ok::<_, &'static str>((state, process.copied()))),
+            Ok((LifecycleState::Running, Some(8)))
+        );
     }
 }

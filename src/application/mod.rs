@@ -4,10 +4,17 @@
 //! same application services instead of implementing lifecycle rules directly.
 
 mod platform_ports;
+mod service_registry;
 mod service_runtime;
 
 pub use platform_ports::{
     LaunchSpec, ManagedProcessTree, NetworkFamily, PortDiagnostic, PortInspector, PortOccupant,
     ProcessTreeSpawner, ShutdownSignal, TreeStopReport,
 };
-pub use service_runtime::{ServiceRuntime, ServiceRuntimeError, StartOutcome, StopOutcome};
+pub use service_registry::{
+    BackendOperationError, LastAction, RegistryBuildError, RegistryError, ServiceRegistration,
+    ServiceRegistry, ServiceSnapshot,
+};
+pub use service_runtime::{
+    RestartOutcome, ServiceRuntime, ServiceRuntimeError, StartOutcome, StopOutcome,
+};

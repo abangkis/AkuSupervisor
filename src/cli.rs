@@ -1,18 +1,23 @@
-//! Minimal command-line boundary for the Phase 0 executable.
+//! User-visible command-line boundary.
 
 use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use crate::VERSION;
 
 const HELP: &str = "AkuSupervisor - local development service supervisor\n\n\
-Usage:\n  aku-supervisor --help\n  aku-supervisor --version\n\n\
-Service lifecycle commands will be added in Roadmap Phase 3.";
+Usage:\n\
+  aku-supervisor --help\n\
+  aku-supervisor --version\n\
+  aku-supervisor run --config <path>\n\n\
+The run command starts a visible interactive supervisor. Type help at its prompt.";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Command {
     Help,
     Version,
+    Run { config: PathBuf },
 }
 
 /// Runs the CLI using an argument iterator that excludes the executable name.
@@ -26,6 +31,7 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
             println!("aku-supervisor {VERSION}");
             ExitCode::SUCCESS
         }
+        Ok(Command::Run { config }) => run_foreground(&config),
         Err(message) => {
             eprintln!("error: {message}\n\n{HELP}");
             ExitCode::from(2)
@@ -39,12 +45,34 @@ fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, Strin
         [] => Ok(Command::Help),
         [flag] if flag == "--help" || flag == "-h" => Ok(Command::Help),
         [flag] if flag == "--version" || flag == "-V" => Ok(Command::Version),
+        [run, config_flag, config] if run == "run" && config_flag == "--config" => {
+            Ok(Command::Run {
+                config: PathBuf::from(config),
+            })
+        }
         [argument] => Err(format!(
             "unsupported argument: {}",
             argument.to_string_lossy()
         )),
-        _ => Err("expected at most one argument".to_owned()),
+        _ => Err("expected --help, --version, or run --config <path>".to_owned()),
     }
+}
+
+#[cfg(windows)]
+fn run_foreground(config: &Path) -> ExitCode {
+    match crate::adapters::foreground::run(config) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn run_foreground(_config: &Path) -> ExitCode {
+    eprintln!("error: no lifecycle platform adapter is implemented for this operating system");
+    ExitCode::FAILURE
 }
 
 #[cfg(test)]
@@ -66,8 +94,21 @@ mod tests {
     }
 
     #[test]
-    fn lifecycle_commands_are_not_silently_accepted() {
-        let error = parse(args(&["start"])).expect_err("start must remain unavailable in Phase 0");
+    fn lifecycle_commands_require_the_running_supervisor_boundary() {
+        let error = parse(args(&["start"])).expect_err("start is an interactive or API action");
         assert!(error.contains("unsupported argument"));
     }
+
+    #[test]
+    fn run_requires_an_explicit_configuration_path() {
+        assert_eq!(
+            parse(args(&["run", "--config", "services.json"])),
+            Ok(Command::Run {
+                config: PathBuf::from("services.json")
+            })
+        );
+        assert!(parse(args(&["run"])).is_err());
+    }
+
+    use std::path::PathBuf;
 }
