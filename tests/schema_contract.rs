@@ -1,5 +1,6 @@
 use aku_supervisor::adapters::config::{
-    CONFIG_VERSION, ControlConfig, HealthCheck, RestartPolicy, ServiceConfig, SupervisorConfig,
+    CONFIG_VERSION, ControlConfig, CooperativeActionsConfig, HealthCheck, RestartPolicy,
+    ServiceConfig, SupervisorConfig,
 };
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -37,6 +38,7 @@ fn typed_configuration_serializes_with_contract_field_names() {
             port: 47_820,
             token_file: PathBuf::from(".runtime/control-token"),
         },
+        cooperative_actions: CooperativeActionsConfig::default(),
         services: BTreeMap::from([(
             "fixture".to_owned(),
             ServiceConfig {

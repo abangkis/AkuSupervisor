@@ -4,12 +4,17 @@
 //! same application services instead of implementing lifecycle rules directly.
 
 mod control_api;
+mod cooperative_actions;
 mod platform_ports;
 mod service_registry;
 mod service_runtime;
 
 pub use control_api::{
     ControlAction, ControlError, ControlErrorKind, ControlMutationOutcome, SupervisorControl,
+};
+pub use cooperative_actions::{
+    CooperativeActionControl, CooperativeActionError, CooperativeActionOutcome,
+    CooperativeActionStatus,
 };
 pub use platform_ports::{
     LaunchSpec, ManagedProcessTree, NetworkFamily, PortDiagnostic, PortInspector, PortOccupant,

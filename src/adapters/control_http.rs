@@ -10,7 +10,9 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::application::{ControlAction, ControlErrorKind, SupervisorControl};
+use crate::application::{
+    ControlAction, ControlErrorKind, CooperativeActionControl, SupervisorControl,
+};
 use crate::domain::{Actor, Reason};
 
 use super::journal::FileJournal;
@@ -58,6 +60,7 @@ impl ControlHttpServer {
         port: u16,
         token: RuntimeToken,
         control: Arc<dyn SupervisorControl>,
+        cooperative: Option<Arc<dyn CooperativeActionControl>>,
         journal: Arc<FileJournal>,
         logs: Arc<ServiceLogStore>,
     ) -> Result<Self, ControlHttpError> {
@@ -75,6 +78,7 @@ impl ControlHttpServer {
                     &listener,
                     &token,
                     control.as_ref(),
+                    cooperative.as_deref(),
                     &journal,
                     &logs,
                     &thread_stop,
@@ -132,6 +136,7 @@ fn serve(
     listener: &TcpListener,
     token: &RuntimeToken,
     control: &dyn SupervisorControl,
+    cooperative: Option<&dyn CooperativeActionControl>,
     journal: &FileJournal,
     logs: &ServiceLogStore,
     stop: &AtomicBool,
@@ -142,9 +147,15 @@ fn serve(
             Ok((mut stream, _peer)) => {
                 stream.set_read_timeout(Some(IO_TIMEOUT)).ok();
                 stream.set_write_timeout(Some(IO_TIMEOUT)).ok();
-                if let Err(error) =
-                    handle_connection(&mut stream, token, control, journal, logs, &mut idempotency)
-                {
+                if let Err(error) = handle_connection(
+                    &mut stream,
+                    token,
+                    control,
+                    cooperative,
+                    journal,
+                    logs,
+                    &mut idempotency,
+                ) {
                     let response = error_response(400, "bad_request", &error.to_string());
                     write_response(&mut stream, &response).ok();
                 }
@@ -162,12 +173,21 @@ fn handle_connection(
     stream: &mut TcpStream,
     token: &RuntimeToken,
     control: &dyn SupervisorControl,
+    cooperative: Option<&dyn CooperativeActionControl>,
     journal: &FileJournal,
     logs: &ServiceLogStore,
     idempotency: &mut IdempotencyStore,
 ) -> Result<(), RequestError> {
     let request = read_request(stream)?;
-    let response = route(&request, token, control, journal, logs, idempotency);
+    let response = route(
+        &request,
+        token,
+        control,
+        cooperative,
+        journal,
+        logs,
+        idempotency,
+    );
     write_response(stream, &response).map_err(RequestError::Write)
 }
 
@@ -175,6 +195,7 @@ fn route(
     request: &HttpRequest,
     token: &RuntimeToken,
     control: &dyn SupervisorControl,
+    cooperative: Option<&dyn CooperativeActionControl>,
     journal: &FileJournal,
     logs: &ServiceLogStore,
     idempotency: &mut IdempotencyStore,
@@ -242,7 +263,7 @@ fn route(
     }
 
     if request.method == "POST" {
-        return route_mutation(request, token, control, idempotency);
+        return route_mutation(request, token, control, cooperative, idempotency);
     }
 
     error_response(404, "not_found", "route not found")
@@ -298,6 +319,7 @@ fn route_mutation(
     request: &HttpRequest,
     token: &RuntimeToken,
     control: &dyn SupervisorControl,
+    cooperative: Option<&dyn CooperativeActionControl>,
     idempotency: &mut IdempotencyStore,
 ) -> Response {
     let Some(candidate) = request
@@ -311,9 +333,6 @@ fn route_mutation(
         return error_response(401, "unauthorized", "invalid bearer token");
     }
 
-    let Some((service_id, action)) = parse_mutation_target(&request.target) else {
-        return error_response(404, "not_found", "route not found");
-    };
     let mutation: MutationRequest = match serde_json::from_slice(&request.body) {
         Ok(mutation) => mutation,
         Err(_) => return error_response(400, "invalid_request", "invalid mutation body"),
@@ -341,6 +360,21 @@ fn route_mutation(
     let reason = match Reason::new(mutation.reason) {
         Ok(reason) => reason,
         Err(error) => return error_response(400, "invalid_reason", &error.to_string()),
+    };
+
+    if request.target == "/v1/cooperative-actions/aku-bridge/reload-self" {
+        return route_cooperative_reload(
+            request,
+            cooperative,
+            idempotency,
+            mutation.actor,
+            reason,
+            mutation.request_id.as_deref(),
+        );
+    }
+
+    let Some((service_id, action)) = parse_mutation_target(&request.target) else {
+        return error_response(404, "not_found", "route not found");
     };
 
     let response = match control.mutate(action, service_id, mutation.actor.domain_actor(), reason) {
@@ -379,6 +413,41 @@ fn route_mutation(
             response.clone(),
         );
     }
+    response
+}
+
+fn route_cooperative_reload(
+    request: &HttpRequest,
+    cooperative: Option<&dyn CooperativeActionControl>,
+    idempotency: &mut IdempotencyStore,
+    actor: ApiActor,
+    reason: Reason,
+    request_id: Option<&str>,
+) -> Response {
+    let Some(request_id) = request_id else {
+        return error_response(
+            400,
+            "request_id_required",
+            "reload_self requires requestId for relay idempotency and audit",
+        );
+    };
+    let Some(cooperative) = cooperative else {
+        return error_response(
+            404,
+            "cooperative_action_disabled",
+            "AkuBridge reload_self is not configured",
+        );
+    };
+    let response = match cooperative.reload_aku_bridge(actor.domain_actor(), reason, request_id) {
+        Ok(outcome) => json_response(200, &json!({ "outcome": outcome })),
+        Err(error) => error_response(502, error.category(), error.message()),
+    };
+    idempotency.store(
+        request_id.to_owned(),
+        request.target.clone(),
+        request.body.clone(),
+        response.clone(),
+    );
     response
 }
 
@@ -748,7 +817,10 @@ impl std::error::Error for ControlClientError {}
 mod tests {
     use std::sync::Mutex;
 
-    use crate::application::{ControlError, ControlMutationOutcome, ServiceSnapshot};
+    use crate::application::{
+        ControlError, ControlMutationOutcome, CooperativeActionError, CooperativeActionOutcome,
+        CooperativeActionStatus, ServiceSnapshot,
+    };
 
     use super::*;
 
@@ -771,6 +843,32 @@ mod tests {
         ) -> Result<ControlMutationOutcome, ControlError> {
             *self.mutations.lock().expect("mutation lock") += 1;
             Ok(ControlMutationOutcome::Started)
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct FakeCooperativeControl {
+        reloads: Mutex<u32>,
+    }
+
+    impl CooperativeActionControl for FakeCooperativeControl {
+        fn reload_aku_bridge(
+            &self,
+            _actor: Actor,
+            _reason: Reason,
+            request_id: &str,
+        ) -> Result<CooperativeActionOutcome, CooperativeActionError> {
+            *self.reloads.lock().expect("reload lock") += 1;
+            Ok(CooperativeActionOutcome {
+                target: "aku-bridge".to_owned(),
+                action: "reload_self".to_owned(),
+                status: CooperativeActionStatus::Completed,
+                relay_action_id: Some(request_id.to_owned()),
+                previous_build_id: Some("old".to_owned()),
+                expected_build_id: Some("new".to_owned()),
+                observed_build_id: Some("new".to_owned()),
+                message: "completed".to_owned(),
+            })
         }
     }
 
@@ -808,6 +906,7 @@ mod tests {
             &request,
             &token,
             &control,
+            None,
             &journal,
             &logs,
             &mut IdempotencyStore::default(),
@@ -827,6 +926,46 @@ mod tests {
             Some((7, 200))
         );
         assert!(parse_events_target("/v1/events?cursor=7").is_none());
+    }
+
+    #[test]
+    fn authenticated_bridge_reload_uses_the_narrow_cooperative_boundary() {
+        let token_path = std::env::temp_dir().join(format!(
+            "aku-supervisor-bridge-token-{}",
+            std::process::id()
+        ));
+        let journal_path = token_path.with_extension("jsonl");
+        std::fs::remove_file(&token_path).ok();
+        std::fs::remove_file(&journal_path).ok();
+        let token =
+            RuntimeToken::load_or_create(&token_path, || Ok("a".repeat(64))).expect("create token");
+        let journal =
+            FileJournal::open(&journal_path, Vec::<String>::new()).expect("create journal");
+        let logs = ServiceLogStore::new(&std::env::temp_dir(), ["api".to_owned()]);
+        let control = FakeControl::default();
+        let cooperative = FakeCooperativeControl::default();
+        let request = HttpRequest {
+            method: "POST".to_owned(),
+            target: "/v1/cooperative-actions/aku-bridge/reload-self".to_owned(),
+            authorization: Some(format!("Bearer {}", "a".repeat(64))),
+            body: br#"{"actor":"codex","reason":"load build","requestId":"bridge-1"}"#.to_vec(),
+        };
+
+        let response = route(
+            &request,
+            &token,
+            &control,
+            Some(&cooperative),
+            &journal,
+            &logs,
+            &mut IdempotencyStore::default(),
+        );
+
+        assert_eq!(response.status, 200);
+        assert_eq!(*cooperative.reloads.lock().expect("reload lock"), 1);
+        assert_eq!(*control.mutations.lock().expect("mutation lock"), 0);
+        std::fs::remove_file(token_path).ok();
+        std::fs::remove_file(journal_path).ok();
     }
 
     #[test]
@@ -856,6 +995,7 @@ mod tests {
             &request,
             &token,
             &control,
+            None,
             &journal,
             &logs,
             &mut idempotency,
@@ -864,6 +1004,7 @@ mod tests {
             &request,
             &token,
             &control,
+            None,
             &journal,
             &logs,
             &mut idempotency,
@@ -876,6 +1017,7 @@ mod tests {
             &conflicting,
             &token,
             &control,
+            None,
             &journal,
             &logs,
             &mut idempotency,

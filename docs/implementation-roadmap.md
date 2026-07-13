@@ -262,7 +262,19 @@ Gate 4 marks the first usable AkuSupervisor MVP.
 
 ### Phase 5 - AkuBridge cooperative reload
 
-Status: **Deferred until Gate 4**
+Status: **Implemented; live Chrome validation pending**
+
+Current checkpoint:
+
+- [x] narrow `reload_self` application boundary, authenticated HTTP route, and CLI;
+- [x] separate fail-closed cooperative action audit;
+- [x] Sidecar in-memory action queue with bounded TTL and request replay protection;
+- [x] same-origin AkuBrowser tab relay and bridge-token acknowledgement;
+- [x] direct `chrome.runtime.reload()` with expected disconnect handling;
+- [x] post-reload heartbeat and exact build-identity completion rule;
+- [x] unit and HTTP contract coverage for authorization, timeout, replay, and completion;
+- [ ] one-time manual bootstrap of the first handler-capable unpacked build; and
+- [ ] live Chrome proof followed by Gate 5 sign-off.
 
 Deliverables:
 

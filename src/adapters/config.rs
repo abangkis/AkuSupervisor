@@ -18,8 +18,25 @@ pub const CONFIG_VERSION: u32 = 1;
 pub struct SupervisorConfig {
     pub version: u32,
     pub control: ControlConfig,
+    #[serde(default)]
+    pub cooperative_actions: CooperativeActionsConfig,
     #[serde(deserialize_with = "deserialize_services")]
     pub services: BTreeMap<String, ServiceConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CooperativeActionsConfig {
+    #[serde(default)]
+    pub aku_bridge_reload: Option<AkuBridgeReloadConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AkuBridgeReloadConfig {
+    pub sidecar_origin: String,
+    pub timeout_ms: u64,
+    pub poll_interval_ms: u64,
 }
 
 /// Loopback control-server settings.
@@ -162,6 +179,7 @@ impl SupervisorConfig {
                 "at least one registered service is required",
             ));
         }
+        validate_cooperative_actions(&self.cooperative_actions, &mut issues);
 
         let mut claimed_ports = BTreeMap::from([(self.control.port, "control".to_owned())]);
         for (service_id, service) in &self.services {
@@ -280,6 +298,39 @@ impl SupervisorConfig {
                 )
             })
             .collect()
+    }
+}
+
+fn validate_cooperative_actions(actions: &CooperativeActionsConfig, issues: &mut Vec<ConfigIssue>) {
+    let Some(reload) = &actions.aku_bridge_reload else {
+        return;
+    };
+    let valid_origin = reload
+        .sidecar_origin
+        .strip_prefix("http://")
+        .filter(|authority| !authority.contains('/'))
+        .and_then(|authority| authority.parse::<std::net::SocketAddr>().ok())
+        .is_some_and(|address| address.ip().is_loopback());
+    if !valid_origin {
+        issues.push(ConfigIssue::new(
+            "cooperativeActions.akuBridgeReload.sidecarOrigin",
+            "bridge_sidecar_origin_invalid",
+            "AkuBridge reload requires a pathless loopback HTTP origin with an explicit port",
+        ));
+    }
+    if !(1_000..=60_000).contains(&reload.timeout_ms) {
+        issues.push(ConfigIssue::new(
+            "cooperativeActions.akuBridgeReload.timeoutMs",
+            "bridge_reload_timeout_invalid",
+            "AkuBridge reload timeout must be between 1000 and 60000 milliseconds",
+        ));
+    }
+    if reload.poll_interval_ms == 0 || reload.poll_interval_ms > reload.timeout_ms {
+        issues.push(ConfigIssue::new(
+            "cooperativeActions.akuBridgeReload.pollIntervalMs",
+            "bridge_reload_poll_invalid",
+            "AkuBridge reload poll interval must be non-zero and no greater than its timeout",
+        ));
     }
 }
 
@@ -505,8 +556,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        CONFIG_VERSION, ConfigError, ControlConfig, HealthCheck, RestartPolicy, ServiceConfig,
-        SupervisorConfig,
+        CONFIG_VERSION, ConfigError, ControlConfig, CooperativeActionsConfig, HealthCheck,
+        RestartPolicy, ServiceConfig, SupervisorConfig,
     };
 
     static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(1);
@@ -553,6 +604,7 @@ mod tests {
                 port: 47_820,
                 token_file: PathBuf::from(".runtime/control-token"),
             },
+            cooperative_actions: CooperativeActionsConfig::default(),
             services: BTreeMap::from([("fixture".to_owned(), service)]),
         };
         (directory, config)

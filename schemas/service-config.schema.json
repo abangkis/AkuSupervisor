@@ -12,6 +12,9 @@
     "control": {
       "$ref": "#/$defs/control"
     },
+    "cooperativeActions": {
+      "$ref": "#/$defs/cooperativeActions"
+    },
     "services": {
       "type": "object",
       "minProperties": 1,
@@ -24,6 +27,33 @@
     }
   },
   "$defs": {
+    "cooperativeActions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "akuBridgeReload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sidecarOrigin", "timeoutMs", "pollIntervalMs"],
+          "properties": {
+            "sidecarOrigin": {
+              "type": "string",
+              "pattern": "^http://(?:127\\.0\\.0\\.1|\\[::1\\]):[0-9]+$"
+            },
+            "timeoutMs": {
+              "type": "integer",
+              "minimum": 1000,
+              "maximum": 60000
+            },
+            "pollIntervalMs": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      },
+      "default": {}
+    },
     "control": {
       "type": "object",
       "additionalProperties": false,

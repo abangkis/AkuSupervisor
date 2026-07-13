@@ -8,6 +8,8 @@ configuration, status, start, stop, restart, operator holds, exit cleanup,
 authenticated local control, durable lifecycle events, bounded service logs,
 and idempotent mutations. AkuSidecar has passed live start, reasoning, hard
 restart, old-tree cleanup, and SQLite-preservation validation.
+The Gate 5 implementation adds one authenticated cooperative action for
+AkuBridge self-reload; live Chrome validation remains before Gate 5 can pass.
 
 Rust is the implementation language, targeting `x86_64-pc-windows-msvc` for the
 initial AkuWorkspace pilot. Platform-neutral application ports and separate
@@ -58,6 +60,7 @@ cargo run -- status
 cargo run -- events --limit 20
 cargo run -- logs akusidecar --stream stdout --tail 100
 cargo run -- restart akusidecar --actor codex --reason "source changed"
+cargo run -- bridge reload --actor codex --reason "load updated unpacked extension" --request-id "bridge-reload-001"
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets --all-features
@@ -87,6 +90,23 @@ cargo run -- events --after 0 --limit 20
 cargo run -- logs akusidecar --stream stderr --tail 100
 cargo run -- stop akusidecar --reason "manual development stop"
 ```
+
+After the Gate 5 build has been loaded into Chrome once, either the user or
+Codex can request the only browser-side mutation exposed by AkuSupervisor:
+
+```powershell
+.\target\aku-supervisor.exe bridge reload `
+  --actor codex `
+  --reason "load updated AkuBridge build" `
+  --request-id "bridge-reload-20260714-001"
+```
+
+The command relays `reload_self` through the open AkuBrowser tab, invokes
+`chrome.runtime.reload()`, refreshes only that local tab so the new content
+script is injected, and succeeds only after Sidecar observes the expected new
+build heartbeat. It does not expose arbitrary extension commands, Chrome
+management, CDP, tab closure, or whole-browser restart. See the
+[AkuBridge reload design](docs/aku-bridge-reload.md).
 
 `user` is the default client actor. Codex must pass `--actor codex`. Every
 mutation requires an explicit reason and can select only a service already
@@ -118,6 +138,7 @@ Runtime artifacts use this layout:
 .runtime/
   control-token
   supervisor.jsonl
+  cooperative-actions.jsonl
   services/
     akusidecar.stdout.log
     akusidecar.stderr.log
@@ -148,3 +169,4 @@ the declared endpoint plus one real AkuSidecar reasoning invocation.
 - [Testing guide](docs/testing-guide.md)
 - [Platform portability boundary](docs/platform-portability.md)
 - [Deferred MCP integration notes](docs/mcp-integration-notes.md)
+- [AkuBridge cooperative reload](docs/aku-bridge-reload.md)

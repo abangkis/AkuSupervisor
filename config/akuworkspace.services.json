@@ -5,6 +5,13 @@
     "port": 47820,
     "tokenFile": ".runtime/control-token"
   },
+  "cooperativeActions": {
+    "akuBridgeReload": {
+      "sidecarOrigin": "http://127.0.0.1:47821",
+      "timeoutMs": 20000,
+      "pollIntervalMs": 250
+    }
+  },
   "services": {
     "akusidecar": {
       "label": "AkuSidecar",
@@ -22,7 +29,7 @@
         "startupDeadlineMs": 20000,
         "expect": {
           "status": "ok",
-          "version": "0.5.13",
+          "version": "0.5.14",
           "provider": "codex-sdk"
         }
       },

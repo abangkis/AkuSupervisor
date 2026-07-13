@@ -19,6 +19,7 @@ Usage:\n\
   aku-supervisor events [--after <sequence>] [--limit <n>] [--config <path>]\n\
   aku-supervisor logs <service> [--stream <stdout|stderr>] [--tail <n>] [--config <path>]\n\
   aku-supervisor <start|stop|restart> <service> --reason <text> [--actor <user|codex>] [--request-id <id>] [--config <path>]\n\
+  aku-supervisor bridge reload --reason <text> --request-id <id> [--actor <user|codex>] [--config <path>]\n\
   aku-supervisor --help\n\
   aku-supervisor --version\n\n\
 Without --config, AkuSupervisor checks AKU_SUPERVISOR_CONFIG and then the default user configuration.";
@@ -53,6 +54,12 @@ enum RemoteCommand {
         reason: String,
         actor: ApiActor,
         request_id: Option<String>,
+        config: Option<PathBuf>,
+    },
+    BridgeReload {
+        reason: String,
+        actor: ApiActor,
+        request_id: String,
         config: Option<PathBuf>,
     },
 }
@@ -95,6 +102,9 @@ fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, Strin
         [status, rest @ ..] if status == "status" => parse_remote_status(rest),
         [events, rest @ ..] if events == "events" => parse_remote_events(rest),
         [logs, rest @ ..] if logs == "logs" => parse_remote_logs(rest),
+        [bridge, reload, rest @ ..] if bridge == "bridge" && reload == "reload" => {
+            parse_bridge_reload(rest)
+        }
         [action, rest @ ..] if action == "start" || action == "stop" || action == "restart" => {
             parse_remote_mutation(action, rest)
         }
@@ -104,6 +114,31 @@ fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, Strin
         )),
         _ => Err("expected run, a lifecycle client command, --help, or --version".to_owned()),
     }
+}
+
+fn parse_bridge_reload(arguments: &[OsString]) -> Result<Command, String> {
+    let mut mutation_arguments = vec![OsString::from("aku-bridge")];
+    mutation_arguments.extend_from_slice(arguments);
+    let parsed = parse_remote_mutation(&OsString::from("restart"), &mutation_arguments)?;
+    let Command::Remote(RemoteCommand::Mutate {
+        reason,
+        actor,
+        request_id,
+        config,
+        ..
+    }) = parsed
+    else {
+        unreachable!("synthetic lifecycle parse must return a mutation")
+    };
+    let request_id = request_id.ok_or_else(|| {
+        "bridge reload requires --request-id for relay idempotency and audit".to_owned()
+    })?;
+    Ok(Command::Remote(RemoteCommand::BridgeReload {
+        reason,
+        actor,
+        request_id,
+        config,
+    }))
 }
 
 fn parse_remote_status(arguments: &[OsString]) -> Result<Command, String> {
@@ -327,7 +362,8 @@ fn remote_request(command: RemoteCommand) -> Result<(), String> {
         RemoteCommand::Status { config }
         | RemoteCommand::Events { config, .. }
         | RemoteCommand::Logs { config, .. }
-        | RemoteCommand::Mutate { config, .. } => config.clone(),
+        | RemoteCommand::Mutate { config, .. }
+        | RemoteCommand::BridgeReload { config, .. } => config.clone(),
     };
     let resolved = resolve_config_path(explicit_config).map_err(|error| error.to_string())?;
     let source = fs::read_to_string(resolved.path())
@@ -386,6 +422,20 @@ fn remote_request(command: RemoteCommand) -> Result<(), String> {
                 })),
             )
         }
+        RemoteCommand::BridgeReload {
+            reason,
+            actor,
+            request_id,
+            ..
+        } => (
+            "POST",
+            "/v1/cooperative-actions/aku-bridge/reload-self".to_owned(),
+            Some(json!({
+                "actor": actor,
+                "reason": reason,
+                "requestId": request_id
+            })),
+        ),
     };
     let response = client_request(address, &token, method, &target, body)
         .map_err(|error| error.to_string())?;
@@ -455,6 +505,37 @@ mod tests {
                 actor: ApiActor::Codex,
                 request_id: None,
                 config: Some(PathBuf::from("services.json")),
+            }))
+        );
+    }
+
+    #[test]
+    fn bridge_reload_requires_a_bounded_request_id() {
+        assert!(
+            parse(args(&[
+                "bridge",
+                "reload",
+                "--reason",
+                "load extension build",
+            ]))
+            .is_err()
+        );
+        assert_eq!(
+            parse(args(&[
+                "bridge",
+                "reload",
+                "--reason",
+                "load extension build",
+                "--actor",
+                "codex",
+                "--request-id",
+                "bridge-reload-1",
+            ])),
+            Ok(Command::Remote(RemoteCommand::BridgeReload {
+                reason: "load extension build".to_owned(),
+                actor: ApiActor::Codex,
+                request_id: "bridge-reload-1".to_owned(),
+                config: None,
             }))
         );
     }

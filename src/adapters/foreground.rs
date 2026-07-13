@@ -7,6 +7,7 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::Duration;
 
+use crate::adapters::aku_bridge_reload::AkuBridgeReloadClient;
 use crate::adapters::config::{ConfigError, SupervisorConfig};
 use crate::adapters::config_path::ResolvedConfigPath;
 use crate::adapters::control_http::{ControlHttpError, ControlHttpServer};
@@ -14,8 +15,8 @@ use crate::adapters::journal::{AuditedControl, FileJournal, FileJournalError};
 use crate::adapters::runtime_token::{RuntimeToken, RuntimeTokenError, resolve_token_path};
 use crate::adapters::service_logs::ServiceLogStore;
 use crate::application::{
-    ControlAction, ControlMutationOutcome, RegistryBuildError, ServiceRegistry, ServiceSnapshot,
-    SupervisorControl,
+    ControlAction, ControlMutationOutcome, CooperativeActionControl, CooperativeActionError,
+    RegistryBuildError, ServiceRegistry, ServiceSnapshot, SupervisorControl,
 };
 use crate::domain::{Actor, Reason};
 use crate::platform::windows::{
@@ -87,25 +88,29 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
         &runtime_services_directory,
         config.services.keys().cloned(),
     ));
+    let (cooperative, cooperative_audit_path) =
+        build_cooperative_control(&config, runtime_directory, &fingerprint)?;
     let mut control_server = ControlHttpServer::start(
         &config.control.host,
         config.control.port,
         token,
         Arc::clone(&control),
+        cooperative,
         journal,
         logs,
     )
     .map_err(ForegroundError::ControlApi)?;
 
-    println!("AkuSupervisor {}", crate::VERSION);
-    println!("Configuration: {}", config_path.display());
-    println!("Configuration source: {}", resolved_config.source());
-    println!("Fingerprint: {fingerprint}");
-    println!("Control API: http://{}", control_server.address());
-    println!("Control token: {}", token_path.display());
-    println!("Lifecycle journal: {}", journal_path.display());
-    println!("Service logs: {}", runtime_services_directory.display());
-    println!("Mode: visible interactive supervisor (Phase 3 local-control checkpoint)");
+    print_startup(
+        resolved_config,
+        &config,
+        &fingerprint,
+        control_server.address(),
+        &token_path,
+        &journal_path,
+        &cooperative_audit_path,
+        &runtime_services_directory,
+    );
     print_status(control.as_ref());
     println!("{INTERACTIVE_HELP}");
 
@@ -136,6 +141,59 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
         return Err(ForegroundError::ControlApi(error));
     }
     cleanup_result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn print_startup(
+    resolved_config: &ResolvedConfigPath,
+    config: &SupervisorConfig,
+    fingerprint: &str,
+    address: std::net::SocketAddr,
+    token_path: &std::path::Path,
+    journal_path: &std::path::Path,
+    cooperative_audit_path: &std::path::Path,
+    services_directory: &std::path::Path,
+) {
+    println!("AkuSupervisor {}", crate::VERSION);
+    println!("Configuration: {}", resolved_config.path().display());
+    println!("Configuration source: {}", resolved_config.source());
+    println!("Fingerprint: {fingerprint}");
+    println!("Control API: http://{address}");
+    println!("Control token: {}", token_path.display());
+    println!("Lifecycle journal: {}", journal_path.display());
+    if config.cooperative_actions.aku_bridge_reload.is_some() {
+        println!(
+            "Cooperative action audit: {}",
+            cooperative_audit_path.display()
+        );
+    }
+    println!("Service logs: {}", services_directory.display());
+    println!("Mode: visible interactive supervisor (Phase 5 cooperative-action checkpoint)");
+}
+
+fn build_cooperative_control(
+    config: &SupervisorConfig,
+    runtime_directory: &std::path::Path,
+    fingerprint: &str,
+) -> Result<(Option<Arc<dyn CooperativeActionControl>>, PathBuf), ForegroundError> {
+    let audit_path = runtime_directory.join("cooperative-actions.jsonl");
+    let control = config
+        .cooperative_actions
+        .aku_bridge_reload
+        .as_ref()
+        .map(|reload| {
+            AkuBridgeReloadClient::new(
+                &reload.sidecar_origin,
+                Duration::from_millis(reload.timeout_ms),
+                Duration::from_millis(reload.poll_interval_ms),
+                &audit_path,
+                fingerprint.to_owned(),
+            )
+            .map(|client| Arc::new(client) as Arc<dyn CooperativeActionControl>)
+        })
+        .transpose()
+        .map_err(ForegroundError::CooperativeAction)?;
+    Ok((control, audit_path))
 }
 
 fn read_input(sender: &mpsc::Sender<InputEvent>) {
@@ -326,6 +384,7 @@ pub enum ForegroundError {
     RuntimeToken(RuntimeTokenError),
     TokenPermissions(crate::platform::windows::TokenPermissionError),
     Journal(FileJournalError),
+    CooperativeAction(CooperativeActionError),
     ControlApi(ControlHttpError),
     Console(ConsoleShutdownError),
     Input(io::Error),
@@ -348,6 +407,7 @@ impl fmt::Display for ForegroundError {
             Self::RuntimeToken(error) => error.fmt(formatter),
             Self::TokenPermissions(error) => error.fmt(formatter),
             Self::Journal(error) => error.fmt(formatter),
+            Self::CooperativeAction(error) => error.fmt(formatter),
             Self::ControlApi(error) => error.fmt(formatter),
             Self::Console(error) => error.fmt(formatter),
             Self::Input(error) => write!(formatter, "interactive input failed: {error}"),
