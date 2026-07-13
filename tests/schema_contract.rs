@@ -30,6 +30,22 @@ fn checked_in_schema_is_valid_json_schema_document() {
 }
 
 #[test]
+fn checked_in_akuworkspace_profile_matches_the_typed_contract() {
+    let config = SupervisorConfig::parse_json(include_str!("../config/akuworkspace.services.json"))
+        .expect("checked-in AkuWorkspace profile must parse");
+
+    assert!(config.cooperative_actions.aku_bridge_reload.is_some());
+    assert_eq!(
+        config
+            .cooperative_actions
+            .aku_bridge_reload
+            .as_ref()
+            .map(|reload| reload.sidecar_origin.as_str()),
+        Some("http://127.0.0.1:47821")
+    );
+}
+
+#[test]
 fn typed_configuration_serializes_with_contract_field_names() {
     let config = SupervisorConfig {
         version: CONFIG_VERSION,

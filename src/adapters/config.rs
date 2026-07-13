@@ -18,7 +18,7 @@ pub const CONFIG_VERSION: u32 = 1;
 pub struct SupervisorConfig {
     pub version: u32,
     pub control: ControlConfig,
-    #[serde(default)]
+    #[serde(default, rename = "cooperativeActions")]
     pub cooperative_actions: CooperativeActionsConfig,
     #[serde(deserialize_with = "deserialize_services")]
     pub services: BTreeMap<String, ServiceConfig>,
