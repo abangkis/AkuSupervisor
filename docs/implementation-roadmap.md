@@ -119,7 +119,7 @@ Gate 1:
 
 ### Phase 2 - Windows process ownership vertical slice
 
-Status: **In progress**
+Status: **Complete - Gate 2 passed**
 
 Current checkpoint:
 
@@ -133,7 +133,8 @@ Current checkpoint:
 - verified: port inspection reports the occupant without disrupting it; and
 - complete: per-service lifecycle serialization prevents duplicate concurrent
   starts and retains ownership after a failed stop; and
-- remaining: end-to-end Ctrl+C handling.
+- verified: the Ctrl+C handler uses a lock-free request flag, while a targeted
+  console-interruption fixture proves cleanup finishes before supervisor exit.
 
 Deliverables:
 
@@ -154,9 +155,13 @@ Gate 2:
 - concurrent lifecycle mutations cannot create duplicate trees; and
 - a reused PID is not killed without current ownership evidence.
 
+Gate 2 evidence is covered by the process-ownership, console-shutdown,
+port-observer, and service-runtime tests. Destructive operations accept only a
+live Job Object owner; observed PIDs and ports have no termination API.
+
 ### Phase 3 - Visible CLI and local control API
 
-Status: **Pending Gate 2**
+Status: **Ready**
 
 Deliverables:
 
