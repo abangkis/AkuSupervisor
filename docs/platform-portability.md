@@ -32,6 +32,8 @@ The current contracts are:
 - `ProcessTreeSpawner`: creates one authoritative owned process tree;
 - `ManagedProcessTree`: observes and stops only that owned tree;
 - `PortInspector`: produces diagnostics without termination authority; and
+- `HealthCheckSpec` and `HealthProbe`: keep lifecycle health evaluation
+  independent of process ownership and operating-system APIs; and
 - `ShutdownSignal`: exposes a read-only shutdown request to the lifecycle loop.
 
 An architecture test enforces the import boundary.
@@ -87,6 +89,7 @@ not considered a portable guarantee.
 | Secure token entropy | CNG `BCryptGenRandom` | `getrandom(2)` or equivalent OS API | `SecRandomCopyBytes` or equivalent OS API |
 | Token-file permissions | protected current-user-only DACL | mode `0600` (future) | mode `0600` (future) |
 | HTTP control/client | shared `std::net` adapter | same shared adapter | same shared adapter |
+| Loopback HTTP health | shared `std::net` adapter | same shared adapter | same shared adapter |
 | Development reload request | bounded local file signal plus PowerShell runner | same file-signal contract plus future native runner | same file-signal contract plus future native runner |
 
 The Linux and macOS entries are design candidates, not implemented promises.
@@ -99,6 +102,7 @@ it is considered supported.
 |---|---|---|
 | Domain and lifecycle application | Portable and architecture-tested | Keep OS imports forbidden |
 | HTTP control server/client | Portable `std::net` implementation | Run the same protocol tests on native CI |
+| Runtime health state and matchers | Portable application policy plus shared loopback HTTP adapter | Run startup deadline, failure, and recovery fixtures on native CI |
 | Token format, persistence, comparison | Portable common implementation | Add native permission-hardening contract |
 | Secure entropy | Correctly isolated in Windows CNG adapter | Add independently tested Linux and macOS providers |
 | Configuration discovery | Per-OS default paths already separated | Add native path tests and native service profiles |

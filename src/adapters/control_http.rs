@@ -442,6 +442,7 @@ fn route_mutation(
                 error_response(409, "port_conflict_external", error.message())
             }
             ControlErrorKind::SpawnFailed => error_response(500, "spawn_failed", error.message()),
+            ControlErrorKind::HealthFailed => error_response(503, "health_failed", error.message()),
             ControlErrorKind::ShutdownTimeout => {
                 error_response(500, "shutdown_timeout", error.message())
             }

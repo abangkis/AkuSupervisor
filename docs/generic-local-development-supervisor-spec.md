@@ -374,6 +374,12 @@ Service status distinguishes:
 
 For AkuSidecar, HTTP health does not prove that Codex CLI can spawn. The supervisor reports transport health only. A real reasoning invocation remains an application-level readiness check performed by AkuSidecar or its existing operational diagnostics.
 
+HTTP health targets are loopback-only in v0 and use an explicit IP and port.
+Start and restart retry health until `startupDeadlineMs`. After startup, a
+bounded periodic monitor refreshes health independently of status reads. A
+spawned process that fails health remains owned and transitions to `unhealthy`;
+a later passing observation returns it to `running`.
+
 ## 14. Logs and audit journal
 
 Runtime layout:

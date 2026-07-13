@@ -3,8 +3,10 @@ use std::fs;
 use std::io::{self, BufRead};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use crate::adapters::aku_bridge_reload::AkuBridgeReloadClient;
@@ -12,6 +14,7 @@ use crate::adapters::config::{ConfigError, SupervisorConfig};
 use crate::adapters::config_path::ResolvedConfigPath;
 use crate::adapters::control_http::{ControlHttpError, ControlHttpServer};
 use crate::adapters::development_shutdown::{DevelopmentShutdown, DevelopmentShutdownError};
+use crate::adapters::http_health::LoopbackHttpHealthProbe;
 use crate::adapters::journal::{AuditedControl, FileJournal, FileJournalError};
 use crate::adapters::runtime_token::{RuntimeToken, RuntimeTokenError, resolve_token_path};
 use crate::adapters::service_logs::ServiceLogStore;
@@ -25,6 +28,7 @@ use crate::platform::windows::{
 };
 
 const INPUT_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const HEALTH_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const INTERACTIVE_HELP: &str = "Commands:\n\
   status\n\
   start <service> [reason]\n\
@@ -74,9 +78,11 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
             config.service_registrations_with_logs(&runtime_services_directory),
             WindowsProcessSpawner,
             WindowsPortInspector,
+            Arc::new(LoopbackHttpHealthProbe),
         )
         .map_err(ForegroundError::RegistryBuild)?,
     );
+    let mut health_monitor = HealthMonitor::start(Arc::clone(&registry));
     let shutdown = ConsoleShutdown::install().map_err(ForegroundError::Console)?;
     let development_shutdown =
         DevelopmentShutdown::from_environment().map_err(ForegroundError::DevelopmentShutdown)?;
@@ -127,6 +133,7 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
     let foreground_result = wait_for_shutdown(control.as_ref(), &shutdown, &development_shutdown);
 
     let server_result = control_server.shutdown();
+    health_monitor.shutdown();
     let cleanup_result = cleanup(control.as_ref());
     if let Err(error) = server_result {
         cleanup_result?;
@@ -134,6 +141,57 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
     }
     cleanup_result?;
     foreground_result
+}
+
+#[derive(Debug)]
+struct HealthMonitor {
+    stop: Arc<AtomicBool>,
+    worker: Option<JoinHandle<()>>,
+}
+
+impl HealthMonitor {
+    fn start(registry: Arc<WindowsRegistry>) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stop);
+        let worker = thread::spawn(move || {
+            let mut last_error = None;
+            while !worker_stop.load(Ordering::Acquire) {
+                match registry.refresh_healths() {
+                    Ok(_) => last_error = None,
+                    Err(error) => {
+                        let current = error.to_string();
+                        if last_error.as_ref() != Some(&current) {
+                            eprintln!("health refresh failed: {current}");
+                        }
+                        last_error = Some(current);
+                    }
+                }
+                for _ in 0..10 {
+                    if worker_stop.load(Ordering::Acquire) {
+                        return;
+                    }
+                    thread::sleep(HEALTH_REFRESH_INTERVAL / 10);
+                }
+            }
+        });
+        Self {
+            stop,
+            worker: Some(worker),
+        }
+    }
+
+    fn shutdown(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(worker) = self.worker.take() {
+            worker.join().ok();
+        }
+    }
+}
+
+impl Drop for HealthMonitor {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
 }
 
 fn wait_for_shutdown(
@@ -294,7 +352,9 @@ fn print_status(control: &dyn SupervisorControl) {
     match control.snapshots() {
         Ok(snapshots) => {
             println!();
-            println!("SERVICE              STATE       ROOT PID   OWNED PIDS       HOLD");
+            println!(
+                "SERVICE              STATE       HEALTH      ROOT PID   OWNED PIDS       HOLD"
+            );
             for snapshot in snapshots {
                 print_snapshot(&snapshot);
             }
@@ -319,9 +379,10 @@ fn print_snapshot(snapshot: &ServiceSnapshot) {
             .join(",")
     };
     println!(
-        "{:<20} {:<11} {:<10} {:<16} {:?}",
+        "{:<20} {:<11} {:<11} {:<10} {:<16} {:?}",
         snapshot.id,
         format!("{:?}", snapshot.lifecycle).to_lowercase(),
+        format!("{:?}", snapshot.health.status).to_lowercase(),
         root_pid,
         owned_pids,
         snapshot.operator_hold
@@ -332,6 +393,16 @@ fn print_snapshot(snapshot: &ServiceSnapshot) {
             last_action.action,
             last_action.actor,
             last_action.reason.as_str()
+        );
+    }
+    if let Some(detail) = &snapshot.health.detail {
+        println!(
+            "  health: processReady={} transportReady={} - {detail}",
+            snapshot.health.process_ready,
+            snapshot
+                .health
+                .transport_ready
+                .map_or_else(|| "n/a".to_owned(), |ready| ready.to_string())
         );
     }
 }

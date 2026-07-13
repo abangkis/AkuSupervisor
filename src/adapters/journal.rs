@@ -302,6 +302,7 @@ impl SupervisorControl for AuditedControl {
                     ControlErrorKind::Unauthorized => ErrorCategory::Unauthorized,
                     ControlErrorKind::PortConflictExternal => ErrorCategory::PortConflictExternal,
                     ControlErrorKind::SpawnFailed => ErrorCategory::SpawnFailed,
+                    ControlErrorKind::HealthFailed => ErrorCategory::HealthFailed,
                     ControlErrorKind::ShutdownTimeout => ErrorCategory::ShutdownTimeout,
                     ControlErrorKind::OwnershipLost => ErrorCategory::OwnershipLost,
                     ControlErrorKind::ServiceNotFound | ControlErrorKind::Internal => {

@@ -10,6 +10,7 @@ pub mod control_http;
 pub mod development_shutdown;
 #[cfg(windows)]
 pub mod foreground;
+pub mod http_health;
 pub mod journal;
 pub mod runtime_token;
 pub mod service_logs;

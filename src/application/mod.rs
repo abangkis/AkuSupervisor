@@ -7,6 +7,7 @@ mod bridge_validation;
 mod control_api;
 mod cooperative_actions;
 mod cooperative_operations;
+mod health;
 mod platform_ports;
 mod service_registry;
 mod service_runtime;
@@ -25,6 +26,7 @@ pub use cooperative_operations::{
     CooperativeOperationError, CooperativeOperationManager, CooperativeOperationSnapshot,
     CooperativeOperationStatus,
 };
+pub use health::{HealthCheckSpec, HealthProbe, HealthSnapshot, HealthStatus, TransportHealth};
 pub use platform_ports::{
     LaunchSpec, ManagedProcessTree, NetworkFamily, PortDiagnostic, PortInspector, PortOccupant,
     ProcessTreeSpawner, ShutdownSignal, TreeStopReport,

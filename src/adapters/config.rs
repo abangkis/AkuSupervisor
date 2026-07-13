@@ -8,7 +8,7 @@ use serde::de::{MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::application::{LaunchSpec, ServiceRegistration};
+use crate::application::{HealthCheckSpec, LaunchSpec, ServiceRegistration};
 
 pub const CONFIG_VERSION: u32 = 1;
 
@@ -106,6 +106,36 @@ pub enum HealthCheck {
         startup_deadline_ms: u64,
         expect: BTreeMap<String, serde_json::Value>,
     },
+}
+
+impl HealthCheck {
+    fn to_spec(&self) -> HealthCheckSpec {
+        match self {
+            Self::Process => HealthCheckSpec::Process,
+            Self::HttpStatus {
+                url,
+                expected_status,
+                timeout_ms,
+                startup_deadline_ms,
+            } => HealthCheckSpec::HttpStatus {
+                url: url.clone(),
+                expected_status: *expected_status,
+                timeout: Duration::from_millis(*timeout_ms),
+                startup_deadline: Duration::from_millis(*startup_deadline_ms),
+            },
+            Self::HttpJson {
+                url,
+                timeout_ms,
+                startup_deadline_ms,
+                expect,
+            } => HealthCheckSpec::HttpJson {
+                url: url.clone(),
+                timeout: Duration::from_millis(*timeout_ms),
+                startup_deadline: Duration::from_millis(*startup_deadline_ms),
+                expect: expect.clone(),
+            },
+        }
+    }
 }
 
 /// Bounded automatic-restart behavior.
@@ -268,6 +298,7 @@ impl SupervisorConfig {
                     service_id.clone(),
                     service.label.clone(),
                     service.launch_spec(),
+                    service.health.to_spec(),
                     service.ports.clone(),
                     Duration::from_millis(service.shutdown_grace_ms),
                 )
@@ -293,6 +324,7 @@ impl SupervisorConfig {
                     service_id.clone(),
                     service.label.clone(),
                     launch,
+                    service.health.to_spec(),
                     service.ports.clone(),
                     Duration::from_millis(service.shutdown_grace_ms),
                 )
@@ -419,11 +451,16 @@ fn validate_http_fields(
     prefix: &str,
     issues: &mut Vec<ConfigIssue>,
 ) {
-    if !(url.starts_with("http://") || url.starts_with("https://")) {
+    let valid_loopback_url = url
+        .strip_prefix("http://")
+        .and_then(|remainder| remainder.split('/').next())
+        .and_then(|authority| authority.parse::<std::net::SocketAddr>().ok())
+        .is_some_and(|address| address.ip().is_loopback());
+    if !valid_loopback_url {
         issues.push(ConfigIssue::new(
             format!("{prefix}.health.url"),
             "health_url_invalid",
-            "health URL must use http or https",
+            "health URL must use an explicit loopback HTTP IP and port",
         ));
     }
     if timeout_ms == 0 {

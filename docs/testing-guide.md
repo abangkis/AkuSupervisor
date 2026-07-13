@@ -83,9 +83,10 @@ stop akusidecar manual test complete
 quit
 ```
 
-The configured `/api/health` expectation is reserved for Phase 4. At the current
-checkpoint, `running` means the owned process tree was launched; it does not yet
-mean the HTTP JSON expectation passed.
+The configured `/api/health` expectation is enforced during start and restart.
+`running` means both the owned process tree and configured health expectation
+passed. A spawned but mismatching service remains owned and reports
+`unhealthy`, so it can be diagnosed, stopped, or restarted safely.
 
 The terminal displays the current service table. Available commands are:
 
@@ -199,12 +200,25 @@ Service output is captured beneath `.runtime/services`. Each active file is
 limited to 5 MB and keeps five rotated generations. `logs` reads only the
 active file and bounds output to 1,000 lines.
 
-## 6. Remaining runtime-health boundary
+## 6. Runtime health
 
-AkuSidecar live validation passed with `/api/health`, a real `codex-sdk`
-reasoning invocation, hard restart, old-tree cleanup, and SQLite preservation.
-AkuSupervisor does not yet turn configured HTTP health into automatic
-lifecycle decisions; that remains outside the completed MVP gates.
+AkuSupervisor supports `process`, `http-status`, and shallow `http-json`
+checks. HTTP health URLs must use an explicit loopback IP and port. Start and
+restart retry until `startupDeadlineMs`; a one-second background monitor then
+updates lifecycle and cached health independently of `status` reads.
+
+Verify the live snapshot from a second terminal:
+
+```powershell
+.\target\dev\aku-supervisor.exe status --json
+```
+
+Inspect `response.services[].health`: `processReady` proves the owned tree is
+present, `transportReady` proves an HTTP response was obtained, and `status`
+proves the configured expectation matched. `checkedAtUnixMs` should advance
+between reads even when no lifecycle command is issued. HTTP health is still a
+transport/contract check; AkuSidecar's real Codex reasoning invocation remains
+an application-level readiness validation.
 
 ## 7. Development watcher
 
@@ -277,6 +291,10 @@ the current constant development build only through:
 ```powershell
 .\scripts\promote-stable.ps1
 ```
+
+Promotion is a release checkpoint, not part of the inner development loop. Run
+it once the feature set is complete, tests and live checks pass, and the stable
+path should become the default for subsequent normal launches.
 
 Use `-Config` for a non-default profile, `-Actor codex` when Codex owns the
 release action, and `-RequestId` only when an external release system supplies

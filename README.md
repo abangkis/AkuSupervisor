@@ -101,6 +101,11 @@ separate, fail-closed release action:
 .\scripts\promote-stable.ps1
 ```
 
+Run promotion at a release checkpoint, after the current development build has
+passed its tests and live validation and you want future normal launches to use
+it. Do not run it after every watcher rebuild or while a feature is still being
+implemented.
+
 The script runs `target\dev\aku-supervisor.exe bridge validate` with a fresh
 request ID before copying anything. Validation emits one JSON document and
 requires cooperative completion, all six audit stages, matching actor/request
@@ -204,9 +209,12 @@ New-Item -ItemType Directory -Force "$env:LOCALAPPDATA\AkuSupervisor"
 Copy-Item .\config\akuworkspace.services.json "$env:LOCALAPPDATA\AkuSupervisor\services.json"
 ```
 
-The profile's HTTP JSON health contract is validated as configuration. Runtime
-health evaluation inside AkuSupervisor remains a later enhancement; Gate 4 used
-the declared endpoint plus one real AkuSidecar reasoning invocation.
+The profile's health contract is enforced at runtime. Start and restart wait up
+to `startupDeadlineMs`; afterward a one-second monitor keeps `processReady`,
+`transportReady`, health status, detail, and check time current. A process that
+starts successfully but misses its health contract remains Supervisor-owned and
+enters `unhealthy`, distinct from `spawn_failed`. A later successful probe
+returns it to `running`.
 
 ## Project documents
 

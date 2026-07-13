@@ -394,6 +394,28 @@ second reload. The promotion script rejected the result and a before/after
 SHA-256 comparison proved the stable executable remained byte-for-byte
 unchanged.
 
+### Runtime health checkpoint
+
+Status: **Completed and live-validated on 2026-07-14**
+
+- [x] `process`, loopback `http-status`, and shallow `http-json` checks map to a
+  platform-neutral health contract;
+- [x] start and restart wait up to `startupDeadlineMs` and report
+  `health_failed` separately from `spawn_failed`;
+- [x] an unhealthy process remains inside the authoritative ownership boundary;
+- [x] a one-second monitor updates health without requiring a status read and
+  permits `unhealthy -> running` recovery;
+- [x] API/CLI snapshots distinguish process readiness, transport readiness,
+  matched health, timestamp, and bounded diagnostic detail; and
+- [x] HTTP probing uses a shared `std::net` adapter with no Windows or CNG
+  dependency.
+
+Live AkuSidecar evidence reported `running / healthy`, `processReady=true`,
+`transportReady=true`, and three matching JSON fields. Two snapshots three
+seconds apart showed `checkedAtUnixMs` advancing without a lifecycle command.
+The isolated test suite covered health failure with retained ownership and
+later recovery.
+
 ### Phase 6 - MCP adapter
 
 Status: **Deferred until Gate 4; preferably after Gate 5**

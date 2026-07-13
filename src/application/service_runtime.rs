@@ -71,6 +71,37 @@ impl<Process> ServiceRuntime<Process> {
         Ok(self.lock()?.process.is_some())
     }
 
+    /// Applies a current health observation without changing process ownership.
+    ///
+    /// Running services may move between `running` and `unhealthy`. Other
+    /// lifecycle states are left unchanged so health cannot mask a stop or
+    /// platform failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns a poisoned-lock or lifecycle-transition error.
+    pub fn apply_health(&self, healthy: bool) -> Result<(), ServiceRuntimeError<()>> {
+        let mut inner = self.lock()?;
+        let requested = if healthy {
+            LifecycleState::Running
+        } else {
+            LifecycleState::Unhealthy
+        };
+        if inner.process.is_some()
+            && matches!(
+                inner.lifecycle,
+                LifecycleState::Running | LifecycleState::Unhealthy
+            )
+            && inner.lifecycle != requested
+        {
+            inner.lifecycle = inner
+                .lifecycle
+                .transition_to(requested)
+                .map_err(ServiceRuntimeError::Transition)?;
+        }
+        Ok(())
+    }
+
     /// Inspects lifecycle state and the retained owner under the service lock.
     ///
     /// # Errors

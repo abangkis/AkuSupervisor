@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, btree_map::Entry};
 use std::fmt;
-use std::sync::{Mutex, MutexGuard};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
@@ -11,8 +12,9 @@ use crate::domain::{
 };
 
 use super::{
-    LaunchSpec, ManagedProcessTree, PortInspector, PortOccupant, ProcessTreeSpawner,
-    RestartOutcome, ServiceRuntime, ServiceRuntimeError, StartOutcome, StopOutcome,
+    HealthCheckSpec, HealthProbe, HealthSnapshot, LaunchSpec, ManagedProcessTree, PortInspector,
+    PortOccupant, ProcessTreeSpawner, RestartOutcome, ServiceRuntime, ServiceRuntimeError,
+    StartOutcome, StopOutcome,
 };
 
 /// Platform-neutral definition of one validated, registered service.
@@ -21,6 +23,7 @@ pub struct ServiceRegistration {
     id: String,
     label: String,
     launch: LaunchSpec,
+    health: HealthCheckSpec,
     ports: Vec<u16>,
     shutdown_grace: Duration,
 }
@@ -31,6 +34,7 @@ impl ServiceRegistration {
         id: impl Into<String>,
         label: impl Into<String>,
         launch: LaunchSpec,
+        health: HealthCheckSpec,
         ports: Vec<u16>,
         shutdown_grace: Duration,
     ) -> Self {
@@ -38,6 +42,7 @@ impl ServiceRegistration {
             id: id.into(),
             label: label.into(),
             launch,
+            health,
             ports,
             shutdown_grace,
         }
@@ -72,6 +77,7 @@ pub struct ServiceSnapshot {
     pub lifecycle: LifecycleState,
     pub root_pid: Option<u32>,
     pub owned_pids: Vec<u32>,
+    pub health: HealthSnapshot,
     pub operator_hold: OperatorHold,
     pub last_action: Option<LastAction>,
 }
@@ -86,6 +92,7 @@ where
     services: BTreeMap<String, ServiceEntry<Spawner::Process>>,
     spawner: Spawner,
     port_inspector: Inspector,
+    health_probe: Arc<dyn HealthProbe>,
 }
 
 impl<Spawner, Inspector> ServiceRegistry<Spawner, Inspector>
@@ -102,6 +109,7 @@ where
         registrations: impl IntoIterator<Item = ServiceRegistration>,
         spawner: Spawner,
         port_inspector: Inspector,
+        health_probe: Arc<dyn HealthProbe>,
     ) -> Result<Self, RegistryBuildError> {
         let mut services = BTreeMap::new();
         for registration in registrations {
@@ -118,6 +126,7 @@ where
             services,
             spawner,
             port_inspector,
+            health_probe,
         })
     }
 
@@ -157,7 +166,7 @@ where
             reason,
         });
 
-        entry
+        let outcome = entry
             .runtime
             .start_with(|| {
                 self.ensure_ports_available(&entry.registration.ports)?;
@@ -165,7 +174,11 @@ where
                     .spawn(&entry.registration.launch)
                     .map_err(BackendOperationError::Process)
             })
-            .map_err(RegistryError::Runtime)
+            .map_err(RegistryError::Runtime)?;
+        if outcome == StartOutcome::Started {
+            self.wait_until_healthy(entry)?;
+        }
+        Ok(outcome)
     }
 
     /// Stops one registered service using only its retained owner.
@@ -196,7 +209,7 @@ where
         });
         let grace = entry.registration.shutdown_grace;
 
-        entry
+        let outcome = entry
             .runtime
             .stop_with(|process| {
                 process
@@ -204,7 +217,11 @@ where
                     .map(|_| ())
                     .map_err(BackendOperationError::Process)
             })
-            .map_err(RegistryError::Runtime)
+            .map_err(RegistryError::Runtime)?;
+        if outcome == StopOutcome::Stopped {
+            *lock(&entry.health)? = HealthSnapshot::unknown();
+        }
+        Ok(outcome)
     }
 
     /// Replaces one owned tree atomically, or starts it if currently stopped.
@@ -235,7 +252,7 @@ where
         });
         let grace = entry.registration.shutdown_grace;
 
-        entry
+        let outcome = entry
             .runtime
             .restart_with(
                 |process| {
@@ -251,7 +268,9 @@ where
                         .map_err(BackendOperationError::Process)
                 },
             )
-            .map_err(RegistryError::Runtime)
+            .map_err(RegistryError::Runtime)?;
+        self.wait_until_healthy(entry)?;
+        Ok(outcome)
     }
 
     /// Returns a consistent snapshot of all registered services.
@@ -265,11 +284,30 @@ where
         self.services.values().map(Self::snapshot).collect()
     }
 
+    /// Refreshes health for every service while preserving per-service
+    /// lifecycle serialization.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first process observation or lifecycle failure.
+    pub fn refresh_healths(
+        &self,
+    ) -> Result<Vec<HealthSnapshot>, RegistryError<ProcessError<Spawner>, Inspector::Error>> {
+        self.services
+            .values()
+            .map(|entry| {
+                let _mutation = lock(&entry.mutation)?;
+                self.observe_health(entry, None)
+            })
+            .collect()
+    }
+
     fn snapshot(
         entry: &ServiceEntry<Spawner::Process>,
     ) -> Result<ServiceSnapshot, RegistryError<ProcessError<Spawner>, Inspector::Error>> {
         let _mutation = lock(&entry.mutation)?;
         let control = lock(&entry.control)?;
+        let health = lock(&entry.health)?.clone();
         let (lifecycle, root_pid, owned_pids) = entry
             .runtime
             .inspect_with(|lifecycle, process| match process {
@@ -284,9 +322,101 @@ where
             lifecycle,
             root_pid,
             owned_pids,
+            health,
             operator_hold: control.policy.operator_hold(),
             last_action: control.last_action.clone(),
         })
+    }
+
+    fn wait_until_healthy(
+        &self,
+        entry: &ServiceEntry<Spawner::Process>,
+    ) -> Result<(), RegistryError<ProcessError<Spawner>, Inspector::Error>> {
+        let deadline = entry.registration.health.startup_deadline();
+        let started = Instant::now();
+        loop {
+            let remaining = deadline.checked_sub(started.elapsed()).unwrap_or_default();
+            let observation = self.observe_health(entry, Some(remaining))?;
+            if observation.is_healthy() {
+                return Ok(());
+            }
+            let elapsed = started.elapsed();
+            if elapsed >= deadline {
+                return Err(RegistryError::HealthFailed {
+                    detail: observation
+                        .detail
+                        .unwrap_or_else(|| "health expectation did not pass".to_owned()),
+                });
+            }
+            let remaining = deadline.checked_sub(elapsed).unwrap_or_default();
+            thread::sleep(Duration::from_millis(100).min(remaining));
+        }
+    }
+
+    fn observe_health(
+        &self,
+        entry: &ServiceEntry<Spawner::Process>,
+        timeout_cap: Option<Duration>,
+    ) -> Result<HealthSnapshot, RegistryError<ProcessError<Spawner>, Inspector::Error>> {
+        let process_ready = entry
+            .runtime
+            .inspect_with(|_, process| match process {
+                Some(process) => process.owned_pids().map(|pids| !pids.is_empty()),
+                None => Ok(false),
+            })
+            .map_err(map_observation_error)?;
+        let observation = if !entry
+            .runtime
+            .has_process()
+            .map_err(|_| RegistryError::InternalState)?
+        {
+            HealthSnapshot::unknown()
+        } else if !process_ready {
+            HealthSnapshot::unhealthy(
+                false,
+                match entry.registration.health {
+                    HealthCheckSpec::Process => None,
+                    _ => Some(false),
+                },
+                "owned process tree is not ready".to_owned(),
+            )
+        } else {
+            match &entry.registration.health {
+                HealthCheckSpec::Process => {
+                    HealthSnapshot::healthy(true, None, "owned process tree is ready".to_owned())
+                }
+                check => {
+                    let timeout = timeout_cap.map_or_else(
+                        || check.timeout().expect("HTTP health has a timeout"),
+                        |cap| check.timeout().expect("HTTP health has a timeout").min(cap),
+                    );
+                    let transport = self.health_probe.probe(check, timeout);
+                    if transport.healthy {
+                        HealthSnapshot::healthy(
+                            true,
+                            Some(transport.transport_ready),
+                            transport.detail,
+                        )
+                    } else {
+                        HealthSnapshot::unhealthy(
+                            true,
+                            Some(transport.transport_ready),
+                            transport.detail,
+                        )
+                    }
+                }
+            }
+        };
+        entry
+            .runtime
+            .apply_health(observation.is_healthy())
+            .map_err(|error| match error {
+                ServiceRuntimeError::Poisoned => RegistryError::LockPoisoned,
+                ServiceRuntimeError::Transition(error) => RegistryError::Transition(error),
+                _ => RegistryError::InternalState,
+            })?;
+        *lock(&entry.health)? = observation.clone();
+        Ok(observation)
     }
 
     #[allow(clippy::type_complexity)]
@@ -334,6 +464,7 @@ struct ServiceEntry<Process> {
     runtime: ServiceRuntime<Process>,
     mutation: Mutex<()>,
     control: Mutex<ControlState>,
+    health: Mutex<HealthSnapshot>,
 }
 
 impl<Process> ServiceEntry<Process> {
@@ -346,6 +477,7 @@ impl<Process> ServiceEntry<Process> {
                 policy: ControlPolicy::default(),
                 last_action: None,
             }),
+            health: Mutex::new(HealthSnapshot::unknown()),
         }
     }
 }
@@ -452,6 +584,7 @@ pub enum RegistryError<ProcessFailure, PortFailure> {
     Transition(TransitionError),
     InternalState,
     Observation(ProcessFailure),
+    HealthFailed { detail: String },
     Runtime(ServiceRuntimeError<BackendOperationError<ProcessFailure, PortFailure>>),
 }
 
@@ -468,6 +601,7 @@ impl<ProcessFailure: fmt::Display, PortFailure: fmt::Display> fmt::Display
             Self::Transition(error) => error.fmt(formatter),
             Self::InternalState => formatter.write_str("service registry invariant was violated"),
             Self::Observation(error) => write!(formatter, "process observation failed: {error}"),
+            Self::HealthFailed { detail } => write!(formatter, "service health failed: {detail}"),
             Self::Runtime(error) => error.fmt(formatter),
         }
     }
@@ -485,13 +619,13 @@ mod tests {
     use std::fmt;
     use std::process::ExitStatus;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use std::time::Duration;
 
     use crate::application::{
-        BackendOperationError, LaunchSpec, ManagedProcessTree, NetworkFamily, PortDiagnostic,
-        PortInspector, PortOccupant, ProcessTreeSpawner, ServiceRegistration, ServiceRuntimeError,
-        TreeStopReport,
+        BackendOperationError, HealthCheckSpec, HealthProbe, LaunchSpec, ManagedProcessTree,
+        NetworkFamily, PortDiagnostic, PortInspector, PortOccupant, ProcessTreeSpawner,
+        ServiceRegistration, ServiceRuntimeError, TransportHealth, TreeStopReport,
     };
     use crate::domain::{Actor, AuthorizationError, Reason};
 
@@ -558,6 +692,40 @@ mod tests {
         occupied: bool,
     }
 
+    #[derive(Debug)]
+    struct FakeHealthProbe;
+
+    impl HealthProbe for FakeHealthProbe {
+        fn probe(&self, _check: &HealthCheckSpec, _timeout: Duration) -> TransportHealth {
+            TransportHealth {
+                transport_ready: true,
+                healthy: true,
+                detail: "fixture healthy".to_owned(),
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    struct ToggleHealthProbe {
+        healthy: Arc<AtomicBool>,
+    }
+
+    impl HealthProbe for ToggleHealthProbe {
+        fn probe(&self, _check: &HealthCheckSpec, _timeout: Duration) -> TransportHealth {
+            let healthy = self.healthy.load(Ordering::SeqCst);
+            TransportHealth {
+                transport_ready: healthy,
+                healthy,
+                detail: if healthy {
+                    "fixture healthy"
+                } else {
+                    "fixture health mismatch"
+                }
+                .to_owned(),
+            }
+        }
+    }
+
     impl PortInspector for FakePortInspector {
         type Error = FakeError;
 
@@ -581,7 +749,29 @@ mod tests {
                 ".",
                 std::iter::empty::<(&str, &str)>(),
             ),
+            HealthCheckSpec::Process,
             ports,
+            Duration::from_millis(10),
+        )
+    }
+
+    fn http_registration() -> ServiceRegistration {
+        ServiceRegistration::new(
+            "fixture",
+            "Fixture",
+            LaunchSpec::new(
+                "fixture",
+                std::iter::empty::<&str>(),
+                ".",
+                std::iter::empty::<(&str, &str)>(),
+            ),
+            HealthCheckSpec::HttpStatus {
+                url: "http://127.0.0.1:49001/health".to_owned(),
+                expected_status: 200,
+                timeout: Duration::from_millis(1),
+                startup_deadline: Duration::ZERO,
+            },
+            Vec::new(),
             Duration::from_millis(10),
         )
     }
@@ -598,6 +788,7 @@ mod tests {
                 spawn_count: Arc::new(AtomicU32::new(0)),
             },
             FakePortInspector { occupied: false },
+            Arc::new(FakeHealthProbe),
         )
         .expect("valid registry");
 
@@ -626,6 +817,7 @@ mod tests {
                 spawn_count: Arc::clone(&spawn_count),
             },
             FakePortInspector { occupied: true },
+            Arc::new(FakeHealthProbe),
         )
         .expect("valid registry");
 
@@ -638,5 +830,37 @@ mod tests {
             )))
         ));
         assert_eq!(spawn_count.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn health_failure_retains_owner_and_later_snapshot_recovers() {
+        let healthy = Arc::new(AtomicBool::new(false));
+        let registry = ServiceRegistry::new(
+            [http_registration()],
+            FakeSpawner {
+                spawn_count: Arc::new(AtomicU32::new(0)),
+            },
+            FakePortInspector { occupied: false },
+            Arc::new(ToggleHealthProbe {
+                healthy: Arc::clone(&healthy),
+            }),
+        )
+        .expect("valid registry");
+
+        let failed = registry.start("fixture", Actor::UserCli, reason("user start"));
+        assert!(matches!(failed, Err(RegistryError::HealthFailed { .. })));
+        let unhealthy = registry.snapshots().expect("unhealthy snapshot").remove(0);
+        assert_eq!(
+            unhealthy.lifecycle,
+            crate::domain::LifecycleState::Unhealthy
+        );
+        assert_eq!(unhealthy.root_pid, Some(1_000));
+        assert!(!unhealthy.health.is_healthy());
+
+        healthy.store(true, Ordering::SeqCst);
+        registry.refresh_healths().expect("health refresh");
+        let recovered = registry.snapshots().expect("recovered snapshot").remove(0);
+        assert_eq!(recovered.lifecycle, crate::domain::LifecycleState::Running);
+        assert!(recovered.health.is_healthy());
     }
 }
