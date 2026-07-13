@@ -1,12 +1,12 @@
 # AkuSupervisor
 
-AkuSupervisor is a planned generic, configuration-driven supervisor for local development services on Windows.
+AkuSupervisor is a generic, configuration-driven supervisor for local development services on Windows.
 
-This repository currently contains the initial project scaffold and planning documents. Implementation has not started yet.
+The Rust foundation is complete. The current binary exposes only help and version information; service lifecycle behavior begins in Roadmap Phase 1.
 
-Rust has been selected for the implementation pilot. The existing Node placeholder files are temporary and will be replaced during Roadmap Phase 0 after the Rust MSVC toolchain is ready.
+Rust is the implementation language, targeting `x86_64-pc-windows-msvc` for the initial AkuWorkspace pilot.
 
-## Planned structure
+## Structure
 
 ```text
 AkuSupervisor/
@@ -17,15 +17,25 @@ AkuSupervisor/
   schemas/
     service-config.schema.json
   src/
-    cli.mjs
-    config.mjs
-    control-server.mjs
-    health.mjs
-    journal.mjs
-    process-tree.mjs
-    supervisor.mjs
-  test/
-  package.json
+    adapters/
+    application/
+    domain/
+    platform/
+    cli.rs
+    lib.rs
+    main.rs
+  tests/
+    cli_smoke.rs
+  Cargo.toml
+```
+
+## Development
+
+```powershell
+cargo run -- --help
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-targets
 ```
 
 ## Project documents

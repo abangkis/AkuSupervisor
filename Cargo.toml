@@ -1,0 +1,26 @@
+[package]
+name = "aku-supervisor"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+description = "Generic, configuration-driven supervisor for local development services"
+license = "UNLICENSED"
+publish = false
+
+[lib]
+name = "aku_supervisor"
+path = "src/lib.rs"
+
+[[bin]]
+name = "aku-supervisor"
+path = "src/main.rs"
+
+[dependencies]
+
+[lints.rust]
+missing_debug_implementations = "warn"
+unsafe_code = "deny"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"

@@ -49,7 +49,7 @@ flowchart TB
 
 ### Phase 0 - Rust foundation
 
-Status: **In progress**
+Status: **Completed - Gate 0 passed**
 
 Current checkpoint:
 
@@ -57,9 +57,9 @@ Current checkpoint:
 - [x] Stable `x86_64-pc-windows-msvc` toolchain selected as the default.
 - [x] Cargo, rustfmt, Clippy, and rust-analyzer installed.
 - [x] Visual Studio MSVC x64/x86 tools and Windows 11 SDK detected.
-- [ ] Replace the temporary Node scaffold with the Cargo project.
-- [ ] Build and run the first linked AkuSupervisor binary.
-- [ ] Run the complete formatting, linting, and test baseline.
+- [x] Replace the temporary Node scaffold with the Cargo project.
+- [x] Build and run the first linked AkuSupervisor binary.
+- [x] Run the complete formatting, linting, and test baseline.
 
 Deliverables:
 
