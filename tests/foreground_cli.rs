@@ -22,7 +22,9 @@ fn process_fixture() -> &'static str {
 #[test]
 fn foreground_cli_runs_registered_lifecycle_and_cleans_up() {
     let directory = TestDirectory::create();
-    let config_path = directory.path.join("services.json");
+    let config_directory = directory.path.join("AkuSupervisor");
+    fs::create_dir_all(&config_directory).expect("create default config directory");
+    let config_path = config_directory.join("services.json");
     let config = json!({
         "version": 1,
         "control": {
@@ -51,9 +53,8 @@ fn foreground_cli_runs_registered_lifecycle_and_cleans_up() {
     .expect("write fixture config");
 
     let child = Command::new(supervisor())
-        .arg("run")
-        .arg("--config")
-        .arg(&config_path)
+        .env_remove("AKU_SUPERVISOR_CONFIG")
+        .env("LOCALAPPDATA", &directory.path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

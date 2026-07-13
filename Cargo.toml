@@ -6,6 +6,7 @@ rust-version = "1.97"
 description = "Generic, configuration-driven supervisor for local development services"
 license = "UNLICENSED"
 publish = false
+default-run = "aku-supervisor"
 
 [features]
 default = []

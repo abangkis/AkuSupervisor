@@ -34,8 +34,23 @@ The important behavioral tests prove that:
 Given a valid service configuration:
 
 ```powershell
-cargo run -- run --config C:\path\to\services.json
+cargo run -- --config C:\path\to\services.json
 ```
+
+For normal daily use, place the file at:
+
+```text
+%LOCALAPPDATA%\AkuSupervisor\services.json
+```
+
+Then startup requires no application arguments:
+
+```powershell
+cargo run
+```
+
+`AKU_SUPERVISOR_CONFIG` may override the default location. An explicit
+`--config` path has the highest priority.
 
 The terminal displays the current service table. Available commands are:
 

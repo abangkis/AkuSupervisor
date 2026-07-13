@@ -48,7 +48,8 @@ AkuSupervisor/
 
 ```powershell
 cargo run -- --help
-cargo run -- run --config C:\path\to\services.json
+cargo run
+cargo run -- --config C:\path\to\services.json
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets --all-features
@@ -66,6 +67,14 @@ For a visible process-tree and Ctrl+C cleanup demo, follow the
 While `run` is active, use `status`, `start <service> [reason]`,
 `stop <service> [reason]`, `restart <service> [reason]`, and `quit` in the same
 terminal.
+
+Without `--config`, AkuSupervisor resolves configuration in this order:
+
+1. `AKU_SUPERVISOR_CONFIG` environment variable;
+2. `%LOCALAPPDATA%\AkuSupervisor\services.json` on Windows.
+
+If the selected file does not exist, startup fails clearly and does not create
+an empty configuration.
 
 ## Project documents
 

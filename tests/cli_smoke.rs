@@ -1,4 +1,5 @@
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 fn binary() -> Command {
     Command::new(env!("CARGO_BIN_EXE_aku-supervisor"))
@@ -43,4 +44,28 @@ fn unsupported_commands_fail_closed() {
     assert_eq!(output.status.code(), Some(2));
     let stderr = String::from_utf8(output.stderr).expect("error output should be UTF-8");
     assert!(stderr.contains("unsupported argument"));
+}
+
+#[test]
+fn no_argument_reports_the_missing_default_configuration() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock after epoch")
+        .as_nanos();
+    let missing_root = std::env::temp_dir().join(format!(
+        "aku-supervisor-missing-config-{}-{unique}",
+        std::process::id()
+    ));
+    let output = binary()
+        .env_remove("AKU_SUPERVISOR_CONFIG")
+        .env("LOCALAPPDATA", &missing_root)
+        .output()
+        .expect("AkuSupervisor binary should run");
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr).expect("error output should be UTF-8");
+    assert!(stderr.contains("no configuration found"));
+    assert!(stderr.contains("AkuSupervisor\\services.json"));
+    assert!(stderr.contains("use --config <path>"));
 }

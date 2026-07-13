@@ -176,6 +176,8 @@ Current checkpoint:
   port checks, operator holds, actor, and reason;
 - complete: visible `run --config <path>` foreground supervisor with an
   interactive status table and Ctrl+C/quit cleanup;
+- complete: no-argument startup resolves `AKU_SUPERVISOR_CONFIG` then the
+  platform default user configuration and fails clearly when neither exists;
 - verified: an end-to-end fixture performs start, status, restart, stop, and
   quit without leaving an owned process tree;
 - verified: user stop blocks a later agent start in the shared registry;

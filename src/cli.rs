@@ -1,23 +1,26 @@
 //! User-visible command-line boundary.
 
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use crate::VERSION;
 
 const HELP: &str = "AkuSupervisor - local development service supervisor\n\n\
 Usage:\n\
+  aku-supervisor\n\
+  aku-supervisor --config <path>\n\
+  aku-supervisor run\n\
+  aku-supervisor run --config <path>\n\
   aku-supervisor --help\n\
-  aku-supervisor --version\n\
-  aku-supervisor run --config <path>\n\n\
-The run command starts a visible interactive supervisor. Type help at its prompt.";
+  aku-supervisor --version\n\n\
+Without --config, AkuSupervisor checks AKU_SUPERVISOR_CONFIG and then the default user configuration.";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Command {
     Help,
     Version,
-    Run { config: PathBuf },
+    Run { config: Option<PathBuf> },
 }
 
 /// Runs the CLI using an argument iterator that excludes the executable name.
@@ -31,7 +34,7 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
             println!("aku-supervisor {VERSION}");
             ExitCode::SUCCESS
         }
-        Ok(Command::Run { config }) => run_foreground(&config),
+        Ok(Command::Run { config }) => run_foreground(config),
         Err(message) => {
             eprintln!("error: {message}\n\n{HELP}");
             ExitCode::from(2)
@@ -42,25 +45,36 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
 fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, String> {
     let arguments = arguments.into_iter().collect::<Vec<_>>();
     match arguments.as_slice() {
-        [] => Ok(Command::Help),
+        [] => Ok(Command::Run { config: None }),
         [flag] if flag == "--help" || flag == "-h" => Ok(Command::Help),
         [flag] if flag == "--version" || flag == "-V" => Ok(Command::Version),
+        [config_flag, config] if config_flag == "--config" => Ok(Command::Run {
+            config: Some(PathBuf::from(config)),
+        }),
+        [run] if run == "run" => Ok(Command::Run { config: None }),
         [run, config_flag, config] if run == "run" && config_flag == "--config" => {
             Ok(Command::Run {
-                config: PathBuf::from(config),
+                config: Some(PathBuf::from(config)),
             })
         }
         [argument] => Err(format!(
             "unsupported argument: {}",
             argument.to_string_lossy()
         )),
-        _ => Err("expected --help, --version, or run --config <path>".to_owned()),
+        _ => Err("expected run, run --config <path>, --help, or --version".to_owned()),
     }
 }
 
 #[cfg(windows)]
-fn run_foreground(config: &Path) -> ExitCode {
-    match crate::adapters::foreground::run(config) {
+fn run_foreground(explicit_config: Option<PathBuf>) -> ExitCode {
+    let resolved = match crate::adapters::config_path::resolve_config_path(explicit_config) {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            eprintln!("error: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match crate::adapters::foreground::run(resolved.path()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("error: {error}");
@@ -70,13 +84,15 @@ fn run_foreground(config: &Path) -> ExitCode {
 }
 
 #[cfg(not(windows))]
-fn run_foreground(_config: &Path) -> ExitCode {
+fn run_foreground(_explicit_config: Option<PathBuf>) -> ExitCode {
     eprintln!("error: no lifecycle platform adapter is implemented for this operating system");
     ExitCode::FAILURE
 }
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::{Command, parse};
 
     fn args(values: &[&str]) -> Vec<std::ffi::OsString> {
@@ -84,8 +100,9 @@ mod tests {
     }
 
     #[test]
-    fn no_argument_shows_help() {
-        assert_eq!(parse(args(&[])), Ok(Command::Help));
+    fn no_argument_starts_with_discovered_configuration() {
+        assert_eq!(parse(args(&[])), Ok(Command::Run { config: None }));
+        assert_eq!(parse(args(&["run"])), Ok(Command::Run { config: None }));
     }
 
     #[test]
@@ -100,15 +117,16 @@ mod tests {
     }
 
     #[test]
-    fn run_requires_an_explicit_configuration_path() {
+    fn explicit_configuration_path_is_supported() {
+        let expected = Ok(Command::Run {
+            config: Some(PathBuf::from("services.json")),
+        });
+        assert_eq!(parse(args(&["--config", "services.json"])), expected);
         assert_eq!(
             parse(args(&["run", "--config", "services.json"])),
             Ok(Command::Run {
-                config: PathBuf::from("services.json")
+                config: Some(PathBuf::from("services.json"))
             })
         );
-        assert!(parse(args(&["run"])).is_err());
     }
-
-    use std::path::PathBuf;
 }
