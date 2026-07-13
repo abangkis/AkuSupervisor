@@ -3,6 +3,8 @@ use std::fmt;
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
+use serde::Serialize;
+
 use crate::domain::{
     Actor, AuthorizationError, ControlPolicy, LifecycleAction, LifecycleState, OperatorHold,
     Reason, TransitionError,
@@ -53,7 +55,8 @@ impl ServiceRegistration {
 }
 
 /// Most recent accepted lifecycle request for one service.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LastAction {
     pub action: LifecycleAction,
     pub actor: Actor,
@@ -61,7 +64,8 @@ pub struct LastAction {
 }
 
 /// Read-only service state returned to every control adapter.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ServiceSnapshot {
     pub id: String,
     pub label: String,

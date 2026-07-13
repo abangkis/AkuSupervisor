@@ -166,7 +166,7 @@ live Job Object owner; observed PIDs and ports have no termination API.
 
 ### Phase 3 - Visible CLI and local control API
 
-Status: **In progress - foreground CLI checkpoint complete**
+Status: **In progress - authenticated local-control checkpoint complete**
 
 Current checkpoint:
 
@@ -185,8 +185,19 @@ Current checkpoint:
   source;
 - prepared: a checked-in AkuWorkspace profile registers AkuSidecar without
   overriding its persisted dashboard configuration;
-- remaining: persistent journal/events, bounded service logs, authenticated
-  loopback HTTP, runtime token handling, and request idempotency.
+- complete: loopback HTTP exposes health and service status plus
+  bearer-authenticated registered-service mutations;
+- complete: a 256-bit CNG token is created atomically, stored beneath the
+  configured runtime directory, compared without early exit, and redacted from
+  debug output;
+- complete: a bounded second-process client supports status, start, stop, and
+  restart with explicit actor and reason;
+- verified: invalid tokens cannot mutate state and a user stop hold rejects a
+  later Codex start through the HTTP boundary;
+- verified: shared HTTP, client, token, and application control code contains
+  no Windows implementation import;
+- remaining: persistent journal/events, bounded service logs, token-file ACL
+  hardening, and request idempotency.
 
 Deliverables:
 
@@ -309,9 +320,13 @@ The shared contracts and proposed adapter strategies are maintained in
 
 Deliverables:
 
+- extract the shared foreground interaction/API loop from the concrete Windows
+  registry and console-shutdown composition before adding a second backend;
 - implement Linux and macOS process ownership behind `ProcessTreeSpawner` and
   `ManagedProcessTree` without changing lifecycle application code;
 - implement platform-native port diagnostics and shutdown signals;
+- provide native secure-token entropy and current-user token-file permissions
+  without changing the shared HTTP, token, or control interfaces;
 - add native CI jobs and process-tree fixtures for each operating system;
 - prove unrelated-process and PID-reuse safety independently on each OS; and
 - document any capability difference rather than weakening the shared contract.
@@ -321,7 +336,10 @@ Gate 9:
 - the application and domain layers compile unchanged on all three OS targets;
 - each native backend passes equivalent ownership, concurrency, port, and
   shutdown tests; and
-- no backend claims support by falling back to process-name or port-based kill.
+- no backend claims support by falling back to process-name or port-based kill;
+  and
+- CNG, POSIX permission bits, and other native secret-storage details remain
+  outside the shared control plane.
 
 ## 5. Cross-phase testing strategy
 

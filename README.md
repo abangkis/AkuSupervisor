@@ -5,7 +5,9 @@ AkuSupervisor is a generic, configuration-driven supervisor for local developmen
 Roadmap Phase 2 and its Windows process-ownership safety gate are complete.
 Phase 3 now has a visible foreground CLI checkpoint with validated
 configuration, status, start, stop, restart, operator holds, and exit cleanup.
-The authenticated HTTP control adapter is not implemented yet.
+It also exposes a loopback HTTP control checkpoint with bearer-authenticated
+mutations and a bounded client CLI for control from another terminal or Codex.
+Persistent journal/events, bounded logs, and request idempotency remain.
 
 Rust is the implementation language, targeting `x86_64-pc-windows-msvc` for the
 initial AkuWorkspace pilot. Platform-neutral application ports and separate
@@ -52,6 +54,8 @@ AkuSupervisor/
 cargo run -- --help
 cargo run
 cargo run -- --config C:\path\to\services.json
+cargo run -- status
+cargo run -- restart akusidecar --actor codex --reason "source changed"
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets --all-features
@@ -70,6 +74,22 @@ While `run` is active, use `status`, `start <service> [reason]`,
 `stop <service> [reason]`, `restart <service> [reason]`, and `quit` in the same
 terminal.
 
+From a second terminal, use the control client while the foreground supervisor
+continues running visibly:
+
+```powershell
+cargo run -- status
+cargo run -- start akusidecar --reason "manual development start"
+cargo run -- restart akusidecar --actor codex --reason "backend source changed"
+cargo run -- stop akusidecar --reason "manual development stop"
+```
+
+`user` is the default client actor. Codex must pass `--actor codex`. Every
+mutation requires an explicit reason and can select only a service already
+registered in configuration; executable paths and arguments are never accepted
+by the control protocol. A user stop creates a hold that blocks a later Codex
+start or restart until a user explicitly starts or restarts the service.
+
 Without `--config`, AkuSupervisor resolves configuration in this order:
 
 1. `AKU_SUPERVISOR_CONFIG` environment variable;
@@ -79,6 +99,11 @@ If the selected file does not exist, startup fails clearly and does not create
 an empty configuration. On successful startup, the terminal prints the
 absolute configuration path and whether it came from `--config`,
 `AKU_SUPERVISOR_CONFIG`, or the default user location.
+
+Startup also prints the loopback API address and token-file path. A 256-bit
+token is generated on first startup using Windows CNG. The token value is never
+printed and must not be pasted into commands; the client reads it from the
+configured runtime file.
 
 The checked-in AkuWorkspace pilot profile is
 [`config/akuworkspace.services.json`](config/akuworkspace.services.json). It

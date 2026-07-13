@@ -1,10 +1,10 @@
 # AkuSupervisor Testing Guide
 
-Current test scope: **Phase 2 ownership and Phase 3 foreground CLI checkpoint**
+Current test scope: **Phase 2 ownership and Phase 3 local-control checkpoint**
 
-The visible CLI can now load a validated configuration and accept lifecycle
-commands in its own terminal. Authenticated control from a separate CLI or HTTP
-client is not implemented yet.
+The visible CLI loads a validated configuration and accepts lifecycle commands
+in its own terminal. The same registry is reachable from a separate bounded CLI
+through the loopback HTTP adapter; mutations require the runtime bearer token.
 
 ## 1. Automated verification
 
@@ -25,9 +25,12 @@ The important behavioral tests prove that:
 - dropping the owner closes its Job Object and cleans up the tree;
 - a port occupant is reported without being stopped;
 - sixteen concurrent starts create only one owner; and
-- console interruption cleans the owned tree before the fixture supervisor exits.
+- console interruption cleans the owned tree before the fixture supervisor exits;
 - the foreground CLI completes start, status, restart, stop, and quit against a
-  real owned fixture tree.
+  real owned fixture tree;
+- a separate client process controls that same registry through loopback HTTP;
+- an invalid bearer token never reaches the lifecycle core; and
+- a user stop hold rejects a later Codex start without changing state.
 
 ## 2. Foreground supervisor
 
@@ -62,6 +65,8 @@ source, for example:
 ```text
 Configuration: C:\Users\Force\AppData\Local\AkuSupervisor\services.json
 Configuration source: default user configuration
+Control API: http://127.0.0.1:47820
+Control token: C:\Users\Force\AppData\Local\AkuSupervisor\.runtime\control-token
 ```
 
 `AKU_SUPERVISOR_CONFIG` may override the default location. An explicit
@@ -97,7 +102,28 @@ Executable, arguments, working directory, and environment always come from the
 validated configuration. Interactive input can select only a registered
 service and supply an auditable reason.
 
-## 3. Visible manual process-tree demo
+## 3. Separate terminal or Codex control
+
+Leave `cargo run` active in the first terminal. In a second terminal:
+
+```powershell
+cd C:\WorkspaceCodex\AkuWorkspace\AkuSupervisor
+cargo run -- status
+cargo run -- start akusidecar --reason "manual supervised start"
+cargo run -- restart akusidecar --actor codex --reason "source changed"
+cargo run -- stop akusidecar --reason "manual supervised stop"
+```
+
+The default actor is `user`; Codex uses `--actor codex`. `--reason` is mandatory
+for every mutation. The client discovers the same configuration and token file
+as the server, then prints the absolute configuration path, API address, and
+bounded JSON response. It never accepts executable, argument, environment, or
+working-directory input.
+
+Read-only service status is loopback-visible. Start, stop, and restart require a
+valid bearer token read from the runtime file. The token itself is never printed.
+
+## 4. Visible manual process-tree demo
 
 Build the demo, then execute it directly so Cargo is not an intermediary for
 the Ctrl+C signal:
@@ -133,9 +159,9 @@ After cleanup, the same command should report that those processes no longer
 exist. Do not substitute unrelated PIDs into any termination command; the demo
 itself only operates on its Job Object.
 
-## 4. Current limitation
+## 5. Current limitation
 
-The foreground CLI checkpoint does not yet expose HTTP authentication,
-persistent event retrieval, or bounded log commands. AkuSidecar live validation
-remains Phase 4 and will include a real reasoning invocation, not only
-`/api/health`.
+The local-control checkpoint does not yet expose persistent event retrieval,
+bounded log commands, request idempotency, or runtime health evaluation.
+AkuSidecar live validation remains Phase 4 and will include a real reasoning
+invocation, not only `/api/health`.

@@ -2,6 +2,7 @@
 
 use std::fs;
 use std::io::Write;
+use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::thread;
@@ -25,11 +26,12 @@ fn foreground_cli_runs_registered_lifecycle_and_cleans_up() {
     let config_directory = directory.path.join("AkuSupervisor");
     fs::create_dir_all(&config_directory).expect("create default config directory");
     let config_path = config_directory.join("services.json");
+    let control_port = available_port();
     let config = json!({
         "version": 1,
         "control": {
             "host": "127.0.0.1",
-            "port": 47820,
+            "port": control_port,
             "tokenFile": ".runtime/control-token"
         },
         "services": {
@@ -61,6 +63,8 @@ fn foreground_cli_runs_registered_lifecycle_and_cleans_up() {
         .spawn()
         .expect("start foreground supervisor");
     let mut guard = ChildGuard::new(child);
+    verify_remote_control(&directory.path);
+
     let mut stdin = guard.child_mut().stdin.take().expect("supervisor stdin");
     stdin
         .write_all(
@@ -100,6 +104,84 @@ fn foreground_cli_runs_registered_lifecycle_and_cleans_up() {
     assert!(stdout.contains("stopped fixture"));
     assert!(stdout.contains("Owned service cleanup complete."));
     assert!(stderr.is_empty(), "unexpected supervisor error: {stderr}");
+}
+
+fn verify_remote_control(local_app_data: &std::path::Path) {
+    let initial_status = wait_for_control_client(local_app_data);
+    assert!(String::from_utf8_lossy(&initial_status.stdout).contains("\"lifecycle\": \"stopped\""));
+
+    let started = run_client(
+        local_app_data,
+        &[
+            "start",
+            "fixture",
+            "--actor",
+            "codex",
+            "--reason",
+            "remote integration start",
+        ],
+    );
+    assert!(started.status.success(), "remote start failed: {started:?}");
+    assert!(String::from_utf8_lossy(&started.stdout).contains("\"outcome\": \"started\""));
+
+    let running = run_client(local_app_data, &["status"]);
+    assert!(
+        running.status.success(),
+        "remote status failed: {running:?}"
+    );
+    assert!(String::from_utf8_lossy(&running.stdout).contains("\"lifecycle\": \"running\""));
+
+    let stopped = run_client(
+        local_app_data,
+        &["stop", "fixture", "--reason", "remote user stop hold"],
+    );
+    assert!(stopped.status.success(), "remote stop failed: {stopped:?}");
+
+    let blocked = run_client(
+        local_app_data,
+        &[
+            "start",
+            "fixture",
+            "--actor",
+            "codex",
+            "--reason",
+            "agent retry after user stop",
+        ],
+    );
+    assert_eq!(blocked.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&blocked.stderr).contains("HTTP 403"));
+}
+
+fn wait_for_control_client(local_app_data: &std::path::Path) -> std::process::Output {
+    let deadline = Instant::now() + EXIT_TIMEOUT;
+    loop {
+        let output = run_client(local_app_data, &["status"]);
+        if output.status.success() {
+            return output;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "control client was not ready: {output:?}"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn run_client(local_app_data: &std::path::Path, arguments: &[&str]) -> std::process::Output {
+    Command::new(supervisor())
+        .args(arguments)
+        .env_remove("AKU_SUPERVISOR_CONFIG")
+        .env("LOCALAPPDATA", local_app_data)
+        .output()
+        .expect("run control client")
+}
+
+fn available_port() -> u16 {
+    TcpListener::bind(("127.0.0.1", 0))
+        .expect("reserve ephemeral test port")
+        .local_addr()
+        .expect("ephemeral listener address")
+        .port()
 }
 
 struct TestDirectory {

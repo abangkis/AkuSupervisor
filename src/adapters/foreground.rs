@@ -2,14 +2,18 @@ use std::fmt;
 use std::fs;
 use std::io::{self, BufRead};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::Duration;
 
 use crate::adapters::config::{ConfigError, SupervisorConfig};
 use crate::adapters::config_path::ResolvedConfigPath;
+use crate::adapters::control_http::{ControlHttpError, ControlHttpServer};
+use crate::adapters::runtime_token::{RuntimeToken, RuntimeTokenError, resolve_token_path};
 use crate::application::{
     RegistryBuildError, ServiceRegistry, ServiceSnapshot, StartOutcome, StopOutcome,
+    SupervisorControl,
 };
 use crate::domain::{Actor, Reason};
 use crate::platform::windows::{
@@ -41,19 +45,33 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
     let config = SupervisorConfig::parse_json(&source).map_err(ForegroundError::Config)?;
     config.validate().map_err(ForegroundError::Config)?;
     let fingerprint = config.fingerprint().map_err(ForegroundError::Config)?;
-    let registry = WindowsRegistry::new(
-        config.service_registrations(),
-        WindowsProcessSpawner,
-        WindowsPortInspector,
+    let token_path = resolve_token_path(config_path, &config.control.token_file);
+    let token = RuntimeToken::load_or_create(
+        &token_path,
+        crate::platform::windows::generate_control_token,
     )
-    .map_err(ForegroundError::RegistryBuild)?;
+    .map_err(ForegroundError::RuntimeToken)?;
+    let registry = Arc::new(
+        WindowsRegistry::new(
+            config.service_registrations(),
+            WindowsProcessSpawner,
+            WindowsPortInspector,
+        )
+        .map_err(ForegroundError::RegistryBuild)?,
+    );
     let shutdown = ConsoleShutdown::install().map_err(ForegroundError::Console)?;
+    let control: Arc<dyn SupervisorControl> = registry.clone();
+    let mut control_server =
+        ControlHttpServer::start(&config.control.host, config.control.port, token, control)
+            .map_err(ForegroundError::ControlApi)?;
 
     println!("AkuSupervisor {}", crate::VERSION);
     println!("Configuration: {}", config_path.display());
     println!("Configuration source: {}", resolved_config.source());
     println!("Fingerprint: {fingerprint}");
-    println!("Mode: visible interactive supervisor (Phase 3 CLI checkpoint)");
+    println!("Control API: http://{}", control_server.address());
+    println!("Control token: {}", token_path.display());
+    println!("Mode: visible interactive supervisor (Phase 3 local-control checkpoint)");
     print_status(&registry);
     println!("{INTERACTIVE_HELP}");
 
@@ -77,7 +95,13 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
         }
     }
 
-    cleanup(&registry)
+    let server_result = control_server.shutdown();
+    let cleanup_result = cleanup(&registry);
+    if let Err(error) = server_result {
+        cleanup_result?;
+        return Err(ForegroundError::ControlApi(error));
+    }
+    cleanup_result
 }
 
 fn read_input(sender: &mpsc::Sender<InputEvent>) {
@@ -251,6 +275,8 @@ pub enum ForegroundError {
     ReadConfig { path: PathBuf, source: io::Error },
     Config(ConfigError),
     RegistryBuild(RegistryBuildError),
+    RuntimeToken(RuntimeTokenError),
+    ControlApi(ControlHttpError),
     Console(ConsoleShutdownError),
     Input(io::Error),
     Cleanup(Vec<String>),
@@ -264,6 +290,8 @@ impl fmt::Display for ForegroundError {
             }
             Self::Config(error) => error.fmt(formatter),
             Self::RegistryBuild(error) => error.fmt(formatter),
+            Self::RuntimeToken(error) => error.fmt(formatter),
+            Self::ControlApi(error) => error.fmt(formatter),
             Self::Console(error) => error.fmt(formatter),
             Self::Input(error) => write!(formatter, "interactive input failed: {error}"),
             Self::Cleanup(failures) => {

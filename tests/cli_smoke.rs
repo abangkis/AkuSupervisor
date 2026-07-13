@@ -43,7 +43,7 @@ fn unsupported_commands_fail_closed() {
 
     assert_eq!(output.status.code(), Some(2));
     let stderr = String::from_utf8(output.stderr).expect("error output should be UTF-8");
-    assert!(stderr.contains("unsupported argument"));
+    assert!(stderr.contains("service ID is required"));
 }
 
 #[test]

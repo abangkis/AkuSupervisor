@@ -5,6 +5,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use crate::VERSION;
+use crate::adapters::control_http::ApiActor;
+use crate::application::ControlAction;
 
 const HELP: &str = "AkuSupervisor - local development service supervisor\n\n\
 Usage:\n\
@@ -12,6 +14,8 @@ Usage:\n\
   aku-supervisor --config <path>\n\
   aku-supervisor run\n\
   aku-supervisor run --config <path>\n\
+  aku-supervisor status [--config <path>]\n\
+  aku-supervisor <start|stop|restart> <service> --reason <text> [--actor <user|codex>] [--config <path>]\n\
   aku-supervisor --help\n\
   aku-supervisor --version\n\n\
 Without --config, AkuSupervisor checks AKU_SUPERVISOR_CONFIG and then the default user configuration.";
@@ -21,6 +25,21 @@ enum Command {
     Help,
     Version,
     Run { config: Option<PathBuf> },
+    Remote(RemoteCommand),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RemoteCommand {
+    Status {
+        config: Option<PathBuf>,
+    },
+    Mutate {
+        action: ControlAction,
+        service_id: String,
+        reason: String,
+        actor: ApiActor,
+        config: Option<PathBuf>,
+    },
 }
 
 /// Runs the CLI using an argument iterator that excludes the executable name.
@@ -35,6 +54,7 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
             ExitCode::SUCCESS
         }
         Ok(Command::Run { config }) => run_foreground(config),
+        Ok(Command::Remote(command)) => run_remote(command),
         Err(message) => {
             eprintln!("error: {message}\n\n{HELP}");
             ExitCode::from(2)
@@ -57,12 +77,92 @@ fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, Strin
                 config: Some(PathBuf::from(config)),
             })
         }
+        [status, rest @ ..] if status == "status" => parse_remote_status(rest),
+        [action, rest @ ..] if action == "start" || action == "stop" || action == "restart" => {
+            parse_remote_mutation(action, rest)
+        }
         [argument] => Err(format!(
             "unsupported argument: {}",
             argument.to_string_lossy()
         )),
-        _ => Err("expected run, run --config <path>, --help, or --version".to_owned()),
+        _ => Err("expected run, a lifecycle client command, --help, or --version".to_owned()),
     }
+}
+
+fn parse_remote_status(arguments: &[OsString]) -> Result<Command, String> {
+    let config = match arguments {
+        [] => None,
+        [flag, path] if flag == "--config" => Some(PathBuf::from(path)),
+        _ => return Err("status accepts only an optional --config <path>".to_owned()),
+    };
+    Ok(Command::Remote(RemoteCommand::Status { config }))
+}
+
+fn parse_remote_mutation(action: &OsString, arguments: &[OsString]) -> Result<Command, String> {
+    let Some(service_id) = arguments.first() else {
+        return Err("service ID is required".to_owned());
+    };
+    let service_id = service_id
+        .to_str()
+        .ok_or_else(|| "service ID must be UTF-8".to_owned())?
+        .to_owned();
+    if service_id.is_empty()
+        || !service_id
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    {
+        return Err(
+            "service ID must contain lowercase ASCII letters, digits, or hyphens".to_owned(),
+        );
+    }
+
+    let mut reason = None;
+    let mut actor = ApiActor::User;
+    let mut config = None;
+    let mut index = 1;
+    while index < arguments.len() {
+        let flag = &arguments[index];
+        let value = arguments
+            .get(index + 1)
+            .ok_or_else(|| format!("{} requires a value", flag.to_string_lossy()))?;
+        match flag.to_str() {
+            Some("--reason") if reason.is_none() => {
+                reason = Some(
+                    value
+                        .to_str()
+                        .ok_or_else(|| "reason must be UTF-8".to_owned())?
+                        .to_owned(),
+                );
+            }
+            Some("--actor") => {
+                actor = match value.to_str() {
+                    Some("user") => ApiActor::User,
+                    Some("codex") => ApiActor::Codex,
+                    _ => return Err("actor must be user or codex".to_owned()),
+                };
+            }
+            Some("--config") if config.is_none() => config = Some(PathBuf::from(value)),
+            Some("--reason" | "--config") => {
+                return Err(format!("duplicate option: {}", flag.to_string_lossy()));
+            }
+            _ => return Err(format!("unsupported option: {}", flag.to_string_lossy())),
+        }
+        index += 2;
+    }
+    let reason = reason.ok_or_else(|| "--reason <text> is required".to_owned())?;
+    let action = match action.to_str() {
+        Some("start") => ControlAction::Start,
+        Some("stop") => ControlAction::Stop,
+        Some("restart") => ControlAction::Restart,
+        _ => unreachable!("caller selected a lifecycle action"),
+    };
+    Ok(Command::Remote(RemoteCommand::Mutate {
+        action,
+        service_id,
+        reason,
+        actor,
+        config,
+    }))
 }
 
 #[cfg(windows)]
@@ -83,6 +183,74 @@ fn run_foreground(explicit_config: Option<PathBuf>) -> ExitCode {
     }
 }
 
+fn run_remote(command: RemoteCommand) -> ExitCode {
+    match remote_request(command) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn remote_request(command: RemoteCommand) -> Result<(), String> {
+    use std::fs;
+    use std::net::SocketAddr;
+
+    use serde_json::json;
+
+    use crate::adapters::config::SupervisorConfig;
+    use crate::adapters::config_path::resolve_config_path;
+    use crate::adapters::control_http::client_request;
+    use crate::adapters::runtime_token::{RuntimeToken, resolve_token_path};
+
+    let explicit_config = match &command {
+        RemoteCommand::Status { config } | RemoteCommand::Mutate { config, .. } => config.clone(),
+    };
+    let resolved = resolve_config_path(explicit_config).map_err(|error| error.to_string())?;
+    let source = fs::read_to_string(resolved.path())
+        .map_err(|error| format!("failed to read {}: {error}", resolved.path().display()))?;
+    let config = SupervisorConfig::parse_json(&source).map_err(|error| error.to_string())?;
+    config.validate().map_err(|error| error.to_string())?;
+    let token_path = resolve_token_path(resolved.path(), &config.control.token_file);
+    let token = RuntimeToken::load(&token_path).map_err(|error| error.to_string())?;
+    let address: SocketAddr = format!("{}:{}", config.control.host, config.control.port)
+        .parse()
+        .map_err(|error| format!("invalid control address: {error}"))?;
+
+    let (method, target, body) = match command {
+        RemoteCommand::Status { .. } => ("GET", "/v1/services".to_owned(), None),
+        RemoteCommand::Mutate {
+            action,
+            service_id,
+            reason,
+            actor,
+            ..
+        } => {
+            let action = match action {
+                ControlAction::Start => "start",
+                ControlAction::Stop => "stop",
+                ControlAction::Restart => "restart",
+            };
+            (
+                "POST",
+                format!("/v1/services/{service_id}/{action}"),
+                Some(json!({ "actor": actor, "reason": reason })),
+            )
+        }
+    };
+    let response = client_request(address, &token, method, &target, body)
+        .map_err(|error| error.to_string())?;
+    println!("Configuration: {}", resolved.path().display());
+    println!("Control API: http://{address}");
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&response)
+            .expect("control response JSON serialization cannot fail")
+    );
+    Ok(())
+}
+
 #[cfg(not(windows))]
 fn run_foreground(_explicit_config: Option<PathBuf>) -> ExitCode {
     eprintln!("error: no lifecycle platform adapter is implemented for this operating system");
@@ -93,7 +261,9 @@ fn run_foreground(_explicit_config: Option<PathBuf>) -> ExitCode {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{Command, parse};
+    use super::{Command, RemoteCommand, parse};
+    use crate::adapters::control_http::ApiActor;
+    use crate::application::ControlAction;
 
     fn args(values: &[&str]) -> Vec<std::ffi::OsString> {
         values.iter().map(std::ffi::OsString::from).collect()
@@ -111,9 +281,33 @@ mod tests {
     }
 
     #[test]
-    fn lifecycle_commands_require_the_running_supervisor_boundary() {
-        let error = parse(args(&["start"])).expect_err("start is an interactive or API action");
-        assert!(error.contains("unsupported argument"));
+    fn lifecycle_client_requires_service_and_reason() {
+        assert!(parse(args(&["start"])).is_err());
+        assert!(parse(args(&["start", "api"])).is_err());
+        assert!(parse(args(&["start", "../api", "--reason", "bad"])).is_err());
+    }
+
+    #[test]
+    fn lifecycle_client_keeps_actor_and_config_explicit() {
+        assert_eq!(
+            parse(args(&[
+                "restart",
+                "akusidecar",
+                "--actor",
+                "codex",
+                "--reason",
+                "source changed",
+                "--config",
+                "services.json",
+            ])),
+            Ok(Command::Remote(RemoteCommand::Mutate {
+                action: ControlAction::Restart,
+                service_id: "akusidecar".to_owned(),
+                reason: "source changed".to_owned(),
+                actor: ApiActor::Codex,
+                config: Some(PathBuf::from("services.json")),
+            }))
+        );
     }
 
     #[test]
@@ -127,6 +321,12 @@ mod tests {
             Ok(Command::Run {
                 config: Some(PathBuf::from("services.json"))
             })
+        );
+        assert_eq!(
+            parse(args(&["status", "--config", "services.json"])),
+            Ok(Command::Remote(RemoteCommand::Status {
+                config: Some(PathBuf::from("services.json"))
+            }))
         );
     }
 }
