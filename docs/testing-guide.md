@@ -188,3 +188,60 @@ AkuSidecar live validation passed with `/api/health`, a real `codex-sdk`
 reasoning invocation, hard restart, old-tree cleanup, and SQLite preservation.
 AkuSupervisor does not yet turn configured HTTP health into automatic
 lifecycle decisions; that remains outside the completed MVP gates.
+
+## 7. Development watcher
+
+The repository includes a Windows development watcher that does not require a
+globally installed watcher package. First stop the normally running stable
+Supervisor by typing `quit`; this one-time handoff prevents two owners from
+competing for the same control port. Then run:
+
+```powershell
+cd C:\WorkspaceCodex\AkuWorkspace\AkuSupervisor
+.\scripts\dev.ps1
+```
+
+If a non-default profile is required:
+
+```powershell
+.\scripts\dev.ps1 -Config C:\path\to\services.json
+```
+
+The terminal prints the constant executable path
+`target\dev\aku-supervisor.exe`. The script polls `src/**/*.rs`, `Cargo.toml`,
+and `Cargo.lock`, with a short debounce. Its rebuild sequence is:
+
+1. compile incrementally in `target\dev-build` while the old process stays up;
+2. leave the old process and services untouched when compilation fails;
+3. remember which registered services are running after compilation succeeds;
+4. write the opt-in local `shutdown-request` signal;
+5. wait for the foreground Supervisor to close its API and owned Job Objects;
+6. copy the staged build over the constant development executable;
+7. launch it and restore the previously running services.
+
+The signal exists only when the watcher sets
+`AKU_SUPERVISOR_DEV_SHUTDOWN_FILE`. AkuSupervisor accepts only an absolute path
+whose filename is exactly `shutdown-request`, consumes at most 1 KiB, and uses
+the ordinary cleanup path. No development shutdown HTTP endpoint or arbitrary
+command execution is exposed.
+
+Press Ctrl+C in the watcher terminal to request the same graceful shutdown. If
+cleanup exceeds the configured timeout, the watcher refuses to kill the
+process or replace its executable. The checked-in VS Code task
+`AkuSupervisor: development watcher` launches the same script.
+
+Watcher mode intentionally does not give the child process direct ownership of
+stdin, because editor background tasks and automation hosts may immediately
+send EOF. The terminal remains the visible process/log surface. Use another
+terminal for manual control while the watcher is active:
+
+```powershell
+.\target\dev\aku-supervisor.exe status
+.\target\dev\aku-supervisor.exe restart akusidecar --actor user `
+  --reason "manual change while watcher is active"
+```
+
+This runner is a Windows adapter. The Rust file-signal adapter itself uses only
+portable standard-library APIs, so a later Linux/macOS runner can preserve the
+same build-first and graceful-handoff contract using `watchexec`, a shell
+script, or a native host adapter.

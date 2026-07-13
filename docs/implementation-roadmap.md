@@ -305,6 +305,26 @@ Gate 5:
 - disabled or unreachable extension state fails closed to a manual fallback; and
 - no `chrome.management`, CDP, or whole-browser restart is introduced.
 
+### Development workflow checkpoint
+
+Status: **Completed and live-validated on 2026-07-14**
+
+- [x] constant development executable at `target/dev/aku-supervisor.exe`;
+- [x] incremental staged build while the active Supervisor remains available;
+- [x] failed builds leave the active Supervisor and services untouched;
+- [x] opt-in bounded file signal follows the normal cleanup path without adding
+  a production shutdown endpoint;
+- [x] successful handoff restores only services observed running before restart;
+- [x] PowerShell watcher resolves the project-local Cargo toolchain when Cargo
+  is absent from `PATH`;
+- [x] VS Code task and manual control workflow documented; and
+- [x] portable signal contract separated from the Windows runner.
+
+Live evidence used an isolated control port. The Supervisor PID changed from
+`40496` to `38556`, the running fixture was restored from PID `43312` to
+`42056`, and the final cleanup left neither the test listener nor known fixture
+processes alive. The normal stable Supervisor remained active throughout.
+
 ### Phase 6 - MCP adapter
 
 Status: **Deferred until Gate 4; preferably after Gate 5**

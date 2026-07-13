@@ -17,7 +17,8 @@ local-dev-services.json
 *.log
 
 # Editor and operating-system files
-.vscode/
+.vscode/*
+!.vscode/tasks.json
 .idea/
 *.swp
 .DS_Store

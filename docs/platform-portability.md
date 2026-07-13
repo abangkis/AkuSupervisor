@@ -87,6 +87,7 @@ not considered a portable guarantee.
 | Secure token entropy | CNG `BCryptGenRandom` | `getrandom(2)` or equivalent OS API | `SecRandomCopyBytes` or equivalent OS API |
 | Token-file permissions | protected current-user-only DACL | mode `0600` (future) | mode `0600` (future) |
 | HTTP control/client | shared `std::net` adapter | same shared adapter | same shared adapter |
+| Development reload request | bounded local file signal plus PowerShell runner | same file-signal contract plus future native runner | same file-signal contract plus future native runner |
 
 The Linux and macOS entries are design candidates, not implemented promises.
 Each backend must independently pass the same ownership safety contract before
@@ -104,10 +105,20 @@ it is considered supported.
 | Process ownership and port observation | Correctly isolated, Windows only | Implement and prove each native ownership backend |
 | Foreground host composition | Partially portable; shared interaction code is currently compiled with concrete `WindowsRegistry` and `ConsoleShutdown` types | Extract a generic foreground host driven by platform-neutral registry, shutdown, and runtime-secret ports before implementing the second OS |
 | Checked-in AkuWorkspace profile | Intentionally Windows-specific data, not core logic | Supply separate profiles; do not add path rewriting to the core |
+| Development watcher | Portable Rust file-signal adapter; Windows PowerShell orchestration | Add a native runner that preserves build-first, graceful handoff, and service restoration | Add a native runner that preserves build-first, graceful handoff, and service restoration |
 
 The foreground-host extraction is deliberately scheduled before the second OS,
 not after duplicating the Windows loop. Linux or macOS support must not copy the
 interactive/API lifecycle logic into a parallel platform file.
+
+The development watcher follows the same boundary. The opt-in
+`development_shutdown` adapter uses portable `std::fs` APIs and accepts only a
+bounded, fixed-name request file. `scripts/dev.ps1` is a Windows host adapter,
+not application logic. A Linux or macOS runner may use `watchexec`, shell
+notifications, or a native watcher, but must retain these invariants: compile
+before stopping the active binary, keep it alive on build failure, request its
+normal cleanup path, preserve a constant executable path, and restore only the
+services that were observed running immediately before handoff.
 
 ## Source layout
 

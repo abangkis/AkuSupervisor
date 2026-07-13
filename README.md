@@ -72,6 +72,24 @@ Run the complete verification suite through the convenience script:
 .\scripts\test-phase2.ps1
 ```
 
+For live AkuSupervisor development, stop any normally running instance with
+`quit`, then start the safe watcher:
+
+```powershell
+.\scripts\dev.ps1
+```
+
+The watcher builds into a staging target while the current supervisor remains
+available. A successful build requests normal graceful cleanup, replaces only
+the constant `target\dev\aku-supervisor.exe`, starts it again, and restores the
+services that were running before the restart. A failed build leaves the old
+supervisor and its services untouched. It never replaces the normal
+`target\aku-supervisor.exe` and never force-kills a timed-out process. Visual
+Studio Code users can also run the `AkuSupervisor: development watcher` task.
+The watcher owns stdin; use the control CLI from a second terminal for
+`status`, `start`, `stop`, or `restart` while it is active.
+See the [testing guide](docs/testing-guide.md#7-development-watcher).
+
 For a visible process-tree and Ctrl+C cleanup demo, follow the
 [testing guide](docs/testing-guide.md).
 

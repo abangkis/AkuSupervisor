@@ -11,6 +11,7 @@ use crate::adapters::aku_bridge_reload::AkuBridgeReloadClient;
 use crate::adapters::config::{ConfigError, SupervisorConfig};
 use crate::adapters::config_path::ResolvedConfigPath;
 use crate::adapters::control_http::{ControlHttpError, ControlHttpServer};
+use crate::adapters::development_shutdown::{DevelopmentShutdown, DevelopmentShutdownError};
 use crate::adapters::journal::{AuditedControl, FileJournal, FileJournalError};
 use crate::adapters::runtime_token::{RuntimeToken, RuntimeTokenError, resolve_token_path};
 use crate::adapters::service_logs::ServiceLogStore;
@@ -77,6 +78,8 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
         .map_err(ForegroundError::RegistryBuild)?,
     );
     let shutdown = ConsoleShutdown::install().map_err(ForegroundError::Console)?;
+    let development_shutdown =
+        DevelopmentShutdown::from_environment().map_err(ForegroundError::DevelopmentShutdown)?;
     let registry_control: Arc<dyn SupervisorControl> = registry;
     let audited = Arc::new(AuditedControl::new(
         registry_control,
@@ -110,29 +113,18 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
         &journal_path,
         &cooperative_audit_path,
         &runtime_services_directory,
+        development_shutdown.request_path(),
     );
     print_status(control.as_ref());
-    println!("{INTERACTIVE_HELP}");
-
-    let (input_sender, input_receiver) = mpsc::channel();
-    thread::spawn(move || read_input(&input_sender));
-
-    loop {
-        if shutdown.is_requested() {
-            println!("\nConsole shutdown requested.");
-            break;
-        }
-        match input_receiver.recv_timeout(INPUT_POLL_INTERVAL) {
-            Ok(InputEvent::Line(line)) => {
-                if handle_line(control.as_ref(), &line) {
-                    break;
-                }
-            }
-            Ok(InputEvent::End) | Err(RecvTimeoutError::Disconnected) => break,
-            Ok(InputEvent::Error(error)) => return Err(ForegroundError::Input(error)),
-            Err(RecvTimeoutError::Timeout) => {}
-        }
+    if development_shutdown.request_path().is_some() {
+        println!(
+            "Development watcher owns this process; use the control CLI from another terminal."
+        );
+    } else {
+        println!("{INTERACTIVE_HELP}");
     }
+
+    let foreground_result = wait_for_shutdown(control.as_ref(), &shutdown, &development_shutdown);
 
     let server_result = control_server.shutdown();
     let cleanup_result = cleanup(control.as_ref());
@@ -140,7 +132,51 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
         cleanup_result?;
         return Err(ForegroundError::ControlApi(error));
     }
-    cleanup_result
+    cleanup_result?;
+    foreground_result
+}
+
+fn wait_for_shutdown(
+    control: &dyn SupervisorControl,
+    shutdown: &ConsoleShutdown,
+    development_shutdown: &DevelopmentShutdown,
+) -> Result<(), ForegroundError> {
+    let input_receiver = if development_shutdown.request_path().is_none() {
+        let (input_sender, input_receiver) = mpsc::channel();
+        thread::spawn(move || read_input(&input_sender));
+        Some(input_receiver)
+    } else {
+        None
+    };
+
+    loop {
+        if shutdown.is_requested() {
+            println!("\nConsole shutdown requested.");
+            return Ok(());
+        }
+        match development_shutdown.take_request() {
+            Ok(Some(reason)) => {
+                println!("\nDevelopment restart requested: {reason}");
+                return Ok(());
+            }
+            Ok(None) => {}
+            Err(error) => return Err(ForegroundError::DevelopmentShutdown(error)),
+        }
+        if let Some(input_receiver) = &input_receiver {
+            match input_receiver.recv_timeout(INPUT_POLL_INTERVAL) {
+                Ok(InputEvent::Line(line)) => {
+                    if handle_line(control, &line) {
+                        return Ok(());
+                    }
+                }
+                Ok(InputEvent::End) | Err(RecvTimeoutError::Disconnected) => return Ok(()),
+                Ok(InputEvent::Error(error)) => return Err(ForegroundError::Input(error)),
+                Err(RecvTimeoutError::Timeout) => {}
+            }
+        } else {
+            thread::sleep(INPUT_POLL_INTERVAL);
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -153,6 +189,7 @@ fn print_startup(
     journal_path: &std::path::Path,
     cooperative_audit_path: &std::path::Path,
     services_directory: &std::path::Path,
+    development_shutdown_path: Option<&std::path::Path>,
 ) {
     println!("AkuSupervisor {}", crate::VERSION);
     println!("Configuration: {}", resolved_config.path().display());
@@ -168,6 +205,9 @@ fn print_startup(
         );
     }
     println!("Service logs: {}", services_directory.display());
+    if let Some(path) = development_shutdown_path {
+        println!("Development watcher signal: {}", path.display());
+    }
     println!("Mode: visible interactive supervisor (Phase 5 cooperative-action checkpoint)");
 }
 
@@ -387,6 +427,7 @@ pub enum ForegroundError {
     CooperativeAction(CooperativeActionError),
     ControlApi(ControlHttpError),
     Console(ConsoleShutdownError),
+    DevelopmentShutdown(DevelopmentShutdownError),
     Input(io::Error),
     Cleanup(Vec<String>),
 }
@@ -410,6 +451,7 @@ impl fmt::Display for ForegroundError {
             Self::CooperativeAction(error) => error.fmt(formatter),
             Self::ControlApi(error) => error.fmt(formatter),
             Self::Console(error) => error.fmt(formatter),
+            Self::DevelopmentShutdown(error) => error.fmt(formatter),
             Self::Input(error) => write!(formatter, "interactive input failed: {error}"),
             Self::Cleanup(failures) => {
                 write!(formatter, "service cleanup failed: {}", failures.join("; "))
