@@ -1,6 +1,6 @@
 # AkuBridge Cooperative Reload
 
-Status: **implementation complete; live Chrome gate pending**
+Status: **Completed - Gate 5 passed on 2026-07-14**
 
 ## Contract
 
@@ -72,3 +72,17 @@ Gate 5 passes only after a real Chrome validation proves:
 - Chrome, source tabs, profile, and login state survive;
 - `cooperative-actions.jsonl` contains requested and completed records; and
 - disabled/unreachable behavior times out without broader browser control.
+
+Live evidence on 2026-07-14:
+
+- the first handler-capable unpacked build was bootstrapped once manually;
+- AkuBridge announced `aku-bridge-0.5.15-source-fidelity-v17` with
+  `reload_self` in its capabilities;
+- `aku-supervisor bridge reload` completed in one request and observed a
+  heartbeat timestamp newer than the pre-action heartbeat;
+- the cooperative journal stored consecutive `requested` and `completed`
+  records with the same request ID and relay action ID;
+- the AkuBrowser, X, LinkedIn, and extensions tabs retained the same Chrome tab
+  IDs; and
+- AkuSidecar remained healthy, running, and owned by AkuSupervisor after the
+  reload.

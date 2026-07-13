@@ -262,7 +262,7 @@ Gate 4 marks the first usable AkuSupervisor MVP.
 
 ### Phase 5 - AkuBridge cooperative reload
 
-Status: **Implemented; live Chrome validation pending**
+Status: **Completed - Gate 5 passed on 2026-07-14**
 
 Current checkpoint:
 
@@ -273,8 +273,20 @@ Current checkpoint:
 - [x] direct `chrome.runtime.reload()` with expected disconnect handling;
 - [x] post-reload heartbeat and exact build-identity completion rule;
 - [x] unit and HTTP contract coverage for authorization, timeout, replay, and completion;
-- [ ] one-time manual bootstrap of the first handler-capable unpacked build; and
-- [ ] live Chrome proof followed by Gate 5 sign-off.
+- [x] one-time manual bootstrap of the first handler-capable unpacked build; and
+- [x] live Chrome proof followed by Gate 5 sign-off.
+
+Live evidence:
+
+- AkuBridge `0.5.15` / `source-fidelity-v17` advertised `reload_self` and
+  passed Sidecar compatibility;
+- the authenticated CLI action completed with the expected and observed build
+  identity equal to `aku-bridge-0.5.15-source-fidelity-v17`;
+- the post-reload heartbeat timestamp was newer than the pre-reload heartbeat;
+- the audit journal recorded matching `requested` and `completed` records;
+- Chrome and the existing AkuBrowser, X, LinkedIn, and extensions tabs retained
+  their tab identities; and
+- AkuSidecar remained healthy and Supervisor-owned throughout validation.
 
 Deliverables:
 

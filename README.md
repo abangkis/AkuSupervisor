@@ -8,8 +8,8 @@ configuration, status, start, stop, restart, operator holds, exit cleanup,
 authenticated local control, durable lifecycle events, bounded service logs,
 and idempotent mutations. AkuSidecar has passed live start, reasoning, hard
 restart, old-tree cleanup, and SQLite-preservation validation.
-The Gate 5 implementation adds one authenticated cooperative action for
-AkuBridge self-reload; live Chrome validation remains before Gate 5 can pass.
+Gate 5 adds one authenticated cooperative action for AkuBridge self-reload and
+has passed live Chrome validation without closing Chrome or its source tabs.
 
 Rust is the implementation language, targeting `x86_64-pc-windows-msvc` for the
 initial AkuWorkspace pilot. Platform-neutral application ports and separate
