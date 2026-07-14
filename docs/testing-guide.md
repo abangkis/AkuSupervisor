@@ -250,6 +250,19 @@ and `Cargo.lock`, with a short debounce. Its rebuild sequence is:
 6. copy the staged build over the constant development executable;
 7. launch it and restore the previously running services.
 
+The startup and post-rebuild banner distinguishes the two executable roles:
+
+- `Active executable` is always `target\dev\aku-supervisor.exe` while the
+  watcher is running;
+- `Normal stable executable` is `target\aku-supervisor.exe`; and
+- `Stable status` is `CURRENT` only when both files have the same SHA-256.
+
+To leave development mode, follow the banner. When status is `CURRENT`, press
+Ctrl+C and launch the stable executable. When status is `OUTDATED` or
+`MISSING`, keep the watcher running, promote from a second terminal, then press
+Ctrl+C and launch stable. Promotion comes first because the release gate needs
+the supervised Sidecar and AkuBridge alive.
+
 Before the first build, the watcher prints its selected `Cargo:` and `Rustc:`
 paths. It deliberately prefers the complete toolchain under
 `target/rustup-home/toolchains` over a `cargo` or `rustc` rustup shim on

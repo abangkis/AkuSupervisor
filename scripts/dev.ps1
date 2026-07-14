@@ -16,6 +16,7 @@ $repository = Split-Path -Parent $PSScriptRoot
 $devDirectory = Join-Path $repository 'target\dev'
 $buildDirectory = Join-Path $repository 'target\dev-build'
 $devExecutable = Join-Path $devDirectory 'aku-supervisor.exe'
+$stableExecutable = Join-Path $repository 'target\aku-supervisor.exe'
 $shutdownRequest = Join-Path $devDirectory 'shutdown-request'
 $stagedExecutable = Join-Path $buildDirectory 'debug\aku-supervisor.exe'
 $supervisorProcess = $null
@@ -79,6 +80,34 @@ function Assert-RustToolchain {
     if ($LASTEXITCODE -ne 0) {
         throw "Selected Rust compiler is not runnable: $env:RUSTC"
     }
+}
+
+function Show-ExecutionModeGuidance {
+    Write-Host '[watch] Mode: DEVELOPMENT WATCHER' -ForegroundColor Cyan
+    Write-Host "[watch] Active executable: $devExecutable" -ForegroundColor Cyan
+    Write-Host "[watch] Normal stable executable: $stableExecutable" -ForegroundColor DarkGray
+
+    $stableIsCurrent = $false
+    if (Test-Path $stableExecutable -PathType Leaf) {
+        $devHash = (Get-FileHash -LiteralPath $devExecutable -Algorithm SHA256).Hash
+        $stableHash = (Get-FileHash -LiteralPath $stableExecutable -Algorithm SHA256).Hash
+        $stableIsCurrent = $devHash -eq $stableHash
+    }
+
+    if ($stableIsCurrent) {
+        Write-Host '[watch] Stable status: CURRENT (identical to this development build).' -ForegroundColor Green
+        Write-Host '[watch] To run without the watcher later: press Ctrl+C here, then run .\target\aku-supervisor.exe.' -ForegroundColor Green
+        Write-Host '[watch] Promotion is needed only after a newer development build is produced.' -ForegroundColor DarkGray
+        return
+    }
+
+    $status = if (Test-Path $stableExecutable -PathType Leaf) { 'OUTDATED' } else { 'MISSING' }
+    Write-Host "[watch] Stable status: $status (not the active development build)." -ForegroundColor Yellow
+    Write-Host '[watch] To run this latest build without the watcher:' -ForegroundColor Yellow
+    Write-Host '[watch]   1. While this watcher and its services are still running, use a second terminal:' -ForegroundColor Yellow
+    Write-Host '[watch]      .\scripts\promote-stable.ps1' -ForegroundColor Yellow
+    Write-Host '[watch]   2. Return here and press Ctrl+C for graceful cleanup.' -ForegroundColor Yellow
+    Write-Host '[watch]   3. Start normal mode: .\target\aku-supervisor.exe' -ForegroundColor Yellow
 }
 
 function Test-ControlPort {
@@ -191,7 +220,7 @@ function Start-DevelopmentSupervisor {
             throw "Development supervisor exited during startup with code $($process.ExitCode)."
         }
         if (Test-ControlPort -ControlHost $script:controlHost -ControlPort $script:controlPort) {
-            Write-Host "[watch] Running stable dev executable: $devExecutable" -ForegroundColor Green
+            Write-Host "[watch] Development Supervisor is ready: $devExecutable" -ForegroundColor Green
             return $process
         }
         Start-Sleep -Milliseconds 100
@@ -250,6 +279,7 @@ try {
     }
     Copy-Item -LiteralPath $stagedExecutable -Destination $devExecutable -Force
     $supervisorProcess = Start-DevelopmentSupervisor
+    Show-ExecutionModeGuidance
 
     Write-Host "[watch] Watching Rust sources and Cargo manifests every $PollMilliseconds ms." -ForegroundColor Green
     Write-Host '[watch] A failed rebuild keeps the current supervisor and services running.' -ForegroundColor Green
@@ -287,6 +317,7 @@ try {
         Copy-Item -LiteralPath $stagedExecutable -Destination $devExecutable -Force
         $supervisorProcess = Start-DevelopmentSupervisor
         Restore-RunningServices -ServiceIds $runningServices
+        Show-ExecutionModeGuidance
     }
 }
 finally {

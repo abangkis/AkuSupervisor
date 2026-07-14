@@ -365,6 +365,8 @@ Status: **Completed and live-validated on 2026-07-14**
 - [x] PowerShell watcher resolves the project-local Cargo toolchain when Cargo
   is absent from `PATH`;
 - [x] VS Code task and manual control workflow documented; and
+- [x] watcher startup and post-rebuild banners distinguish active development
+  and normal stable binaries and print the safe transition sequence; and
 - [x] portable signal contract separated from the Windows runner.
 
 Live evidence used an isolated control port. The Supervisor PID changed from

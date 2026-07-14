@@ -92,6 +92,8 @@ The watcher owns stdin; use the control CLI from a second terminal for
 `status`, `start`, `stop`, or `restart` while it is active.
 It prefers the complete project-local Rust toolchain over any rustup shim found
 on `PATH`, and prints the selected Cargo and Rust compiler paths before build.
+At startup and after each successful rebuild it also prints `Stable status` as
+`CURRENT`, `OUTDATED`, or `MISSING`, followed by the exact transition commands.
 See the [testing guide](docs/testing-guide.md#7-development-watcher).
 
 Promoting the constant development binary to the normal stable path is a
@@ -105,6 +107,19 @@ Run promotion at a release checkpoint, after the current development build has
 passed its tests and live validation and you want future normal launches to use
 it. Do not run it after every watcher rebuild or while a feature is still being
 implemented.
+
+Running without the watcher does not always require another promotion. If the
+watcher reports `Stable status: CURRENT`, stop it with Ctrl+C and run
+`.\target\aku-supervisor.exe`. If it reports `OUTDATED` or `MISSING` and the
+latest development build should become normal, use this order:
+
+1. keep the watcher and managed services running;
+2. run `.\scripts\promote-stable.ps1` from a second terminal;
+3. return to the watcher and press Ctrl+C for graceful cleanup; and
+4. run `.\target\aku-supervisor.exe`.
+
+Promotion is performed before stopping the watcher because its AkuBridge
+release validation needs the supervised Sidecar and extension bridge alive.
 
 The script runs `target\dev\aku-supervisor.exe bridge validate` with a fresh
 request ID before copying anything. Validation emits one JSON document and
