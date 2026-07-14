@@ -231,6 +231,18 @@ starts successfully but misses its health contract remains Supervisor-owned and
 enters `unhealthy`, distinct from `spawn_failed`. A later successful probe
 returns it to `running`.
 
+The same monitor reconciles unexpected process-tree exits. It releases an owner
+only after the complete owned tree is empty and the launcher exit status is
+available; a launcher that exits while a watcher/server descendant remains is
+not treated as terminal. Snapshots expose `desiredState`, `startedAtUnixMs`,
+`lastExitCode`, `lastExitAtUnixMs`, and `restartCount`.
+
+`restartPolicy: "manual"` leaves an exited service in `failed` and permits a
+later authenticated start. `restartPolicy: "on-failure"` journals the exit and
+attempts at most one recovery restart after a nonzero exit. A second exit inside
+the 60-second stability window stays `failed`; an explicit stop always wins a
+race with recovery.
+
 ## Project documents
 
 - [Product specification](docs/generic-local-development-supervisor-spec.md)

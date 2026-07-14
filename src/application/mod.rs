@@ -32,8 +32,8 @@ pub use platform_ports::{
     ProcessTreeSpawner, ShutdownSignal, TreeStopReport,
 };
 pub use service_registry::{
-    BackendOperationError, LastAction, RegistryBuildError, RegistryError, ServiceRegistration,
-    ServiceRegistry, ServiceSnapshot,
+    BackendOperationError, LastAction, ProcessExitEvent, RegistryBuildError, RegistryError,
+    ServiceRefresh, ServiceRegistration, ServiceRegistry, ServiceRestartPolicy, ServiceSnapshot,
 };
 pub use service_runtime::{
     RestartOutcome, ServiceRuntime, ServiceRuntimeError, StartOutcome, StopOutcome,

@@ -34,7 +34,7 @@ try {
     Invoke-CargoChecked @('clippy', '--all-targets', '--all-features', '--', '-D', 'warnings')
     Invoke-CargoChecked @('test', '--all-targets', '--all-features')
 
-    Write-Host "`nPASS: formatting, linting, contracts, ACL, audit events, bounded logs, idempotency, ownership, foreground lifecycle, concurrency, and cleanup." -ForegroundColor Green
+    Write-Host "`nPASS: formatting, linting, contracts, ACL, audit events, bounded logs, idempotency, ownership, process supervision, foreground lifecycle, concurrency, and cleanup." -ForegroundColor Green
 }
 finally {
     Pop-Location

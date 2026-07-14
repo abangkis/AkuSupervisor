@@ -418,6 +418,31 @@ seconds apart showed `checkedAtUnixMs` advancing without a lifecycle command.
 The isolated test suite covered health failure with retained ownership and
 later recovery.
 
+### Process-exit supervision checkpoint
+
+Status: **Completed and live-validated on 2026-07-14**
+
+- [x] terminal detection requires an empty authoritative owned tree plus an
+  observable launcher exit status;
+- [x] launcher exit with a living descendant preserves ownership and running
+  lifecycle;
+- [x] terminal owners are released exactly once and snapshots expose desired
+  state, start/exit timestamps, exit code, and restart count;
+- [x] `manual` permits authenticated recovery without an automatic restart;
+- [x] `on-failure` performs at most one audited recovery per 60-second unstable
+  episode and a stable runtime opens a new episode;
+- [x] explicit user or agent stop wins a race with planned recovery;
+- [x] process exit is journaled before recovery with deterministic exit and
+  restart-planned metadata; and
+- [x] Windows integration fixtures prove owner release, manual recovery,
+  automatic recovery, crash-loop cap, and audit persistence.
+
+The active AkuSidecar remained `running / healthy` after watcher handoff and
+reported the new supervision fields. A separate real Windows fixture exited
+with code `17`: the manual service became startable again, while the
+`on-failure` service restarted once and remained `failed` after its second
+crash.
+
 ### Phase 6 - MCP adapter
 
 Status: **Deferred until Gate 4; preferably after Gate 5**

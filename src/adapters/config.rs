@@ -8,7 +8,7 @@ use serde::de::{MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::application::{HealthCheckSpec, LaunchSpec, ServiceRegistration};
+use crate::application::{HealthCheckSpec, LaunchSpec, ServiceRegistration, ServiceRestartPolicy};
 
 pub const CONFIG_VERSION: u32 = 1;
 
@@ -144,6 +144,15 @@ impl HealthCheck {
 pub enum RestartPolicy {
     Manual,
     OnFailure,
+}
+
+impl RestartPolicy {
+    const fn to_spec(self) -> ServiceRestartPolicy {
+        match self {
+            Self::Manual => ServiceRestartPolicy::Manual,
+            Self::OnFailure => ServiceRestartPolicy::OnFailure,
+        }
+    }
 }
 
 impl SupervisorConfig {
@@ -299,6 +308,7 @@ impl SupervisorConfig {
                     service.label.clone(),
                     service.launch_spec(),
                     service.health.to_spec(),
+                    service.restart_policy.to_spec(),
                     service.ports.clone(),
                     Duration::from_millis(service.shutdown_grace_ms),
                 )
@@ -325,6 +335,7 @@ impl SupervisorConfig {
                     service.label.clone(),
                     launch,
                     service.health.to_spec(),
+                    service.restart_policy.to_spec(),
                     service.ports.clone(),
                     Duration::from_millis(service.shutdown_grace_ms),
                 )

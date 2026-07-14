@@ -307,6 +307,13 @@ There is no unlimited restart loop. Suggested defaults:
 - automatic restart cap: 1 per failure episode;
 - manual restart always remains available.
 
+The stability window is measured from the most recent successful launch. The
+complete owned tree, not only the launcher PID, must be empty before an exit is
+terminal. The exit observation is journaled before an `on-failure` recovery is
+attempted. If that journal write fails, recovery fails closed. Any explicit
+desired state of `stopped` suppresses a pending recovery, including a stop that
+races with the exit monitor.
+
 File watching remains the responsibility of the service command, such as Node `--watch` or Vite. The supervisor does not duplicate source-file watching.
 
 ## 12. Control interface
@@ -418,6 +425,7 @@ Minimum error categories:
 - `spawn_failed`;
 - `startup_timeout`;
 - `health_failed`;
+- `process_exited`;
 - `shutdown_timeout`;
 - `ownership_lost`;
 - `unauthorized`; and

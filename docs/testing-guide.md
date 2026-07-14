@@ -220,6 +220,31 @@ between reads even when no lifecycle command is issued. HTTP health is still a
 transport/contract check; AkuSidecar's real Codex reasoning invocation remains
 an application-level readiness validation.
 
+### Process-exit supervision
+
+The same one-second monitor distinguishes a failed health expectation from a
+terminal process tree. A root/launcher exit is not terminal while a verified
+owned descendant remains. Once the complete tree is empty, AkuSupervisor:
+
+1. captures the launcher exit code;
+2. releases the stale owner and changes lifecycle to `failed`;
+3. records a `process_exit` journal event before recovery;
+4. leaves `manual` services available for an authenticated start; and
+5. performs at most one `on-failure` recovery per unstable episode.
+
+Use `status --json` and inspect `desiredState`, `startedAtUnixMs`,
+`lastExitCode`, `lastExitAtUnixMs`, and `restartCount`. The deterministic crash
+fixture is covered by:
+
+```powershell
+cargo test --test process_supervision --features test-fixtures
+```
+
+It proves manual recovery, one automatic restart, second-crash suppression,
+owner release, and the exit/recovery audit records. A user or agent stop that
+arrives before the planned recovery changes desired state to `stopped` and
+suppresses that recovery.
+
 ## 7. Development watcher
 
 The repository includes a Windows development watcher that does not require a

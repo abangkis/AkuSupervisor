@@ -250,6 +250,7 @@ impl ControlPolicy {
 pub enum AuthorizationError {
     OperatorHoldStopped,
     AgentStartDisabled,
+    RecoveryDesiredStateStopped,
 }
 
 impl fmt::Display for AuthorizationError {
@@ -261,6 +262,8 @@ impl fmt::Display for AuthorizationError {
             Self::AgentStartDisabled => {
                 formatter.write_str("agent start and restart actions are disabled")
             }
+            Self::RecoveryDesiredStateStopped => formatter
+                .write_str("automatic recovery is suppressed because the desired state is stopped"),
         }
     }
 }

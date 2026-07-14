@@ -8,10 +8,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::application::{
-    ControlAction, ControlError, ControlErrorKind, ControlMutationOutcome, ServiceSnapshot,
-    SupervisorControl,
+    ControlAction, ControlError, ControlErrorKind, ControlMutationOutcome, ProcessExitEvent,
+    ServiceSnapshot, SupervisorControl,
 };
-use crate::domain::{Actor, LifecycleAction, LifecycleState, Reason};
+use crate::domain::{Actor, LifecycleState, Reason};
 
 const MAX_EVENT_LIMIT: usize = 200;
 
@@ -36,8 +36,20 @@ pub enum ErrorCategory {
     HealthFailed,
     ShutdownTimeout,
     OwnershipLost,
+    ProcessExited,
     Unauthorized,
     SupervisorInternalError,
+}
+
+/// Audited lifecycle event, including observations not initiated by a control
+/// mutation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JournalAction {
+    Start,
+    Stop,
+    Restart,
+    ProcessExit,
 }
 
 /// One deterministic JSONL lifecycle record.
@@ -48,7 +60,7 @@ pub struct JournalRecord {
     pub timestamp: String,
     pub supervisor_instance_id: String,
     pub service_id: String,
-    pub action: LifecycleAction,
+    pub action: JournalAction,
     pub actor: Actor,
     pub reason: Reason,
     pub previous_state: LifecycleState,
@@ -57,6 +69,10 @@ pub struct JournalRecord {
     pub owned_pids_after: Vec<u32>,
     pub result: JournalResult,
     pub error_category: Option<ErrorCategory>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub automatic_restart_planned: Option<bool>,
     pub config_fingerprint: String,
 }
 
@@ -252,6 +268,50 @@ impl AuditedControl {
             config_fingerprint: config_fingerprint.into(),
         }
     }
+
+    /// Persists one terminal process-tree observation before any automatic
+    /// recovery mutation is attempted.
+    ///
+    /// # Errors
+    ///
+    /// Returns a bounded control error if the audit record cannot be written.
+    pub fn record_process_exit(&self, event: &ProcessExitEvent) -> Result<(), ControlError> {
+        let exit = event.exit_code.map_or_else(
+            || "without a numeric exit code".to_owned(),
+            |code| format!("with code {code}"),
+        );
+        let recovery = if event.automatic_restart_planned {
+            "automatic on-failure restart planned"
+        } else {
+            "no automatic restart planned"
+        };
+        let reason = Reason::new(format!("owned process tree exited {exit}; {recovery}")).map_err(
+            |error| ControlError::internal(format!("invalid process-exit reason: {error}")),
+        )?;
+        self.journal
+            .append(JournalRecord {
+                sequence: 0,
+                timestamp: format!("unix-ms:{}", unix_milliseconds()),
+                supervisor_instance_id: self.supervisor_instance_id.clone(),
+                service_id: event.service_id.clone(),
+                action: JournalAction::ProcessExit,
+                actor: Actor::Recovery,
+                reason,
+                previous_state: event.previous_state,
+                resulting_state: LifecycleState::Failed,
+                owned_pids_before: event.owned_pids_before.clone(),
+                owned_pids_after: Vec::new(),
+                result: JournalResult::Failure,
+                error_category: Some(ErrorCategory::ProcessExited),
+                exit_code: event.exit_code,
+                automatic_restart_planned: Some(event.automatic_restart_planned),
+                config_fingerprint: self.config_fingerprint.clone(),
+            })
+            .map(|_| ())
+            .map_err(|error| {
+                ControlError::internal(format!("failed to persist process-exit journal: {error}"))
+            })
+    }
 }
 
 impl fmt::Debug for AuditedControl {
@@ -334,6 +394,8 @@ impl SupervisorControl for AuditedControl {
                 .map_or_else(Vec::new, |snapshot| snapshot.owned_pids.clone()),
             result,
             error_category,
+            exit_code: None,
+            automatic_restart_planned: None,
             config_fingerprint: self.config_fingerprint.clone(),
         };
         self.journal.append(record).map_err(|error| {
@@ -343,11 +405,11 @@ impl SupervisorControl for AuditedControl {
     }
 }
 
-fn lifecycle_action(action: ControlAction) -> LifecycleAction {
+fn lifecycle_action(action: ControlAction) -> JournalAction {
     match action {
-        ControlAction::Start => LifecycleAction::Start,
-        ControlAction::Stop => LifecycleAction::Stop,
-        ControlAction::Restart => LifecycleAction::Restart,
+        ControlAction::Start => JournalAction::Start,
+        ControlAction::Stop => JournalAction::Stop,
+        ControlAction::Restart => JournalAction::Restart,
     }
 }
 
@@ -440,9 +502,9 @@ impl std::error::Error for FileJournalError {}
 
 #[cfg(test)]
 mod tests {
-    use crate::domain::{Actor, LifecycleAction, LifecycleState, Reason};
+    use crate::domain::{Actor, LifecycleState, Reason};
 
-    use super::{ErrorCategory, FileJournal, JournalRecord, JournalResult};
+    use super::{ErrorCategory, FileJournal, JournalAction, JournalRecord, JournalResult};
 
     fn record(reason: &str) -> JournalRecord {
         JournalRecord {
@@ -450,7 +512,7 @@ mod tests {
             timestamp: "2026-07-13T12:00:00.000Z".to_owned(),
             supervisor_instance_id: "supervisor-1".to_owned(),
             service_id: "akusidecar".to_owned(),
-            action: LifecycleAction::Restart,
+            action: JournalAction::Restart,
             actor: Actor::Agent,
             reason: Reason::new(reason).expect("valid reason"),
             previous_state: LifecycleState::Running,
@@ -459,6 +521,8 @@ mod tests {
             owned_pids_after: vec![200, 201],
             result: JournalResult::Success,
             error_category: None,
+            exit_code: None,
+            automatic_restart_planned: None,
             config_fingerprint: "sha256:abc".to_owned(),
         }
     }
@@ -493,6 +557,28 @@ mod tests {
         let line = record.to_json_line(&[]).expect("record should serialize");
 
         assert!(line.contains("\"errorCategory\":\"spawn_failed\""));
+    }
+
+    #[test]
+    fn process_exit_metadata_is_explicit_and_backward_compatible() {
+        let mut exit_record = record("owned process tree exited with code 17");
+        exit_record.action = JournalAction::ProcessExit;
+        exit_record.exit_code = Some(17);
+        exit_record.automatic_restart_planned = Some(true);
+        exit_record.error_category = Some(ErrorCategory::ProcessExited);
+        let line = exit_record
+            .to_json_line(&[])
+            .expect("record should serialize");
+
+        assert!(line.contains("\"action\":\"process_exit\""));
+        assert!(line.contains("\"exitCode\":17"));
+        assert!(line.contains("\"automaticRestartPlanned\":true"));
+        assert!(line.contains("\"errorCategory\":\"process_exited\""));
+        let legacy = record("legacy lifecycle event")
+            .to_json_line(&[])
+            .expect("legacy-shaped record");
+        assert!(!legacy.contains("exitCode"));
+        assert!(!legacy.contains("automaticRestartPlanned"));
     }
 
     #[test]

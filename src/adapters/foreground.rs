@@ -82,17 +82,16 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
         )
         .map_err(ForegroundError::RegistryBuild)?,
     );
-    let mut health_monitor = HealthMonitor::start(Arc::clone(&registry));
     let shutdown = ConsoleShutdown::install().map_err(ForegroundError::Console)?;
     let development_shutdown =
         DevelopmentShutdown::from_environment().map_err(ForegroundError::DevelopmentShutdown)?;
-    let registry_control: Arc<dyn SupervisorControl> = registry;
+    let registry_control: Arc<dyn SupervisorControl> = registry.clone();
     let audited = Arc::new(AuditedControl::new(
         registry_control,
         Arc::clone(&journal),
         fingerprint.clone(),
     ));
-    let control: Arc<dyn SupervisorControl> = audited;
+    let control: Arc<dyn SupervisorControl> = audited.clone();
     let logs = Arc::new(ServiceLogStore::new(
         &runtime_services_directory,
         config.services.keys().cloned(),
@@ -109,6 +108,7 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
         logs,
     )
     .map_err(ForegroundError::ControlApi)?;
+    let mut service_monitor = ServiceMonitor::start(Arc::clone(&registry), audited);
 
     print_startup(
         resolved_config,
@@ -132,8 +132,8 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
 
     let foreground_result = wait_for_shutdown(control.as_ref(), &shutdown, &development_shutdown);
 
+    service_monitor.shutdown();
     let server_result = control_server.shutdown();
-    health_monitor.shutdown();
     let cleanup_result = cleanup(control.as_ref());
     if let Err(error) = server_result {
         cleanup_result?;
@@ -144,20 +144,55 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
 }
 
 #[derive(Debug)]
-struct HealthMonitor {
+struct ServiceMonitor {
     stop: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
 }
 
-impl HealthMonitor {
-    fn start(registry: Arc<WindowsRegistry>) -> Self {
+impl ServiceMonitor {
+    fn start(registry: Arc<WindowsRegistry>, audited: Arc<AuditedControl>) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
         let worker = thread::spawn(move || {
             let mut last_error = None;
             while !worker_stop.load(Ordering::Acquire) {
-                match registry.refresh_healths() {
-                    Ok(_) => last_error = None,
+                match registry.refresh_services() {
+                    Ok(refreshes) => {
+                        last_error = None;
+                        for process_exit in refreshes
+                            .into_iter()
+                            .filter_map(|refresh| refresh.process_exit)
+                        {
+                            if let Err(error) = audited.record_process_exit(&process_exit) {
+                                eprintln!(
+                                    "process exit audit failed for {}: {error}; automatic restart suppressed",
+                                    process_exit.service_id
+                                );
+                                continue;
+                            }
+                            if process_exit.automatic_restart_planned {
+                                let exit = process_exit.exit_code.map_or_else(
+                                    || "without a numeric exit code".to_owned(),
+                                    |code| format!("with code {code}"),
+                                );
+                                let reason = Reason::new(format!(
+                                    "automatic on-failure restart after process tree exited {exit}"
+                                ))
+                                .expect("bounded automatic restart reason");
+                                if let Err(error) = audited.mutate(
+                                    ControlAction::Restart,
+                                    &process_exit.service_id,
+                                    Actor::Recovery,
+                                    reason,
+                                ) {
+                                    eprintln!(
+                                        "automatic restart failed for {}: {error}",
+                                        process_exit.service_id
+                                    );
+                                }
+                            }
+                        }
+                    }
                     Err(error) => {
                         let current = error.to_string();
                         if last_error.as_ref() != Some(&current) {
@@ -188,7 +223,7 @@ impl HealthMonitor {
     }
 }
 
-impl Drop for HealthMonitor {
+impl Drop for ServiceMonitor {
     fn drop(&mut self) {
         self.shutdown();
     }
@@ -353,7 +388,7 @@ fn print_status(control: &dyn SupervisorControl) {
         Ok(snapshots) => {
             println!();
             println!(
-                "SERVICE              STATE       HEALTH      ROOT PID   OWNED PIDS       HOLD"
+                "SERVICE              STATE       DESIRED     HEALTH      ROOT PID   OWNED PIDS       HOLD"
             );
             for snapshot in snapshots {
                 print_snapshot(&snapshot);
@@ -379,9 +414,10 @@ fn print_snapshot(snapshot: &ServiceSnapshot) {
             .join(",")
     };
     println!(
-        "{:<20} {:<11} {:<11} {:<10} {:<16} {:?}",
+        "{:<20} {:<11} {:<11} {:<11} {:<10} {:<16} {:?}",
         snapshot.id,
         format!("{:?}", snapshot.lifecycle).to_lowercase(),
+        format!("{:?}", snapshot.desired_state).to_lowercase(),
         format!("{:?}", snapshot.health.status).to_lowercase(),
         root_pid,
         owned_pids,
@@ -403,6 +439,21 @@ fn print_snapshot(snapshot: &ServiceSnapshot) {
                 .health
                 .transport_ready
                 .map_or_else(|| "n/a".to_owned(), |ready| ready.to_string())
+        );
+    }
+    if snapshot.last_exit_at_unix_ms.is_some() || snapshot.restart_count > 0 {
+        println!(
+            "  supervision: startedAt={} lastExitAt={} lastExitCode={} restartCount={}",
+            snapshot
+                .started_at_unix_ms
+                .map_or_else(|| "-".to_owned(), |value| value.to_string()),
+            snapshot
+                .last_exit_at_unix_ms
+                .map_or_else(|| "-".to_owned(), |value| value.to_string()),
+            snapshot
+                .last_exit_code
+                .map_or_else(|| "-".to_owned(), |value| value.to_string()),
+            snapshot.restart_count
         );
     }
 }

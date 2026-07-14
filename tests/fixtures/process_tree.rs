@@ -8,8 +8,24 @@ fn main() -> ExitCode {
     match std::env::args().nth(1).as_deref() {
         Some("--root") => root(),
         Some("--child") => child(),
+        Some("--exit-after") => exit_after(),
         _ => ExitCode::from(2),
     }
+}
+
+fn exit_after() -> ExitCode {
+    let mut args = std::env::args().skip(2);
+    let delay_ms = args
+        .next()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(100);
+    let code = args
+        .next()
+        .and_then(|value| value.parse::<u8>().ok())
+        .unwrap_or(17);
+    println!("process fixture exits with code {code} after {delay_ms} ms");
+    thread::sleep(Duration::from_millis(delay_ms));
+    ExitCode::from(code)
 }
 
 fn root() -> ExitCode {

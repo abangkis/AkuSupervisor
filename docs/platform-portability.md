@@ -103,6 +103,7 @@ it is considered supported.
 | Domain and lifecycle application | Portable and architecture-tested | Keep OS imports forbidden |
 | HTTP control server/client | Portable `std::net` implementation | Run the same protocol tests on native CI |
 | Runtime health state and matchers | Portable application policy plus shared loopback HTTP adapter | Run startup deadline, failure, and recovery fixtures on native CI |
+| Exit reconciliation and restart policy | Portable application policy; Windows supplies Job membership and process exit status | Prove that launcher exit never overrides living owned descendants, then run equivalent crash-loop fixtures |
 | Token format, persistence, comparison | Portable common implementation | Add native permission-hardening contract |
 | Secure entropy | Correctly isolated in Windows CNG adapter | Add independently tested Linux and macOS providers |
 | Configuration discovery | Per-OS default paths already separated | Add native path tests and native service profiles |

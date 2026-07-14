@@ -1,4 +1,5 @@
 use std::fmt;
+use std::process::ExitStatus;
 use std::sync::{Mutex, MutexGuard};
 
 use crate::domain::{LifecycleState, TransitionError};
@@ -113,6 +114,39 @@ impl<Process> ServiceRuntime<Process> {
     ) -> Result<Value, ServiceRuntimeError<Error>> {
         let inner = self.lock()?;
         inspect(inner.lifecycle, inner.process.as_ref()).map_err(ServiceRuntimeError::Inspect)
+    }
+
+    /// Releases a retained owner only when the supplied platform observation
+    /// proves the complete tree has exited.
+    ///
+    /// A launcher exit alone is not sufficient: the callback owns the native
+    /// decision about whether descendants remain. Returning `None` preserves
+    /// both ownership and lifecycle state.
+    ///
+    /// # Errors
+    ///
+    /// Returns the callback error, a poisoned-lock error, or an illegal
+    /// transition if a terminal tree is observed from an unexpected state.
+    pub fn reconcile_exit_with<Error>(
+        &self,
+        observe: impl FnOnce(&mut Process) -> Result<Option<ExitStatus>, Error>,
+    ) -> Result<Option<ExitStatus>, ServiceRuntimeError<Error>> {
+        let mut inner = self.lock()?;
+        let Some(process) = inner.process.as_mut() else {
+            return Ok(None);
+        };
+        let Some(status) = observe(process).map_err(ServiceRuntimeError::Inspect)? else {
+            return Ok(None);
+        };
+
+        inner.process = None;
+        if inner.lifecycle != LifecycleState::Failed {
+            inner.lifecycle = inner
+                .lifecycle
+                .transition_to(LifecycleState::Failed)
+                .map_err(ServiceRuntimeError::Transition)?;
+        }
+        Ok(Some(status))
     }
 
     /// Starts the service exactly once while concurrent mutations serialize.
@@ -323,6 +357,7 @@ where
 #[cfg(test)]
 mod tests {
     use std::convert::Infallible;
+    use std::process::Command;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Barrier};
     use std::thread;
@@ -333,6 +368,23 @@ mod tests {
     use super::{RestartOutcome, ServiceRuntime, ServiceRuntimeError, StartOutcome, StopOutcome};
 
     const CONCURRENT_REQUESTS: usize = 16;
+
+    fn exit_status(code: i32) -> std::process::ExitStatus {
+        #[cfg(windows)]
+        {
+            Command::new("cmd")
+                .args(["/C", "exit", &code.to_string()])
+                .status()
+                .expect("create Windows fixture exit status")
+        }
+        #[cfg(unix)]
+        {
+            Command::new("sh")
+                .args(["-c", &format!("exit {code}")])
+                .status()
+                .expect("create Unix fixture exit status")
+        }
+    }
 
     #[test]
     fn concurrent_starts_spawn_exactly_one_process_owner() {
@@ -414,5 +466,22 @@ mod tests {
             runtime.inspect_with(|state, process| Ok::<_, &'static str>((state, process.copied()))),
             Ok((LifecycleState::Running, Some(8)))
         );
+    }
+
+    #[test]
+    fn terminal_observation_releases_owner_and_marks_failed() {
+        let runtime = ServiceRuntime::new();
+        runtime
+            .start_with(|| Ok::<_, &'static str>(7_u32))
+            .expect("initial start");
+
+        let status = runtime
+            .reconcile_exit_with(|_| Ok::<_, &'static str>(Some(exit_status(23))))
+            .expect("terminal observation")
+            .expect("exit status");
+
+        assert_eq!(status.code(), Some(23));
+        assert_eq!(runtime.has_process(), Ok(false));
+        assert_eq!(runtime.lifecycle(), Ok(LifecycleState::Failed));
     }
 }

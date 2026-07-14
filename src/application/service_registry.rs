@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 
 use crate::domain::{
-    Actor, AuthorizationError, ControlPolicy, LifecycleAction, LifecycleState, OperatorHold,
-    Reason, TransitionError,
+    Actor, AuthorizationError, ControlPolicy, DesiredState, LifecycleAction, LifecycleState,
+    OperatorHold, Reason, TransitionError,
 };
 
 use super::{
@@ -17,6 +17,33 @@ use super::{
     StartOutcome, StopOutcome,
 };
 
+const DEFAULT_RESTART_STABILITY_WINDOW: Duration = Duration::from_mins(1);
+
+/// Bounded automatic restart policy mapped from validated configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceRestartPolicy {
+    Manual,
+    OnFailure,
+}
+
+/// One terminal owned-tree observation emitted exactly once.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessExitEvent {
+    pub service_id: String,
+    pub previous_state: LifecycleState,
+    pub owned_pids_before: Vec<u32>,
+    pub exit_code: Option<i32>,
+    pub successful: bool,
+    pub automatic_restart_planned: bool,
+}
+
+/// Result of one periodic service reconciliation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceRefresh {
+    pub health: HealthSnapshot,
+    pub process_exit: Option<ProcessExitEvent>,
+}
+
 /// Platform-neutral definition of one validated, registered service.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceRegistration {
@@ -24,6 +51,7 @@ pub struct ServiceRegistration {
     label: String,
     launch: LaunchSpec,
     health: HealthCheckSpec,
+    restart_policy: ServiceRestartPolicy,
     ports: Vec<u16>,
     shutdown_grace: Duration,
 }
@@ -35,6 +63,7 @@ impl ServiceRegistration {
         label: impl Into<String>,
         launch: LaunchSpec,
         health: HealthCheckSpec,
+        restart_policy: ServiceRestartPolicy,
         ports: Vec<u16>,
         shutdown_grace: Duration,
     ) -> Self {
@@ -43,6 +72,7 @@ impl ServiceRegistration {
             label: label.into(),
             launch,
             health,
+            restart_policy,
             ports,
             shutdown_grace,
         }
@@ -78,6 +108,11 @@ pub struct ServiceSnapshot {
     pub root_pid: Option<u32>,
     pub owned_pids: Vec<u32>,
     pub health: HealthSnapshot,
+    pub desired_state: DesiredState,
+    pub started_at_unix_ms: Option<u64>,
+    pub last_exit_code: Option<i32>,
+    pub last_exit_at_unix_ms: Option<u64>,
+    pub restart_count: u32,
     pub operator_hold: OperatorHold,
     pub last_action: Option<LastAction>,
 }
@@ -93,6 +128,7 @@ where
     spawner: Spawner,
     port_inspector: Inspector,
     health_probe: Arc<dyn HealthProbe>,
+    restart_stability_window: Duration,
 }
 
 impl<Spawner, Inspector> ServiceRegistry<Spawner, Inspector>
@@ -111,6 +147,28 @@ where
         port_inspector: Inspector,
         health_probe: Arc<dyn HealthProbe>,
     ) -> Result<Self, RegistryBuildError> {
+        Self::new_with_restart_stability_window(
+            registrations,
+            spawner,
+            port_inspector,
+            health_probe,
+            DEFAULT_RESTART_STABILITY_WINDOW,
+        )
+    }
+
+    /// Builds a registry with an explicit stability window for deterministic
+    /// fixtures and alternative compositions.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegistryBuildError::DuplicateServiceId`] for duplicate IDs.
+    pub fn new_with_restart_stability_window(
+        registrations: impl IntoIterator<Item = ServiceRegistration>,
+        spawner: Spawner,
+        port_inspector: Inspector,
+        health_probe: Arc<dyn HealthProbe>,
+        restart_stability_window: Duration,
+    ) -> Result<Self, RegistryBuildError> {
         let mut services = BTreeMap::new();
         for registration in registrations {
             match services.entry(registration.id.clone()) {
@@ -127,6 +185,7 @@ where
             spawner,
             port_inspector,
             health_probe,
+            restart_stability_window,
         })
     }
 
@@ -153,6 +212,7 @@ where
             .policy
             .authorize(actor, LifecycleAction::Start)
             .map_err(RegistryError::Unauthorized)?;
+        Self::authorize_recovery(entry, actor)?;
 
         if has_process(&entry.runtime)? {
             return Ok(StartOutcome::AlreadyRunning);
@@ -165,6 +225,7 @@ where
             actor,
             reason,
         });
+        lock(&entry.supervision)?.request_running(actor);
 
         let outcome = entry
             .runtime
@@ -176,6 +237,7 @@ where
             })
             .map_err(RegistryError::Runtime)?;
         if outcome == StartOutcome::Started {
+            lock(&entry.supervision)?.record_started(LifecycleAction::Start);
             self.wait_until_healthy(entry)?;
         }
         Ok(outcome)
@@ -207,6 +269,7 @@ where
             actor,
             reason,
         });
+        lock(&entry.supervision)?.request_stopped();
         let grace = entry.registration.shutdown_grace;
 
         let outcome = entry
@@ -242,6 +305,7 @@ where
             .policy
             .authorize(actor, LifecycleAction::Restart)
             .map_err(RegistryError::Unauthorized)?;
+        Self::authorize_recovery(entry, actor)?;
         control
             .policy
             .apply_user_action(actor, LifecycleAction::Restart);
@@ -250,6 +314,7 @@ where
             actor,
             reason,
         });
+        lock(&entry.supervision)?.request_running(actor);
         let grace = entry.registration.shutdown_grace;
 
         let outcome = entry
@@ -269,6 +334,7 @@ where
                 },
             )
             .map_err(RegistryError::Runtime)?;
+        lock(&entry.supervision)?.record_started(LifecycleAction::Restart);
         self.wait_until_healthy(entry)?;
         Ok(outcome)
     }
@@ -293,11 +359,37 @@ where
     pub fn refresh_healths(
         &self,
     ) -> Result<Vec<HealthSnapshot>, RegistryError<ProcessError<Spawner>, Inspector::Error>> {
+        Ok(self
+            .refresh_services()?
+            .into_iter()
+            .map(|refresh| refresh.health)
+            .collect())
+    }
+
+    /// Reconciles terminal process trees and refreshes health for every
+    /// service. A terminal tree is emitted exactly once because its retained
+    /// owner is released during reconciliation.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first process observation or lifecycle failure.
+    pub fn refresh_services(
+        &self,
+    ) -> Result<Vec<ServiceRefresh>, RegistryError<ProcessError<Spawner>, Inspector::Error>> {
         self.services
             .values()
             .map(|entry| {
                 let _mutation = lock(&entry.mutation)?;
-                self.observe_health(entry, None)
+                let process_exit = self.reconcile_process_exit(entry)?;
+                let health = if process_exit.is_some() {
+                    lock(&entry.health)?.clone()
+                } else {
+                    self.observe_health(entry, None)?
+                };
+                Ok(ServiceRefresh {
+                    health,
+                    process_exit,
+                })
             })
             .collect()
     }
@@ -308,6 +400,7 @@ where
         let _mutation = lock(&entry.mutation)?;
         let control = lock(&entry.control)?;
         let health = lock(&entry.health)?.clone();
+        let supervision = lock(&entry.supervision)?;
         let (lifecycle, root_pid, owned_pids) = entry
             .runtime
             .inspect_with(|lifecycle, process| match process {
@@ -323,9 +416,72 @@ where
             root_pid,
             owned_pids,
             health,
+            desired_state: supervision.desired_state,
+            started_at_unix_ms: supervision.started_at_unix_ms,
+            last_exit_code: supervision.last_exit_code,
+            last_exit_at_unix_ms: supervision.last_exit_at_unix_ms,
+            restart_count: supervision.restart_count,
             operator_hold: control.policy.operator_hold(),
             last_action: control.last_action.clone(),
         })
+    }
+
+    fn reconcile_process_exit(
+        &self,
+        entry: &ServiceEntry<Spawner::Process>,
+    ) -> Result<Option<ProcessExitEvent>, RegistryError<ProcessError<Spawner>, Inspector::Error>>
+    {
+        let (previous_state, owned_pids) = entry
+            .runtime
+            .inspect_with(|lifecycle, process| match process {
+                Some(process) => Ok((lifecycle, process.owned_pids()?)),
+                None => Ok((lifecycle, Vec::new())),
+            })
+            .map_err(map_observation_error)?;
+        if !owned_pids.is_empty() {
+            lock(&entry.supervision)?.last_owned_pids = owned_pids;
+            return Ok(None);
+        }
+
+        let status = entry
+            .runtime
+            .reconcile_exit_with(ManagedProcessTree::try_wait)
+            .map_err(map_observation_error)?;
+        let Some(status) = status else {
+            return Ok(None);
+        };
+
+        let operator_hold = lock(&entry.control)?.policy.operator_hold();
+        let mut supervision = lock(&entry.supervision)?;
+        let automatic_restart_planned = supervision.record_exit(
+            status,
+            entry.registration.restart_policy,
+            operator_hold,
+            self.restart_stability_window,
+        );
+        let health = HealthSnapshot::unhealthy(
+            false,
+            match entry.registration.health {
+                HealthCheckSpec::Process => None,
+                _ => Some(false),
+            },
+            format!(
+                "owned process tree exited{}",
+                status
+                    .code()
+                    .map_or_else(String::new, |code| format!(" with code {code}"))
+            ),
+        );
+        *lock(&entry.health)? = health;
+
+        Ok(Some(ProcessExitEvent {
+            service_id: entry.registration.id.clone(),
+            previous_state,
+            owned_pids_before: std::mem::take(&mut supervision.last_owned_pids),
+            exit_code: status.code(),
+            successful: status.success(),
+            automatic_restart_planned,
+        }))
     }
 
     fn wait_until_healthy(
@@ -453,6 +609,20 @@ where
         }
         Ok(())
     }
+
+    fn authorize_recovery(
+        entry: &ServiceEntry<Spawner::Process>,
+        actor: Actor,
+    ) -> Result<(), RegistryError<ProcessError<Spawner>, Inspector::Error>> {
+        if actor == Actor::Recovery
+            && lock(&entry.supervision)?.desired_state == DesiredState::Stopped
+        {
+            return Err(RegistryError::Unauthorized(
+                AuthorizationError::RecoveryDesiredStateStopped,
+            ));
+        }
+        Ok(())
+    }
 }
 
 type ProcessError<Spawner> =
@@ -465,6 +635,7 @@ struct ServiceEntry<Process> {
     mutation: Mutex<()>,
     control: Mutex<ControlState>,
     health: Mutex<HealthSnapshot>,
+    supervision: Mutex<SupervisionState>,
 }
 
 impl<Process> ServiceEntry<Process> {
@@ -478,6 +649,7 @@ impl<Process> ServiceEntry<Process> {
                 last_action: None,
             }),
             health: Mutex::new(HealthSnapshot::unknown()),
+            supervision: Mutex::new(SupervisionState::new()),
         }
     }
 }
@@ -486,6 +658,95 @@ impl<Process> ServiceEntry<Process> {
 struct ControlState {
     policy: ControlPolicy,
     last_action: Option<LastAction>,
+}
+
+#[derive(Debug)]
+struct SupervisionState {
+    desired_state: DesiredState,
+    started_at_unix_ms: Option<u64>,
+    started_at: Option<Instant>,
+    last_exit_code: Option<i32>,
+    last_exit_at_unix_ms: Option<u64>,
+    restart_count: u32,
+    automatic_restarts_in_episode: u32,
+    last_owned_pids: Vec<u32>,
+}
+
+impl SupervisionState {
+    const fn new() -> Self {
+        Self {
+            desired_state: DesiredState::Stopped,
+            started_at_unix_ms: None,
+            started_at: None,
+            last_exit_code: None,
+            last_exit_at_unix_ms: None,
+            restart_count: 0,
+            automatic_restarts_in_episode: 0,
+            last_owned_pids: Vec::new(),
+        }
+    }
+
+    fn request_running(&mut self, actor: Actor) {
+        self.desired_state = DesiredState::Running;
+        if actor != Actor::Recovery {
+            self.automatic_restarts_in_episode = 0;
+        }
+    }
+
+    fn request_stopped(&mut self) {
+        self.desired_state = DesiredState::Stopped;
+        self.started_at = None;
+        self.started_at_unix_ms = None;
+        self.automatic_restarts_in_episode = 0;
+        self.last_owned_pids.clear();
+    }
+
+    fn record_started(&mut self, action: LifecycleAction) {
+        self.started_at = Some(Instant::now());
+        self.started_at_unix_ms = Some(unix_milliseconds());
+        self.last_owned_pids.clear();
+        if action == LifecycleAction::Restart {
+            self.restart_count = self.restart_count.saturating_add(1);
+        }
+    }
+
+    fn record_exit(
+        &mut self,
+        status: std::process::ExitStatus,
+        restart_policy: ServiceRestartPolicy,
+        operator_hold: OperatorHold,
+        stability_window: Duration,
+    ) -> bool {
+        if self
+            .started_at
+            .is_some_and(|started| started.elapsed() >= stability_window)
+        {
+            self.automatic_restarts_in_episode = 0;
+        }
+        self.started_at = None;
+        self.started_at_unix_ms = None;
+        self.last_exit_code = status.code();
+        self.last_exit_at_unix_ms = Some(unix_milliseconds());
+
+        let automatic_restart_planned = restart_policy == ServiceRestartPolicy::OnFailure
+            && !status.success()
+            && self.desired_state == DesiredState::Running
+            && operator_hold != OperatorHold::Stopped
+            && self.automatic_restarts_in_episode == 0;
+        if automatic_restart_planned {
+            self.automatic_restarts_in_episode = 1;
+        }
+        automatic_restart_planned
+    }
+}
+
+fn unix_milliseconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
 }
 
 fn lock<Value, ProcessFailure, PortFailure>(
@@ -617,15 +878,16 @@ where
 #[cfg(test)]
 mod tests {
     use std::fmt;
-    use std::process::ExitStatus;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::process::{Command, ExitStatus};
+    use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     use crate::application::{
         BackendOperationError, HealthCheckSpec, HealthProbe, LaunchSpec, ManagedProcessTree,
         NetworkFamily, PortDiagnostic, PortInspector, PortOccupant, ProcessTreeSpawner,
-        ServiceRegistration, ServiceRuntimeError, TransportHealth, TreeStopReport,
+        ServiceRegistration, ServiceRestartPolicy, ServiceRuntimeError, TransportHealth,
+        TreeStopReport,
     };
     use crate::domain::{Actor, AuthorizationError, Reason};
 
@@ -687,6 +949,133 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Clone)]
+    struct ProcessControl {
+        owned_pids: Arc<Mutex<Vec<u32>>>,
+        exit_code: Arc<AtomicI32>,
+        try_wait_count: Arc<AtomicU32>,
+    }
+
+    impl ProcessControl {
+        fn launcher_exited_with_descendants(&self, code: i32, descendants: Vec<u32>) {
+            self.exit_code.store(code, Ordering::SeqCst);
+            *self.owned_pids.lock().expect("control lock") = descendants;
+        }
+
+        fn tree_exited(&self, code: i32) {
+            self.exit_code.store(code, Ordering::SeqCst);
+            self.owned_pids.lock().expect("control lock").clear();
+        }
+    }
+
+    #[derive(Debug)]
+    struct ControllableProcess {
+        pid: u32,
+        control: ProcessControl,
+    }
+
+    impl ManagedProcessTree for ControllableProcess {
+        type Error = FakeError;
+
+        fn root_pid(&self) -> u32 {
+            self.pid
+        }
+
+        fn owned_pids(&self) -> Result<Vec<u32>, Self::Error> {
+            self.control
+                .owned_pids
+                .lock()
+                .map(|pids| pids.clone())
+                .map_err(|_| FakeError)
+        }
+
+        fn try_wait(&mut self) -> Result<Option<ExitStatus>, Self::Error> {
+            self.control.try_wait_count.fetch_add(1, Ordering::SeqCst);
+            if self.owned_pids()?.is_empty() {
+                Ok(Some(exit_status(
+                    self.control.exit_code.load(Ordering::SeqCst),
+                )))
+            } else {
+                Ok(None)
+            }
+        }
+
+        fn stop(&mut self, _grace: Duration) -> Result<TreeStopReport, Self::Error> {
+            let before = self.owned_pids()?;
+            self.control
+                .owned_pids
+                .lock()
+                .map_err(|_| FakeError)?
+                .clear();
+            Ok(TreeStopReport {
+                owned_pids_before: before,
+                owned_pids_after: Vec::new(),
+                graceful_signal_sent: true,
+                graceful_signal_error: None,
+                forced: false,
+            })
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct ControllableSpawner {
+        next_pid: Arc<AtomicU32>,
+        controls: Arc<Mutex<Vec<ProcessControl>>>,
+    }
+
+    impl ControllableSpawner {
+        fn new() -> Self {
+            Self {
+                next_pid: Arc::new(AtomicU32::new(2_000)),
+                controls: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn latest(&self) -> ProcessControl {
+            self.controls
+                .lock()
+                .expect("controls lock")
+                .last()
+                .expect("spawned control")
+                .clone()
+        }
+    }
+
+    impl ProcessTreeSpawner for ControllableSpawner {
+        type Process = ControllableProcess;
+
+        fn spawn(&self, _launch: &LaunchSpec) -> Result<Self::Process, FakeError> {
+            let pid = self.next_pid.fetch_add(1, Ordering::SeqCst);
+            let control = ProcessControl {
+                owned_pids: Arc::new(Mutex::new(vec![pid])),
+                exit_code: Arc::new(AtomicI32::new(0)),
+                try_wait_count: Arc::new(AtomicU32::new(0)),
+            };
+            self.controls
+                .lock()
+                .map_err(|_| FakeError)?
+                .push(control.clone());
+            Ok(ControllableProcess { pid, control })
+        }
+    }
+
+    fn exit_status(code: i32) -> ExitStatus {
+        #[cfg(windows)]
+        {
+            Command::new("cmd")
+                .args(["/C", "exit", &code.to_string()])
+                .status()
+                .expect("create Windows fixture exit status")
+        }
+        #[cfg(unix)]
+        {
+            Command::new("sh")
+                .args(["-c", &format!("exit {code}")])
+                .status()
+                .expect("create Unix fixture exit status")
+        }
+    }
+
     #[derive(Debug, Clone, Copy)]
     struct FakePortInspector {
         occupied: bool,
@@ -740,6 +1129,13 @@ mod tests {
     }
 
     fn registration(ports: Vec<u16>) -> ServiceRegistration {
+        registration_with_policy(ports, ServiceRestartPolicy::Manual)
+    }
+
+    fn registration_with_policy(
+        ports: Vec<u16>,
+        restart_policy: ServiceRestartPolicy,
+    ) -> ServiceRegistration {
         ServiceRegistration::new(
             "fixture",
             "Fixture",
@@ -750,6 +1146,7 @@ mod tests {
                 std::iter::empty::<(&str, &str)>(),
             ),
             HealthCheckSpec::Process,
+            restart_policy,
             ports,
             Duration::from_millis(10),
         )
@@ -771,6 +1168,7 @@ mod tests {
                 timeout: Duration::from_millis(1),
                 startup_deadline: Duration::ZERO,
             },
+            ServiceRestartPolicy::Manual,
             Vec::new(),
             Duration::from_millis(10),
         )
@@ -862,5 +1260,213 @@ mod tests {
         let recovered = registry.snapshots().expect("recovered snapshot").remove(0);
         assert_eq!(recovered.lifecycle, crate::domain::LifecycleState::Running);
         assert!(recovered.health.is_healthy());
+    }
+
+    #[test]
+    fn terminal_tree_is_released_and_manual_start_is_available_again() {
+        let spawner = ControllableSpawner::new();
+        let registry = ServiceRegistry::new(
+            [registration(Vec::new())],
+            spawner.clone(),
+            FakePortInspector { occupied: false },
+            Arc::new(FakeHealthProbe),
+        )
+        .expect("valid registry");
+        registry
+            .start("fixture", Actor::UserCli, reason("initial start"))
+            .expect("start fixture");
+        spawner.latest().tree_exited(17);
+
+        let refresh = registry.refresh_services().expect("exit refresh").remove(0);
+        let exit = refresh.process_exit.expect("one process exit event");
+        assert_eq!(exit.exit_code, Some(17));
+        assert!(!exit.automatic_restart_planned);
+        let failed = registry.snapshots().expect("failed snapshot").remove(0);
+        assert_eq!(failed.lifecycle, crate::domain::LifecycleState::Failed);
+        assert_eq!(failed.desired_state, crate::domain::DesiredState::Running);
+        assert_eq!(failed.root_pid, None);
+        assert_eq!(failed.last_exit_code, Some(17));
+
+        assert!(matches!(
+            registry.start("fixture", Actor::UserCli, reason("manual recovery")),
+            Ok(crate::application::StartOutcome::Started)
+        ));
+        assert_eq!(spawner.controls.lock().expect("controls lock").len(), 2);
+    }
+
+    #[test]
+    fn launcher_exit_does_not_release_owner_while_descendant_remains() {
+        let spawner = ControllableSpawner::new();
+        let registry = ServiceRegistry::new(
+            [registration(Vec::new())],
+            spawner.clone(),
+            FakePortInspector { occupied: false },
+            Arc::new(FakeHealthProbe),
+        )
+        .expect("valid registry");
+        registry
+            .start("fixture", Actor::UserCli, reason("initial start"))
+            .expect("start fixture");
+        let control = spawner.latest();
+        control.launcher_exited_with_descendants(23, vec![9_001]);
+
+        let refresh = registry
+            .refresh_services()
+            .expect("descendant refresh")
+            .remove(0);
+        assert!(refresh.process_exit.is_none());
+        assert_eq!(control.try_wait_count.load(Ordering::SeqCst), 0);
+        let running = registry.snapshots().expect("running snapshot").remove(0);
+        assert_eq!(running.lifecycle, crate::domain::LifecycleState::Running);
+        assert_eq!(running.owned_pids, vec![9_001]);
+
+        control.tree_exited(23);
+        let terminal = registry
+            .refresh_services()
+            .expect("terminal refresh")
+            .remove(0);
+        assert_eq!(
+            terminal.process_exit.expect("terminal event").exit_code,
+            Some(23)
+        );
+        assert_eq!(control.try_wait_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn on_failure_allows_only_one_automatic_restart_in_unstable_episode() {
+        let spawner = ControllableSpawner::new();
+        let registry = ServiceRegistry::new(
+            [registration_with_policy(
+                Vec::new(),
+                ServiceRestartPolicy::OnFailure,
+            )],
+            spawner.clone(),
+            FakePortInspector { occupied: false },
+            Arc::new(FakeHealthProbe),
+        )
+        .expect("valid registry");
+        registry
+            .start("fixture", Actor::UserCli, reason("initial start"))
+            .expect("start fixture");
+        spawner.latest().tree_exited(31);
+        let first = registry
+            .refresh_services()
+            .expect("first exit refresh")
+            .remove(0)
+            .process_exit
+            .expect("first exit");
+        assert!(first.automatic_restart_planned);
+
+        registry
+            .restart(
+                "fixture",
+                Actor::Recovery,
+                reason("automatic on-failure restart"),
+            )
+            .expect("automatic restart");
+        spawner.latest().tree_exited(32);
+        let second = registry
+            .refresh_services()
+            .expect("second exit refresh")
+            .remove(0)
+            .process_exit
+            .expect("second exit");
+        assert!(!second.automatic_restart_planned);
+        let failed = registry.snapshots().expect("failed snapshot").remove(0);
+        assert_eq!(failed.restart_count, 1);
+        assert_eq!(failed.last_exit_code, Some(32));
+    }
+
+    #[test]
+    fn stable_runtime_starts_a_new_on_failure_episode() {
+        let spawner = ControllableSpawner::new();
+        let registry = ServiceRegistry::new_with_restart_stability_window(
+            [registration_with_policy(
+                Vec::new(),
+                ServiceRestartPolicy::OnFailure,
+            )],
+            spawner.clone(),
+            FakePortInspector { occupied: false },
+            Arc::new(FakeHealthProbe),
+            Duration::ZERO,
+        )
+        .expect("valid registry");
+        registry
+            .start("fixture", Actor::UserCli, reason("initial start"))
+            .expect("start fixture");
+        spawner.latest().tree_exited(41);
+        assert!(
+            registry
+                .refresh_services()
+                .expect("first exit")
+                .remove(0)
+                .process_exit
+                .expect("first event")
+                .automatic_restart_planned
+        );
+        registry
+            .restart(
+                "fixture",
+                Actor::Recovery,
+                reason("automatic on-failure restart"),
+            )
+            .expect("automatic restart");
+        spawner.latest().tree_exited(42);
+        assert!(
+            registry
+                .refresh_services()
+                .expect("stable episode exit")
+                .remove(0)
+                .process_exit
+                .expect("stable episode event")
+                .automatic_restart_planned
+        );
+    }
+
+    #[test]
+    fn explicit_stop_wins_race_with_planned_recovery() {
+        let spawner = ControllableSpawner::new();
+        let registry = ServiceRegistry::new(
+            [registration_with_policy(
+                Vec::new(),
+                ServiceRestartPolicy::OnFailure,
+            )],
+            spawner.clone(),
+            FakePortInspector { occupied: false },
+            Arc::new(FakeHealthProbe),
+        )
+        .expect("valid registry");
+        registry
+            .start("fixture", Actor::UserCli, reason("initial start"))
+            .expect("start fixture");
+        spawner.latest().tree_exited(51);
+        assert!(
+            registry
+                .refresh_services()
+                .expect("exit refresh")
+                .remove(0)
+                .process_exit
+                .expect("exit event")
+                .automatic_restart_planned
+        );
+
+        registry
+            .stop("fixture", Actor::Agent, reason("explicit agent stop"))
+            .expect("stop already exited service");
+        let recovery = registry.restart(
+            "fixture",
+            Actor::Recovery,
+            reason("automatic on-failure restart"),
+        );
+        assert!(matches!(
+            recovery,
+            Err(RegistryError::Unauthorized(
+                AuthorizationError::RecoveryDesiredStateStopped
+            ))
+        ));
+        assert_eq!(
+            registry.snapshots().expect("stopped snapshot")[0].desired_state,
+            crate::domain::DesiredState::Stopped
+        );
     }
 }
