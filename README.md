@@ -16,6 +16,53 @@ initial AkuWorkspace pilot. Platform-neutral application ports and separate
 Windows, Linux, and macOS adapter boundaries keep future OS ports isolated from
 the lifecycle core. Only the Windows adapter is implemented today.
 
+## Why AkuSupervisor instead of a generic watcher
+
+AkuSupervisor exists for a narrower problem than a general production process
+manager: a local, authenticated, browser-integrated development stack can have
+persisted work in flight, multi-process Windows trees, and cooperative actions
+that must complete without taking over the user's screen. Merely observing that
+a launcher PID is alive is not enough.
+
+The first post-onboarding AkuBrowser update made this boundary concrete. A
+Node file watcher restarted AkuSidecar while Codex SDK reasoning was in flight.
+The HTTP interruption was brief, but the persisted session was left waiting for
+recovery. AkuSupervisor replaced the complete old tree, preserved SQLite, and
+made the recovery auditable; after the Sidecar watcher was removed, the same
+session resumed and completed X plus LinkedIn without a replacement run.
+
+| Approach | Strongest fit | Missing boundary for AkuWorkspace |
+|---|---|---|
+| `node --watch`, nodemon, or an npm watcher | Fast restart of a disposable development process after source changes | A restart can interrupt a persisted job at an arbitrary stage. It normally has no health contract, complete Windows-tree ownership, durable audit, or cooperative browser action |
+| PM2 or another application process manager | Mature daemon restart, log, clustering, and Node-oriented production operations | It does not by itself define AkuBridge reload acceptance, source-aware health, SQLite-preserving development handoff, or the project's authenticated local control and MCP inspection boundary |
+| Docker/Compose restart and health policies | Reproducible isolation, deployable images, and service-level restart | The signed-in host Chrome profile and unpacked extension live outside the container. Container restart does not coordinate that browser state, and container isolation is heavier than the current local pilot requires |
+| `systemd`, Windows Service/NSSM, `supervisord`, or an IDE task runner | OS service startup or convenient local task launch | Generic lifecycle ownership does not provide AkuWorkspace's staged development handoff, bounded old-tree cleanup, cooperative extension reload, or one canonical cross-service audit trail |
+| AkuSupervisor | Visible local ownership of AkuSidecar and AkuBridge development operations | It is intentionally not a container platform, cluster scheduler, or remote production orchestrator; only the Windows platform adapter is implemented today |
+
+AkuSupervisor's differentiators are therefore the combination of:
+
+- configuration validation before process mutation;
+- ownership and cleanup of the complete launcher/child process tree;
+- bounded graceful stop/restart with operator holds and a small recovery policy;
+- HTTP JSON health that distinguishes transport readiness from process presence;
+- durable lifecycle events and bounded stdout/stderr access;
+- an authenticated local control API with stateless read-only MCP inspection;
+- cooperative AkuBridge reload with requested, delivered, accepted, heartbeat,
+  and completion evidence; and
+- a development handoff that builds a staged Supervisor, keeps the old instance
+  available until the build succeeds, restores previously running services,
+  and keeps stable promotion as a separate explicit release action.
+
+The AkuSupervisor development watcher is not the same as placing a managed
+service under an in-process file watcher. It rebuilds AkuSupervisor itself into
+a staging target and performs a bounded service-aware handoff. AkuSidecar now
+runs without Node file watching; backend changes are restarted explicitly
+through AkuSupervisor, while Vite retains frontend HMR.
+
+Use the simpler tool when its boundary is sufficient. AkuSupervisor is justified
+when local browser state, persisted jobs, full-tree cleanup, and cooperative
+cross-component evidence must be treated as one lifecycle contract.
+
 ## Structure
 
 ```text
