@@ -340,6 +340,22 @@ POST /v1/services/:id/stop
 POST /v1/services/:id/restart
 ```
 
+### 12.3 Read-only MCP adapter
+
+The optional MCP endpoint is a protocol adapter on the already-running
+loopback server:
+
+```text
+POST /mcp
+```
+
+It is opt-in, stateless, and authenticated on every request. The AkuWorkspace
+pilot exposes only list services, get service, recent events, and bounded log
+reads. It advertises no lifecycle mutation, cooperative reload, resource,
+prompt, sampling, task, session, SSE, or bootstrap capability. A present
+`Origin` header must exactly match the configured allow-list. Disabling MCP
+must not change CLI/HTTP lifecycle behavior, ownership, health, or cleanup.
+
 Mutation body:
 
 ```json

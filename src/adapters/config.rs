@@ -46,6 +46,19 @@ pub struct ControlConfig {
     pub host: String,
     pub port: u16,
     pub token_file: PathBuf,
+    #[serde(default)]
+    pub mcp: McpConfig,
+}
+
+/// Optional read-only MCP endpoint on the existing control listener.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct McpConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Exact trusted browser origins. Native clients normally omit Origin.
+    #[serde(default)]
+    pub allowed_origins: Vec<String>,
 }
 
 /// One registered service profile.
@@ -605,7 +618,7 @@ mod tests {
 
     use super::{
         CONFIG_VERSION, ConfigError, ControlConfig, CooperativeActionsConfig, HealthCheck,
-        RestartPolicy, ServiceConfig, SupervisorConfig,
+        McpConfig, RestartPolicy, ServiceConfig, SupervisorConfig,
     };
 
     static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(1);
@@ -651,6 +664,7 @@ mod tests {
                 host: "127.0.0.1".to_owned(),
                 port: 47_820,
                 token_file: PathBuf::from(".runtime/control-token"),
+                mcp: McpConfig::default(),
             },
             cooperative_actions: CooperativeActionsConfig::default(),
             services: BTreeMap::from([("fixture".to_owned(), service)]),

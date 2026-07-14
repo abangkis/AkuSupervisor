@@ -22,6 +22,7 @@ Usage:\n\
   aku-supervisor bridge reload --reason <text> --request-id <id> [--actor <user|codex>] [--wait|--no-wait] [--json] [--config <path>]\n\
   aku-supervisor bridge status --request-id <id> [--json] [--config <path>]\n\
   aku-supervisor bridge validate --request-id <id> [--actor <user|codex>] [--config <path>]\n\
+  aku-supervisor mcp-proxy [--config <path>]\n\
   aku-supervisor --help\n\
   aku-supervisor --version\n\n\
 Without --config, AkuSupervisor checks AKU_SUPERVISOR_CONFIG and then the default user configuration.";
@@ -36,6 +37,9 @@ enum Command {
     BridgeValidate {
         actor: ApiActor,
         request_id: String,
+        config: Option<PathBuf>,
+    },
+    McpProxy {
         config: Option<PathBuf>,
     },
     Remote(RemoteCommand),
@@ -101,6 +105,13 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
             request_id,
             config,
         }) => run_bridge_validate(actor, &request_id, config.as_ref()),
+        Ok(Command::McpProxy { config }) => match crate::adapters::mcp_proxy::run(config) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("error: {error}");
+                ExitCode::FAILURE
+            }
+        },
         Ok(Command::Remote(command)) => run_remote(command),
         Err(message) => {
             eprintln!("error: {message}\n\n{HELP}");
@@ -121,6 +132,12 @@ fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, Strin
         [run] if run == "run" => Ok(Command::Run { config: None }),
         [run, config_flag, config] if run == "run" && config_flag == "--config" => {
             Ok(Command::Run {
+                config: Some(PathBuf::from(config)),
+            })
+        }
+        [proxy] if proxy == "mcp-proxy" => Ok(Command::McpProxy { config: None }),
+        [proxy, config_flag, config] if proxy == "mcp-proxy" && config_flag == "--config" => {
+            Ok(Command::McpProxy {
                 config: Some(PathBuf::from(config)),
             })
         }

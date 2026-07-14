@@ -5,7 +5,7 @@ use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -16,7 +16,9 @@ use crate::application::{
 };
 use crate::domain::{Actor, Reason};
 
+use super::config::McpConfig;
 use super::journal::FileJournal;
+use super::mcp::{self, McpResponse};
 use super::runtime_token::RuntimeToken;
 use super::service_logs::{LogStream, ServiceLogError, ServiceLogStore};
 
@@ -56,10 +58,12 @@ impl ControlHttpServer {
     /// # Errors
     ///
     /// Returns a bind, nonblocking-mode, or thread startup error.
+    #[allow(clippy::too_many_arguments)]
     pub fn start(
         host: &str,
         port: u16,
         token: RuntimeToken,
+        mcp_config: McpConfig,
         control: Arc<dyn SupervisorControl>,
         cooperative: Option<Arc<dyn CooperativeActionControl>>,
         journal: Arc<FileJournal>,
@@ -81,6 +85,7 @@ impl ControlHttpServer {
                 serve(
                     &listener,
                     &token,
+                    &mcp_config,
                     control.as_ref(),
                     cooperative.as_deref(),
                     &journal,
@@ -136,9 +141,11 @@ impl Drop for ControlHttpServer {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn serve(
     listener: &TcpListener,
     token: &RuntimeToken,
+    mcp_config: &McpConfig,
     control: &dyn SupervisorControl,
     cooperative: Option<&CooperativeOperationManager>,
     journal: &FileJournal,
@@ -154,6 +161,7 @@ fn serve(
                 if let Err(error) = handle_connection(
                     &mut stream,
                     token,
+                    mcp_config,
                     control,
                     cooperative,
                     journal,
@@ -173,9 +181,11 @@ fn serve(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_connection(
     stream: &mut TcpStream,
     token: &RuntimeToken,
+    mcp_config: &McpConfig,
     control: &dyn SupervisorControl,
     cooperative: Option<&CooperativeOperationManager>,
     journal: &FileJournal,
@@ -186,6 +196,7 @@ fn handle_connection(
     let response = route(
         &request,
         token,
+        mcp_config,
         control,
         cooperative,
         journal,
@@ -195,15 +206,21 @@ fn handle_connection(
     write_response(stream, &response).map_err(RequestError::Write)
 }
 
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn route(
     request: &HttpRequest,
     token: &RuntimeToken,
+    mcp_config: &McpConfig,
     control: &dyn SupervisorControl,
     cooperative: Option<&CooperativeOperationManager>,
     journal: &FileJournal,
     logs: &ServiceLogStore,
     idempotency: &mut IdempotencyStore,
 ) -> Response {
+    if request.target == mcp::MCP_ENDPOINT {
+        return route_mcp(request, token, mcp_config, control, journal, logs);
+    }
+
     if request.method == "GET" && request.target == "/v1/health" {
         return json_response(
             200,
@@ -312,6 +329,74 @@ fn route(
     }
 
     error_response(404, "not_found", "route not found")
+}
+
+fn route_mcp(
+    request: &HttpRequest,
+    token: &RuntimeToken,
+    config: &McpConfig,
+    control: &dyn SupervisorControl,
+    journal: &FileJournal,
+    logs: &ServiceLogStore,
+) -> Response {
+    if !config.enabled {
+        return error_response(404, "not_found", "route not found");
+    }
+    if !request_is_authorized(request, token) {
+        return error_response(401, "unauthorized", "valid bearer token required");
+    }
+    if request.origin.as_ref().is_some_and(|origin| {
+        !config
+            .allowed_origins
+            .iter()
+            .any(|allowed| allowed == origin)
+    }) {
+        return json_response(
+            403,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": Value::Null,
+                "error": {"code": -32000, "message": "Origin is not allowed"}
+            }),
+        );
+    }
+    if request.method != "POST" {
+        return empty_response(405);
+    }
+    if request.content_type.as_deref() != Some("application/json") {
+        return error_response(400, "invalid_content_type", "application/json required");
+    }
+    let accepts = request.accept.as_deref().unwrap_or_default();
+    if !accepts
+        .split(',')
+        .map(str::trim)
+        .any(|value| value == "application/json")
+        || !accepts
+            .split(',')
+            .map(str::trim)
+            .any(|value| value == "text/event-stream")
+    {
+        return error_response(
+            400,
+            "invalid_accept",
+            "Accept must include application/json and text/event-stream",
+        );
+    }
+    if request
+        .mcp_protocol_version
+        .as_deref()
+        .is_some_and(|version| !mcp::supports_protocol_version(version))
+    {
+        return error_response(
+            400,
+            "unsupported_protocol_version",
+            "unsupported MCP version",
+        );
+    }
+    match mcp::handle_message(&request.body, control, journal, logs) {
+        McpResponse::Json(value) => json_response(200, &value),
+        McpResponse::Accepted => empty_response(202),
+    }
 }
 
 fn request_is_authorized(request: &HttpRequest, token: &RuntimeToken) -> bool {
@@ -603,17 +688,22 @@ struct HttpRequest {
     method: String,
     target: String,
     authorization: Option<String>,
+    accept: Option<String>,
+    content_type: Option<String>,
+    origin: Option<String>,
+    mcp_protocol_version: Option<String>,
     body: Vec<u8>,
 }
 
 fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, RequestError> {
     let mut bytes = Vec::new();
+    let deadline = Instant::now() + IO_TIMEOUT;
     let header_end = loop {
         if bytes.len() >= MAX_HEADER_BYTES {
             return Err(RequestError::HeaderTooLarge);
         }
         let mut chunk = [0_u8; 1024];
-        let count = stream.read(&mut chunk).map_err(RequestError::Read)?;
+        let count = read_with_deadline(stream, &mut chunk, deadline)?;
         if count == 0 {
             return Err(RequestError::UnexpectedEnd);
         }
@@ -635,6 +725,10 @@ fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, RequestError> {
     }
 
     let mut authorization = None;
+    let mut accept = None;
+    let mut content_type = None;
+    let mut origin = None;
+    let mut mcp_protocol_version = None;
     let mut content_length = None;
     for line in lines {
         let (name, value) = line
@@ -645,6 +739,15 @@ fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, RequestError> {
                 if authorization.replace(value.trim().to_owned()).is_some() {
                     return Err(RequestError::Malformed("duplicate authorization header"));
                 }
+            }
+            "accept" => set_single_header(&mut accept, value, "accept")?,
+            "content-type" => {
+                let value = value.trim().split(';').next().unwrap_or_default().trim();
+                set_single_header(&mut content_type, value, "content-type")?;
+            }
+            "origin" => set_single_header(&mut origin, value, "origin")?,
+            "mcp-protocol-version" => {
+                set_single_header(&mut mcp_protocol_version, value, "mcp-protocol-version")?;
             }
             "content-length" => {
                 if content_length.is_some() {
@@ -671,7 +774,7 @@ fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, RequestError> {
     let target = fields[1].to_owned();
     while bytes.len() - header_end < content_length {
         let mut chunk = [0_u8; 1024];
-        let count = stream.read(&mut chunk).map_err(RequestError::Read)?;
+        let count = read_with_deadline(stream, &mut chunk, deadline)?;
         if count == 0 {
             return Err(RequestError::UnexpectedEnd);
         }
@@ -685,8 +788,51 @@ fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, RequestError> {
         method,
         target,
         authorization,
+        accept,
+        content_type,
+        origin,
+        mcp_protocol_version,
         body: bytes[header_end..header_end + content_length].to_vec(),
     })
+}
+
+fn read_with_deadline(
+    stream: &mut TcpStream,
+    chunk: &mut [u8],
+    deadline: Instant,
+) -> Result<usize, RequestError> {
+    loop {
+        match stream.read(chunk) {
+            Ok(count) => return Ok(count),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    return Err(RequestError::Read(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "request read deadline elapsed",
+                    )));
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+            Err(error) => return Err(RequestError::Read(error)),
+        }
+    }
+}
+
+fn set_single_header(
+    slot: &mut Option<String>,
+    value: &str,
+    name: &'static str,
+) -> Result<(), RequestError> {
+    if slot.replace(value.trim().to_owned()).is_some() {
+        return Err(RequestError::Malformed(match name {
+            "accept" => "duplicate accept header",
+            "content-type" => "duplicate content-type header",
+            "origin" => "duplicate origin header",
+            "mcp-protocol-version" => "duplicate mcp-protocol-version header",
+            _ => "duplicate header",
+        }));
+    }
+    Ok(())
 }
 
 fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -699,12 +845,22 @@ fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 struct Response {
     status: u16,
     body: Vec<u8>,
+    content_type: Option<&'static str>,
 }
 
 fn json_response(status: u16, value: &Value) -> Response {
     Response {
         status,
         body: serde_json::to_vec(&value).expect("JSON value serialization cannot fail"),
+        content_type: Some("application/json"),
+    }
+}
+
+fn empty_response(status: u16) -> Response {
+    Response {
+        status,
+        body: Vec::new(),
+        content_type: None,
     }
 }
 
@@ -724,13 +880,17 @@ fn write_response(stream: &mut TcpStream, response: &Response) -> io::Result<()>
         403 => "Forbidden",
         404 => "Not Found",
         409 => "Conflict",
+        405 => "Method Not Allowed",
         500 => "Internal Server Error",
         _ => "Unknown",
     };
+    write!(stream, "HTTP/1.1 {} {reason}\r\n", response.status)?;
+    if let Some(content_type) = response.content_type {
+        write!(stream, "Content-Type: {content_type}\r\n")?;
+    }
     write!(
         stream,
-        "HTTP/1.1 {} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        response.status,
+        "Content-Length: {}\r\nConnection: close\r\n\r\n",
         response.body.len()
     )?;
     stream.write_all(&response.body)?;
@@ -796,6 +956,69 @@ pub fn client_request(
     Ok(value)
 }
 
+/// Forwards one bounded JSON-RPC message to the read-only MCP endpoint.
+///
+/// Notifications return `Ok(None)` after HTTP 202. Requests return exactly
+/// one JSON value.
+///
+/// # Errors
+///
+/// Returns connection, protocol, serialization, or non-success response errors.
+pub fn mcp_client_request(
+    address: SocketAddr,
+    token: &RuntimeToken,
+    message: &Value,
+) -> Result<Option<Value>, ControlClientError> {
+    let body = serde_json::to_vec(message).map_err(ControlClientError::Serialize)?;
+    if body.len() > MAX_BODY_BYTES {
+        return Err(ControlClientError::MessageTooLarge);
+    }
+    let mut stream =
+        TcpStream::connect_timeout(&address, IO_TIMEOUT).map_err(ControlClientError::Connect)?;
+    stream.set_read_timeout(Some(IO_TIMEOUT)).ok();
+    stream.set_write_timeout(Some(IO_TIMEOUT)).ok();
+    write!(
+        stream,
+        "POST {} HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer {}\r\nAccept: application/json, text/event-stream\r\nContent-Type: application/json\r\nMCP-Protocol-Version: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        mcp::MCP_ENDPOINT,
+        token.expose_for_authorization_header(),
+        mcp::MCP_PROTOCOL_VERSION,
+        body.len()
+    )
+    .and_then(|()| stream.write_all(&body))
+    .map_err(ControlClientError::Write)?;
+    stream.shutdown(Shutdown::Write).ok();
+
+    let mut response = Vec::new();
+    stream
+        .take(MAX_RESPONSE_BYTES)
+        .read_to_end(&mut response)
+        .map_err(ControlClientError::Read)?;
+    let header_end = find_bytes(&response, b"\r\n\r\n")
+        .map(|position| position + 4)
+        .ok_or(ControlClientError::MalformedResponse)?;
+    let headers = std::str::from_utf8(&response[..header_end])
+        .map_err(|_| ControlClientError::MalformedResponse)?;
+    let status = headers
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|value| value.parse::<u16>().ok())
+        .ok_or(ControlClientError::MalformedResponse)?;
+    if status == 202 && response[header_end..].is_empty() {
+        return Ok(None);
+    }
+    let value: Value =
+        serde_json::from_slice(&response[header_end..]).map_err(ControlClientError::Deserialize)?;
+    if !(200..300).contains(&status) {
+        return Err(ControlClientError::Rejected {
+            status,
+            body: value,
+        });
+    }
+    Ok(Some(value))
+}
+
 #[derive(Debug)]
 pub enum ControlHttpError {
     Bind(io::Error),
@@ -849,6 +1072,7 @@ pub enum ControlClientError {
     Read(io::Error),
     Serialize(serde_json::Error),
     Deserialize(serde_json::Error),
+    MessageTooLarge,
     MalformedResponse,
     Rejected { status: u16, body: Value },
 }
@@ -857,7 +1081,10 @@ impl ControlClientError {
     /// Returns whether an idempotent request may be retried after this client-side failure.
     #[must_use]
     pub const fn is_transient(&self) -> bool {
-        !matches!(self, Self::Serialize(_) | Self::Rejected { .. })
+        !matches!(
+            self,
+            Self::Serialize(_) | Self::MessageTooLarge | Self::Rejected { .. }
+        )
     }
 }
 
@@ -869,6 +1096,7 @@ impl fmt::Display for ControlClientError {
             Self::Read(error) => write!(formatter, "failed to read control response: {error}"),
             Self::Serialize(error) => write!(formatter, "failed to serialize request: {error}"),
             Self::Deserialize(error) => write!(formatter, "invalid JSON response: {error}"),
+            Self::MessageTooLarge => formatter.write_str("MCP message exceeds bounded body size"),
             Self::MalformedResponse => formatter.write_str("malformed HTTP response"),
             Self::Rejected { status, body } => {
                 write!(
@@ -985,12 +1213,17 @@ mod tests {
             method: "POST".to_owned(),
             target: "/v1/services/api/start".to_owned(),
             authorization: Some(format!("Bearer {}", "b".repeat(64))),
+            accept: None,
+            content_type: None,
+            origin: None,
+            mcp_protocol_version: None,
             body: br#"{"actor":"codex","reason":"source changed"}"#.to_vec(),
         };
 
         let response = route(
             &request,
             &token,
+            &McpConfig::default(),
             &control,
             None,
             &journal,
@@ -1035,12 +1268,17 @@ mod tests {
             method: "POST".to_owned(),
             target: "/v1/cooperative-actions/aku-bridge/reload-self".to_owned(),
             authorization: Some(format!("Bearer {}", "a".repeat(64))),
+            accept: None,
+            content_type: None,
+            origin: None,
+            mcp_protocol_version: None,
             body: br#"{"actor":"codex","reason":"load build","requestId":"bridge-1"}"#.to_vec(),
         };
 
         let response = route(
             &request,
             &token,
+            &McpConfig::default(),
             &control,
             Some(&manager),
             &journal,
@@ -1061,11 +1299,16 @@ mod tests {
             method: "GET".to_owned(),
             target: "/v1/cooperative-actions/aku-bridge/requests/bridge-1".to_owned(),
             authorization: Some(format!("Bearer {}", "a".repeat(64))),
+            accept: None,
+            content_type: None,
+            origin: None,
+            mcp_protocol_version: None,
             body: Vec::new(),
         };
         let status = route(
             &status_request,
             &token,
+            &McpConfig::default(),
             &control,
             Some(&manager),
             &journal,
@@ -1083,11 +1326,16 @@ mod tests {
             method: "GET".to_owned(),
             target: "/v1/cooperative-actions/aku-bridge/active".to_owned(),
             authorization: Some(format!("Bearer {}", "a".repeat(64))),
+            accept: None,
+            content_type: None,
+            origin: None,
+            mcp_protocol_version: None,
             body: Vec::new(),
         };
         let active = route(
             &active_request,
             &token,
+            &McpConfig::default(),
             &control,
             Some(&manager),
             &journal,
@@ -1120,6 +1368,10 @@ mod tests {
             method: "POST".to_owned(),
             target: "/v1/services/api/start".to_owned(),
             authorization: Some(format!("Bearer {}", "a".repeat(64))),
+            accept: None,
+            content_type: None,
+            origin: None,
+            mcp_protocol_version: None,
             body: br#"{"actor":"codex","reason":"source changed","requestId":"same-1"}"#.to_vec(),
         };
         let mut idempotency = IdempotencyStore::default();
@@ -1127,6 +1379,7 @@ mod tests {
         let first = route(
             &request,
             &token,
+            &McpConfig::default(),
             &control,
             None,
             &journal,
@@ -1136,6 +1389,7 @@ mod tests {
         let second = route(
             &request,
             &token,
+            &McpConfig::default(),
             &control,
             None,
             &journal,
@@ -1149,6 +1403,7 @@ mod tests {
         let conflict = route(
             &conflicting,
             &token,
+            &McpConfig::default(),
             &control,
             None,
             &journal,

@@ -12,5 +12,7 @@ pub mod development_shutdown;
 pub mod foreground;
 pub mod http_health;
 pub mod journal;
+pub mod mcp;
+pub mod mcp_proxy;
 pub mod runtime_token;
 pub mod service_logs;

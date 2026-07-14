@@ -3,7 +3,11 @@
   "control": {
     "host": "127.0.0.1",
     "port": 47820,
-    "tokenFile": ".runtime/control-token"
+    "tokenFile": ".runtime/control-token",
+    "mcp": {
+      "enabled": true,
+      "allowedOrigins": []
+    }
   },
   "cooperativeActions": {
     "akuBridgeReload": {

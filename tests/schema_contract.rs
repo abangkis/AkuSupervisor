@@ -1,5 +1,5 @@
 use aku_supervisor::adapters::config::{
-    CONFIG_VERSION, ControlConfig, CooperativeActionsConfig, HealthCheck, RestartPolicy,
+    CONFIG_VERSION, ControlConfig, CooperativeActionsConfig, HealthCheck, McpConfig, RestartPolicy,
     ServiceConfig, SupervisorConfig,
 };
 use std::collections::BTreeMap;
@@ -35,6 +35,8 @@ fn checked_in_akuworkspace_profile_matches_the_typed_contract() {
         .expect("checked-in AkuWorkspace profile must parse");
 
     assert!(config.cooperative_actions.aku_bridge_reload.is_some());
+    assert!(config.control.mcp.enabled);
+    assert!(config.control.mcp.allowed_origins.is_empty());
     assert_eq!(
         config
             .cooperative_actions
@@ -53,6 +55,7 @@ fn typed_configuration_serializes_with_contract_field_names() {
             host: "127.0.0.1".to_owned(),
             port: 47_820,
             token_file: PathBuf::from(".runtime/control-token"),
+            mcp: McpConfig::default(),
         },
         cooperative_actions: CooperativeActionsConfig::default(),
         services: BTreeMap::from([(

@@ -364,9 +364,16 @@ Status: **Completed and live-validated on 2026-07-14**
 - [x] successful handoff restores only services observed running before restart;
 - [x] PowerShell watcher resolves the project-local Cargo toolchain when Cargo
   is absent from `PATH`;
-- [x] VS Code task and manual control workflow documented; and
+- [x] VS Code task and manual control workflow documented;
+- [x] optional positional service IDs let the watcher start AkuSidecar after
+  Supervisor readiness while preserving Supervisor-only default behavior;
 - [x] watcher startup and post-rebuild banners distinguish active development
-  and normal stable binaries and print the safe transition sequence; and
+  and normal stable binaries and print the safe transition sequence;
+- [x] startup and post-cleanup handoff require an exclusively replaceable
+  development executable, diagnose a matching portless PID when discoverable,
+  and never force-kill the file owner; and
+- [x] a byte-identical staged build skips unnecessary replacement so a
+  read-only MCP proxy cannot suppress watcher startup or its normal banner;
 - [x] portable signal contract separated from the Windows runner.
 
 Live evidence used an isolated control port. The Supervisor PID changed from
@@ -386,6 +393,9 @@ Status: **Completed and live-validated on 2026-07-14**
   errors exit `2`;
 - [x] `scripts/promote-stable.ps1` refuses to copy `target/dev` on nonzero,
   failed, or malformed validation output; and
+- [x] promotion performs a non-mutating `running / healthy` AkuSidecar preflight
+  and prints the supervised recovery command instead of silently starting it;
+  and
 - [x] release evaluation remains platform-neutral while PowerShell owns only
   the Windows copy adapter.
 
@@ -445,7 +455,7 @@ crash.
 
 ### Phase 6 - MCP adapter
 
-Status: **Deferred until Gate 4; preferably after Gate 5**
+Status: **Read-only checkpoint completed and live-validated on 2026-07-14**
 
 Deliverables and acceptance criteria are maintained in [MCP Integration Notes](mcp-integration-notes.md).
 
@@ -453,10 +463,34 @@ The primary design is authenticated local Streamable HTTP. A stdio process, if r
 
 Gate 6:
 
-- read-only MCP operations are proven before mutations are enabled;
+- [x] read-only MCP operations are proven through contract, integration, and
+  live AkuWorkspace validation before mutations are considered;
 - MCP mutations obey the same authorization, operator hold, and audit rules as CLI and HTTP;
 - disabling MCP does not affect lifecycle correctness; and
 - the MCP adapter does not become a bootstrap mechanism.
+
+Current checkpoint:
+
+- [x] opt-in authenticated `/mcp` endpoint on the existing loopback listener;
+- [x] stateless initialize, ping, tools/list, initialized notification, and four
+  bounded read-only tool calls;
+- [x] no lifecycle mutation, cooperative reload, bootstrap, resources, prompts,
+  sampling, Tasks, sessions, or SSE capability;
+- [x] exact Origin allow-list when an Origin header is present;
+- [x] adapter isolation from the lifecycle and platform layers; and
+- [x] bounded stdio proxy and project-scoped Codex registration without copying
+  the bearer token into Codex config or environment; and
+- [x] live tool invocation from a newly started Codex task.
+
+Live validation used the active development Supervisor at
+`http://127.0.0.1:47820/mcp`. It negotiated protocol `2025-11-25`, exposed the
+exact four read-only tools, read AkuSidecar as `stopped / unknown`, exposed no
+mutation tool, and rejected an untrusted Origin with HTTP `403`. A split-packet
+integration test also proved that Windows request headers and bodies may arrive
+separately without leaking non-blocking listener behavior into request parsing.
+The user subsequently confirmed successful MCP use from a newly started Codex
+task through the project-scoped stdio proxy, completing the client-registration
+checkpoint without granting lifecycle mutation or bootstrap authority.
 
 ### Phase 7 - Agent-initiated supervisor bootstrap
 

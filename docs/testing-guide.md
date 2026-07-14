@@ -124,6 +124,26 @@ working-directory input.
 Read-only service status is loopback-visible. Start, stop, and restart require a
 valid bearer token read from the runtime file. The token itself is never printed.
 
+## 3.1 Read-only MCP
+
+With the Supervisor active and `control.mcp.enabled=true`, run:
+
+```powershell
+.\scripts\test-mcp.ps1
+```
+
+The script discovers the same configuration and token file as the Supervisor,
+but never prints the token. It verifies protocol `2025-11-25`, the exact four-
+tool read-only surface, service/event/log reads, absence of mutation tools, and
+HTTP `403` for an untrusted `Origin`. A passing MCP check does not mean MCP can
+start AkuSupervisor: the endpoint exists only inside an already-running,
+user-visible Supervisor.
+
+The Windows integration suite also launches `aku-supervisor mcp-proxy`, sends
+initialize and tools/list as newline-delimited stdio messages, and verifies the
+same four-tool response. The proxy test proves compatibility without granting
+the restricted child any service-ownership or bootstrap role.
+
 For AkuBridge reload, the CLI waits for the terminal heartbeat by default:
 
 ```powershell
@@ -263,6 +283,22 @@ If a non-default profile is required:
 .\scripts\dev.ps1 -Config C:\path\to\services.json
 ```
 
+To start AkuSidecar automatically after the Supervisor becomes ready:
+
+```powershell
+.\scripts\dev.ps1 akusidecar
+```
+
+Additional configured service IDs may be supplied positionally. With no service
+argument, the watcher retains its original Supervisor-only behavior. The script
+validates every requested ID against the selected configuration before building;
+`akusupervisor` is not a service ID because `dev.ps1` already starts it.
+After automatic startup succeeds, the standard watcher banner is still printed
+and an additional message confirms that the service is owned by the development
+Supervisor. Ctrl+C requests the ordinary graceful Supervisor shutdown, waits
+for owned-service cleanup, and prints a completion message; it never kills the
+service tree directly.
+
 The terminal prints the constant executable path
 `target\dev\aku-supervisor.exe`. The script polls `src/**/*.rs`, `Cargo.toml`,
 and `Cargo.lock`, with a short debounce. Its rebuild sequence is:
@@ -272,8 +308,9 @@ and `Cargo.lock`, with a short debounce. Its rebuild sequence is:
 3. remember which registered services are running after compilation succeeds;
 4. write the opt-in local `shutdown-request` signal;
 5. wait for the foreground Supervisor to close its API and owned Job Objects;
-6. copy the staged build over the constant development executable;
-7. launch it and restore the previously running services.
+6. prove the constant development executable is exclusively replaceable;
+7. copy the staged build over the constant development executable;
+8. launch it and restore the previously running services.
 
 The startup and post-rebuild banner distinguishes the two executable roles:
 
@@ -305,6 +342,19 @@ cleanup exceeds the configured timeout, the watcher refuses to kill the
 process or replace its executable. The checked-in VS Code task
 `AkuSupervisor: development watcher` launches the same script.
 
+The control port is not the only ownership signal. At startup and after a
+graceful exit, the watcher opens `target/dev/aku-supervisor.exe` with exclusive
+read/write sharing before replacing it. If an older, portless Supervisor still
+holds the image, startup fails closed and reports the matching PID when Windows
+allows its path to be inspected. Stop only that confirmed PID manually, then
+start the watcher again; the script never force-kills it automatically.
+
+An existing read-only MCP proxy may legitimately hold the development image.
+After compiling, the watcher compares SHA-256 hashes: if staged and development
+bytes are identical it skips the unnecessary copy and continues; if they
+differ, it prints the wait and PID diagnostics immediately and retains the
+fail-closed replacement rule.
+
 Watcher mode intentionally does not give the child process direct ownership of
 stdin, because editor background tasks and automation hosts may immediately
 send EOF. The terminal remains the visible process/log surface. Use another
@@ -333,6 +383,13 @@ the current constant development build only through:
 Promotion is a release checkpoint, not part of the inner development loop. Run
 it once the feature set is complete, tests and live checks pass, and the stable
 path should become the default for subsequent normal launches.
+
+The script performs a read-only Supervisor status preflight before invoking the
+bridge gate. `akusidecar` must already be `running / healthy`; promotion never
+starts it implicitly. If it is stopped, follow the printed supervised start
+command, keep the watcher and AkuBrowser tab alive, and rerun promotion. This
+avoids creating a doomed bridge audit operation merely to discover that port
+47821 is absent.
 
 Use `-Config` for a non-default profile, `-Actor codex` when Codex owns the
 release action, and `-RequestId` only when an external release system supplies

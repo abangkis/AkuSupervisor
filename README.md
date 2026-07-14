@@ -81,6 +81,21 @@ For live AkuSupervisor development, stop any normally running instance with
 .\scripts\dev.ps1
 ```
 
+The default starts only AkuSupervisor. To start one or more configured services
+as soon as the development Supervisor is ready, pass their service IDs as
+positional arguments. For the current AkuWorkspace profile use:
+
+```powershell
+.\scripts\dev.ps1 akusidecar
+```
+
+`AkuSupervisor` is not a managed service ID: it is always the process launched
+by this script. Unknown service IDs fail before the build and list the IDs
+available in the selected configuration. Service arguments do not replace the
+normal watcher banner or transition guidance. Each successful automatic start
+prints an additional ownership message, and Ctrl+C uses the same bounded
+graceful Supervisor cleanup for the service and its process tree.
+
 The watcher builds into a staging target while the current supervisor remains
 available. A successful build requests normal graceful cleanup, replaces only
 the constant `target\dev\aku-supervisor.exe`, starts it again, and restores the
@@ -88,6 +103,17 @@ services that were running before the restart. A failed build leaves the old
 supervisor and its services untouched. It never replaces the normal
 `target\aku-supervisor.exe` and never force-kills a timed-out process. Visual
 Studio Code users can also run the `AkuSupervisor: development watcher` task.
+Startup and every successful handoff also require exclusive write access to the
+development executable. A portless Supervisor instance that is still holding
+the file therefore fails closed with its PID when discoverable, instead of
+reaching `Copy-Item` or silently creating a second instance.
+If the staged and development executables are already byte-identical, no copy is
+needed and a read-only MCP proxy holding the image does not block watcher
+startup. When the bytes differ, the watcher immediately reports that it is
+waiting, includes the matching PID when discoverable, and still fails closed
+without killing the owner.
+The watcher also observes its selected configuration file; a valid config
+change receives the same graceful handoff without restarting the watcher.
 The watcher owns stdin; use the control CLI from a second terminal for
 `status`, `start`, `stop`, or `restart` while it is active.
 It prefers the complete project-local Rust toolchain over any rustup shim found
@@ -120,6 +146,10 @@ latest development build should become normal, use this order:
 
 Promotion is performed before stopping the watcher because its AkuBridge
 release validation needs the supervised Sidecar and extension bridge alive.
+The promotion script first checks that the configured `akusidecar` service is
+both running and healthy. It does not start the service implicitly; when it is
+stopped, the script prints the exact supervised start command and leaves stable
+unchanged.
 
 The script runs `target\dev\aku-supervisor.exe bridge validate` with a fresh
 request ID before copying anything. Validation emits one JSON document and
@@ -147,6 +177,55 @@ cargo run -- events --after 0 --limit 20
 cargo run -- logs akusidecar --stream stderr --tail 100
 cargo run -- stop akusidecar --reason "manual development stop"
 ```
+
+When `control.mcp.enabled` is `true`, the same running Supervisor exposes an
+authenticated, stateless, read-only MCP endpoint at
+`http://127.0.0.1:<control-port>/mcp`. It advertises exactly four tools:
+
+```text
+supervisor_list_services
+supervisor_get_service
+supervisor_get_recent_events
+supervisor_read_logs
+```
+
+MCP cannot start, stop, restart, reload, or bootstrap anything. It uses the
+existing runtime bearer token, rejects tokens in URLs, rejects any `Origin`
+not explicitly listed in `control.mcp.allowedOrigins`, and caps tool results.
+Native MCP clients normally omit `Origin`; an empty allow-list therefore keeps
+browser-originated requests closed. Validate the active endpoint without
+printing the token:
+
+```powershell
+.\scripts\test-mcp.ps1
+```
+
+Disabling or removing `control.mcp` removes `/mcp` while leaving CLI, HTTP,
+service ownership, health monitoring, and cleanup unchanged. See
+[MCP integration notes](docs/mcp-integration-notes.md).
+
+Codex can use the protected runtime token without copying it into Codex config
+through the stdio compatibility proxy:
+
+```toml
+[mcp_servers.aku_supervisor]
+command = "C:\\WorkspaceCodex\\AkuWorkspace\\AkuSupervisor\\target\\aku-supervisor.exe"
+args = ["mcp-proxy"]
+enabled_tools = [
+  "supervisor_list_services",
+  "supervisor_get_service",
+  "supervisor_get_recent_events",
+  "supervisor_read_logs",
+]
+```
+
+The proxy reads newline-delimited MCP from stdin, reads the existing ACL-
+protected token file, and forwards only to the already-running `/mcp` endpoint.
+It never starts AkuSupervisor or a managed service. AkuWorkspace checks this in
+at `.codex/config.toml`; restart Codex or begin a new task after changing MCP
+configuration. During development it may temporarily point at
+`target\dev\aku-supervisor.exe`; after promotion it should return to the stable
+`target\aku-supervisor.exe` shown above.
 
 After the Gate 5 build has been loaded into Chrome once, either the user or
 Codex can request the only browser-side mutation exposed by AkuSupervisor:
@@ -249,5 +328,5 @@ race with recovery.
 - [Implementation roadmap](docs/implementation-roadmap.md)
 - [Testing guide](docs/testing-guide.md)
 - [Platform portability boundary](docs/platform-portability.md)
-- [Deferred MCP integration notes](docs/mcp-integration-notes.md)
+- [MCP integration notes](docs/mcp-integration-notes.md)
 - [AkuBridge cooperative reload](docs/aku-bridge-reload.md)

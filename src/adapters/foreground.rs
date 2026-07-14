@@ -102,6 +102,7 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
         &config.control.host,
         config.control.port,
         token,
+        config.control.mcp.clone(),
         Arc::clone(&control),
         cooperative,
         journal,
@@ -289,6 +290,12 @@ fn print_startup(
     println!("Configuration source: {}", resolved_config.source());
     println!("Fingerprint: {fingerprint}");
     println!("Control API: http://{address}");
+    if config.control.mcp.enabled {
+        println!(
+            "Read-only MCP: http://{address}{}",
+            crate::adapters::mcp::MCP_ENDPOINT
+        );
+    }
     println!("Control token: {}", token_path.display());
     println!("Lifecycle journal: {}", journal_path.display());
     if config.cooperative_actions.aku_bridge_reload.is_some() {

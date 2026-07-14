@@ -1,12 +1,13 @@
 # AkuSupervisor MCP Integration Notes
 
-Status: **Deferred design note**  
-Implementation target: **after the AkuWorkspace lifecycle core is stable**  
+Status: **Read-only implementation and Codex client registration live-validated**
+Implementation target: **AkuWorkspace pilot after the lifecycle core became stable**
 Current MCP protocol reference: **2025-11-25**
 
 ## 1. Purpose
 
-This document preserves the intended Model Context Protocol integration without adding MCP to the first AkuSupervisor implementation.
+This document records the implemented read-only MCP checkpoint and preserves
+the deferred mutation and bootstrap decisions.
 
 MCP is an agent-facing adapter over the same lifecycle application core used by the CLI, dashboard, and authenticated local HTTP API. MCP is not the lifecycle core, the process-ownership mechanism, or the bootstrap mechanism for AkuSupervisor itself.
 
@@ -74,6 +75,13 @@ supervisor_read_logs
 
 Log reads must be bounded by service, stream, line or byte count, and maximum response size.
 
+The AkuWorkspace pilot implements these four tools as stateless Streamable HTTP
+request/response operations. All tools declare `readOnlyHint=true`, forbid MCP
+Tasks, reject unknown input fields, and return both text and bounded structured
+JSON. Tool input failures are returned as tool execution errors so an agent can
+self-correct. No MCP resource, prompt, sampling, subscription, or mutation
+capability is advertised.
+
 ### 4.2 Mutation tools
 
 ```text
@@ -130,6 +138,20 @@ This preserves the independent, user-visible supervisor process. The MCP endpoin
 - limit request and response sizes; and
 - share authorization and rate-limit policy with the local control API.
 
+Current checkpoint details:
+
+- `/mcp` is opt-in through `control.mcp.enabled` and shares the existing
+  loopback listener;
+- it is stateless and returns JSON responses; GET/SSE and sessions are not
+  advertised;
+- every request requires the existing runtime bearer token;
+- native clients may omit `Origin`, while a present value must exactly match
+  `control.mcp.allowedOrigins`;
+- protocol request bodies remain under the control API's 4 KiB cap and tool
+  results are capped at 64 KiB; and
+- protocol code is isolated in `src/adapters/mcp.rs` without an SDK dependency
+  in the domain or application layers.
+
 ### 5.2 Compatibility: stdio proxy
 
 If a client supports only stdio, use a small proxy:
@@ -139,6 +161,18 @@ MCP client -> stdio proxy -> authenticated loopback API -> AkuSupervisor
 ```
 
 The proxy may be launched by the MCP client because it does not own or spawn managed services. The long-lived AkuSupervisor process must not be replaced by a stdio child that inherits the MCP client's execution restrictions.
+
+The AkuWorkspace checkpoint implements this as `aku-supervisor mcp-proxy`.
+It resolves the ordinary Supervisor config, reads the existing protected token
+file, and forwards newline-delimited JSON-RPC to `/mcp`. It emits no startup
+text on stdout and exits if the Supervisor is unavailable. Codex is configured
+with an explicit four-tool allow-list, so the token is not duplicated into
+`config.toml` or an environment variable.
+
+A newly started Codex task successfully loaded the project-scoped registration
+and used the read-only MCP surface. This user-confirmed live check closes the
+client-registration checkpoint; it does not expand MCP into service lifecycle
+mutation or Supervisor bootstrap.
 
 ## 6. Human authority and agent policy
 
@@ -215,11 +249,17 @@ MCP integration is ready only when:
 - all MCP operations create the same canonical journal events as CLI and HTTP; and
 - disabling MCP does not affect human control or service correctness.
 
-## 11. Deferred questions
+## 11. Resolved checkpoint decisions and deferred questions
 
-- Which Codex MCP connection surface will be the first live validation client?
-- Does that client support authenticated local Streamable HTTP directly?
-- Is a small stdio proxy required for compatibility?
+Resolved for the AkuWorkspace read-only checkpoint:
+
+- Codex project-scoped MCP registration is the first live client;
+- Codex uses the bounded stdio compatibility proxy; and
+- the proxy authenticates to local Streamable HTTP without storing the bearer
+  token in Codex configuration.
+
+Still deferred:
+
 - Should mutation tools require an additional per-call user approval policy?
 - When does local bearer-token authentication need to become OAuth-based authorization?
 - Should lifecycle operations use ordinary tool calls with operation IDs or MCP Tasks after Tasks are no longer experimental?
@@ -232,4 +272,3 @@ MCP integration is ready only when:
 - [MCP tools](https://modelcontextprotocol.io/specification/2025-11-25/server/tools)
 - [MCP resources](https://modelcontextprotocol.io/specification/2025-11-25/server/resources)
 - [Official Rust MCP SDK](https://github.com/modelcontextprotocol/rust-sdk)
-
