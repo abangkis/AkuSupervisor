@@ -14,12 +14,58 @@ $repository = Split-Path -Parent $PSScriptRoot
 $devExecutable = Join-Path $repository 'target\dev\aku-supervisor.exe'
 $stableExecutable = Join-Path $repository 'target\aku-supervisor.exe'
 
+function Stop-Promotion {
+    param([Parameter(Mandatory)] [string] $Message)
+
+    Write-Host "[release] ERROR: $Message" -ForegroundColor Red
+    exit 1
+}
+
 if (-not (Test-Path $devExecutable -PathType Leaf)) {
-    throw "Development executable not found: $devExecutable"
+    Stop-Promotion -Message "Development executable not found: $devExecutable; stable was not changed."
 }
 if (-not $RequestId) {
     $stamp = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ')
     $RequestId = "bridge-release-$stamp-$PID"
+}
+
+$statusArguments = @('status', '--json')
+if ($Config) {
+    $statusArguments += @('--config', $Config)
+}
+
+Write-Host '[release] Checking supervised AkuSidecar prerequisite...' -ForegroundColor Cyan
+$statusOutput = & $devExecutable @statusArguments
+$statusExitCode = $LASTEXITCODE
+$statusJson = ($statusOutput | Out-String).Trim()
+try {
+    $status = $statusJson | ConvertFrom-Json -ErrorAction Stop
+} catch {
+    Stop-Promotion -Message 'Could not read valid Supervisor status; stable was not changed. Keep the development watcher running and retry.'
+}
+if ($statusExitCode -ne 0) {
+    Stop-Promotion -Message "Could not reach the development Supervisor (exit code $statusExitCode); stable was not changed. Keep the watcher running and retry."
+}
+
+$sidecar = @($status.response.services | Where-Object { $_.id -eq 'akusidecar' } | Select-Object -First 1)
+if ($sidecar.Count -eq 0) {
+    Stop-Promotion -Message "The active configuration does not register service 'akusidecar'; stable was not changed."
+}
+$sidecar = $sidecar[0]
+if ($sidecar.desiredState -ne 'running' -or $sidecar.lifecycle -ne 'running') {
+    Write-Host '[release] AkuSidecar is stopped. Start it from a second terminal:' -ForegroundColor Yellow
+    Write-Host ".\target\dev\aku-supervisor.exe start akusidecar --actor $Actor --reason `"prepare stable promotion`"" -ForegroundColor Yellow
+    if ($Config) {
+        Write-Host "Add: --config `"$Config`"" -ForegroundColor Yellow
+    }
+    Write-Host '[release] Keep the watcher, AkuSidecar, and the AkuBrowser tab with AkuBridge alive, then rerun promotion.' -ForegroundColor Yellow
+    Stop-Promotion -Message 'AkuSidecar is not running; stable was not changed.'
+}
+if ($sidecar.health.status -ne 'healthy') {
+    Write-Host "[release] AkuSidecar lifecycle is running but health is '$($sidecar.health.status)'." -ForegroundColor Yellow
+    Write-Host '[release] Inspect: .\target\dev\aku-supervisor.exe status --json' -ForegroundColor Yellow
+    Write-Host '[release] Inspect: .\target\dev\aku-supervisor.exe logs akusidecar --stream stderr --tail 100' -ForegroundColor Yellow
+    Stop-Promotion -Message 'AkuSidecar is not healthy; stable was not changed.'
 }
 
 $arguments = @(
@@ -39,10 +85,20 @@ $validationJson = ($validationOutput | Out-String).Trim()
 try {
     $validation = $validationJson | ConvertFrom-Json -ErrorAction Stop
 } catch {
-    throw "bridge validate returned invalid JSON and stable was not changed: $validationJson"
+    Stop-Promotion -Message 'bridge validate returned invalid JSON; stable was not changed.'
 }
 if ($validationExitCode -ne 0 -or $validation.validation.status -ne 'passed') {
-    throw "bridge validate failed with exit code $validationExitCode and stable was not changed: $validationJson"
+    $category = [string] $validation.validation.operation.errorCategory
+    $message = [string] $validation.validation.operation.message
+    if ($category -eq 'relay_unreachable') {
+        Write-Host '[release] AkuSidecar became unreachable during bridge validation.' -ForegroundColor Yellow
+        Write-Host '[release] Keep the watcher, AkuSidecar, and the AkuBrowser tab with AkuBridge alive, then retry.' -ForegroundColor Yellow
+    }
+    if ($message) {
+        Write-Host "[release] Detail: $message" -ForegroundColor Yellow
+    }
+    $failure = if ($category) { $category } else { 'validation_failed' }
+    Stop-Promotion -Message "bridge validate failed ($failure) with exit code $validationExitCode; stable was not changed."
 }
 
 Copy-Item -LiteralPath $devExecutable -Destination $stableExecutable -Force

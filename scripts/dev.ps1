@@ -1,5 +1,7 @@
 [CmdletBinding()]
 param(
+    [Parameter(Position = 0, ValueFromRemainingArguments = $true)]
+    [string[]] $StartService = @(),
     [string] $Config,
     [ValidateRange(100, 5000)]
     [int] $PollMilliseconds = 300,
@@ -104,10 +106,13 @@ function Show-ExecutionModeGuidance {
     $status = if (Test-Path $stableExecutable -PathType Leaf) { 'OUTDATED' } else { 'MISSING' }
     Write-Host "[watch] Stable status: $status (not the active development build)." -ForegroundColor Yellow
     Write-Host '[watch] To run this latest build without the watcher:' -ForegroundColor Yellow
-    Write-Host '[watch]   1. While this watcher and its services are still running, use a second terminal:' -ForegroundColor Yellow
+    Write-Host '[watch]   1. AkuSidecar and the AkuBrowser tab with AkuBridge must be live.' -ForegroundColor Yellow
+    Write-Host '[watch]      If AkuSidecar is stopped, use a second terminal:' -ForegroundColor Yellow
+    Write-Host '[watch]      .\target\dev\aku-supervisor.exe start akusidecar --actor user --reason "prepare stable promotion"' -ForegroundColor Yellow
+    Write-Host '[watch]   2. While this watcher and its services remain running:' -ForegroundColor Yellow
     Write-Host '[watch]      .\scripts\promote-stable.ps1' -ForegroundColor Yellow
-    Write-Host '[watch]   2. Return here and press Ctrl+C for graceful cleanup.' -ForegroundColor Yellow
-    Write-Host '[watch]   3. Start normal mode: .\target\aku-supervisor.exe' -ForegroundColor Yellow
+    Write-Host '[watch]   3. Return here and press Ctrl+C for graceful cleanup.' -ForegroundColor Yellow
+    Write-Host '[watch]   4. Start normal mode: .\target\aku-supervisor.exe' -ForegroundColor Yellow
 }
 
 function Test-ControlPort {
@@ -141,6 +146,13 @@ function Get-WatchFingerprint {
         if (Test-Path $path) {
             $files += Get-Item $path
         }
+    }
+    if ($script:configPath -and (Test-Path -LiteralPath $script:configPath -PathType Leaf)) {
+        $files += Get-Item -LiteralPath $script:configPath
+    }
+    $watcherPath = Join-Path $repository 'scripts\dev.ps1'
+    if (Test-Path -LiteralPath $watcherPath -PathType Leaf) {
+        $files += Get-Item -LiteralPath $watcherPath
     }
     return (($files | Sort-Object FullName | ForEach-Object {
         '{0}|{1}|{2}' -f $_.FullName, $_.Length, $_.LastWriteTimeUtc.Ticks
@@ -190,12 +202,127 @@ function Wait-ForExit {
     param([Parameter(Mandatory)] [Diagnostics.Process] $Process)
 
     if ($Process.WaitForExit($ShutdownTimeoutSeconds * 1000)) {
+        # Complete the non-timed wait as well. This drains process bookkeeping
+        # before the executable-release check below begins.
+        $Process.WaitForExit()
         return $true
     }
     Write-Host "[watch] Supervisor did not complete graceful cleanup within $ShutdownTimeoutSeconds seconds." `
         -ForegroundColor Red
     Write-Host '[watch] The watcher will not force-kill it or replace the executable.' -ForegroundColor Red
     return $false
+}
+
+function Get-ExecutableOwnerPids {
+    param([Parameter(Mandatory)] [string] $Path)
+
+    $expectedPath = [IO.Path]::GetFullPath($Path)
+    $owners = @()
+    foreach ($candidate in @(Get-Process -Name 'aku-supervisor' -ErrorAction SilentlyContinue)) {
+        try {
+            if ($candidate.Path -and
+                [StringComparer]::OrdinalIgnoreCase.Equals(
+                    [IO.Path]::GetFullPath($candidate.Path),
+                    $expectedPath)) {
+                $owners += $candidate.Id
+            }
+        } catch {
+            # Path access can be denied for a process owned by another account.
+            # The exclusive file-open check remains authoritative.
+        }
+    }
+    return @($owners | Sort-Object -Unique)
+}
+
+function Test-ExecutableReleased {
+    param([Parameter(Mandatory)] [string] $Path)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $true
+    }
+
+    $stream = $null
+    try {
+        $stream = [IO.File]::Open(
+            $Path,
+            [IO.FileMode]::Open,
+            [IO.FileAccess]::ReadWrite,
+            [IO.FileShare]::None)
+        return $true
+    } catch [IO.IOException] {
+        return $false
+    } catch [UnauthorizedAccessException] {
+        return $false
+    } finally {
+        if ($null -ne $stream) {
+            $stream.Dispose()
+        }
+    }
+}
+
+function Format-ExecutableLockDetail {
+    param([Parameter(Mandatory)] [string] $Path)
+
+    $ownerPids = @(Get-ExecutableOwnerPids -Path $Path)
+    if ($ownerPids.Count -gt 0) {
+        return " Matching process PID(s): $($ownerPids -join ', ')."
+    }
+    return ' No matching process PID was discoverable; a transient scanner or another account may own the file handle.'
+}
+
+function Wait-ForExecutableRelease {
+    param([Parameter(Mandatory)] [string] $Path)
+
+    if (-not (Test-ExecutableReleased -Path $Path)) {
+        $initialDetail = Format-ExecutableLockDetail -Path $Path
+        Write-Host "[watch] Development executable is in use; waiting up to $ShutdownTimeoutSeconds seconds: $Path.$initialDetail" -ForegroundColor Yellow
+    }
+    $deadline = [DateTime]::UtcNow.AddSeconds($ShutdownTimeoutSeconds)
+    do {
+        if (Test-ExecutableReleased -Path $Path) {
+            return $true
+        }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    $detail = Format-ExecutableLockDetail -Path $Path
+    Write-Host "[watch] Development executable is still in use: $Path.$detail" -ForegroundColor Red
+    Write-Host '[watch] The watcher will not force-kill the owner or replace the executable.' -ForegroundColor Red
+    return $false
+}
+
+function Install-StagedExecutable {
+    if ((Test-Path -LiteralPath $devExecutable -PathType Leaf) -and
+        (Test-Path -LiteralPath $stagedExecutable -PathType Leaf)) {
+        $developmentHash = (Get-FileHash -LiteralPath $devExecutable -Algorithm SHA256).Hash
+        $stagedHash = (Get-FileHash -LiteralPath $stagedExecutable -Algorithm SHA256).Hash
+        if ($developmentHash -eq $stagedHash) {
+            Write-Host '[watch] Staged executable already matches target\dev; replacement is not required.' -ForegroundColor DarkGray
+            return
+        }
+    }
+
+    if (-not (Wait-ForExecutableRelease -Path $devExecutable)) {
+        throw 'Development executable did not become replaceable within the bounded shutdown timeout.'
+    }
+
+    # The exclusive-open check is immediately followed by the copy. Retry a
+    # transient race (for example, a scanner opening the file) within the same
+    # bounded timeout, but never kill a process automatically.
+    $deadline = [DateTime]::UtcNow.AddSeconds($ShutdownTimeoutSeconds)
+    do {
+        try {
+            Copy-Item -LiteralPath $stagedExecutable -Destination $devExecutable -Force
+            return
+        } catch [IO.IOException] {
+            Start-Sleep -Milliseconds 100
+        } catch [UnauthorizedAccessException] {
+            Start-Sleep -Milliseconds 100
+        }
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    $detail = Format-ExecutableLockDetail -Path $devExecutable
+    throw "Could not replace development executable: $devExecutable.$detail"
 }
 
 function Start-DevelopmentSupervisor {
@@ -241,6 +368,21 @@ function Restore-RunningServices {
     }
 }
 
+function Start-RequestedServices {
+    param([string[]] $ServiceIds)
+
+    foreach ($serviceId in $ServiceIds) {
+        Write-Host "[watch] Starting requested service: $serviceId" -ForegroundColor Cyan
+        & $devExecutable start $serviceId --actor user `
+            --reason 'development watcher requested startup service' --config $script:configPath
+        if ($LASTEXITCODE -ne 0) {
+            throw "Could not start requested service '$serviceId'."
+        }
+        Write-Host "[watch] Auto-started service: $serviceId" -ForegroundColor Green
+        Write-Host '[watch] This service is owned by the development Supervisor and is included in graceful shutdown.' -ForegroundColor Green
+    }
+}
+
 Push-Location $repository
 try {
     $script:configPath = Resolve-ConfigPath
@@ -248,6 +390,18 @@ try {
         throw "Configuration not found: $script:configPath"
     }
     $configuration = Get-Content $script:configPath -Raw | ConvertFrom-Json
+    $configuredServiceIds = @($configuration.services.PSObject.Properties.Name)
+    $script:startServiceIds = @($StartService | Where-Object { $_ } | Sort-Object -Unique)
+    foreach ($serviceId in $script:startServiceIds) {
+        if ($serviceId -notin $configuredServiceIds) {
+            $available = if ($configuredServiceIds.Count -gt 0) {
+                $configuredServiceIds -join ', '
+            } else {
+                '<none>'
+            }
+            throw "Unknown startup service '$serviceId'. Configured service IDs: $available. AkuSupervisor itself is always started by dev.ps1."
+        }
+    }
     $script:controlHost = [string] $configuration.control.host
     $script:controlPort = [int] $configuration.control.port
     if (-not $script:controlHost -or -not $script:controlPort) {
@@ -277,8 +431,9 @@ try {
     if (-not (Invoke-DevelopmentBuild)) {
         throw 'Initial development build failed. Fix the errors and start the watcher again.'
     }
-    Copy-Item -LiteralPath $stagedExecutable -Destination $devExecutable -Force
+    Install-StagedExecutable
     $supervisorProcess = Start-DevelopmentSupervisor
+    Start-RequestedServices -ServiceIds $script:startServiceIds
     Show-ExecutionModeGuidance
 
     Write-Host "[watch] Watching Rust sources and Cargo manifests every $PollMilliseconds ms." -ForegroundColor Green
@@ -314,7 +469,7 @@ try {
         if (-not (Wait-ForExit -Process $supervisorProcess)) {
             throw 'Graceful development restart timed out.'
         }
-        Copy-Item -LiteralPath $stagedExecutable -Destination $devExecutable -Force
+        Install-StagedExecutable
         $supervisorProcess = Start-DevelopmentSupervisor
         Restore-RunningServices -ServiceIds $runningServices
         Show-ExecutionModeGuidance
@@ -326,6 +481,8 @@ finally {
         Request-GracefulShutdown -Reason 'development watcher stopped'
         if (-not (Wait-ForExit -Process $supervisorProcess)) {
             Write-Warning 'AkuSupervisor is still running; it was not force-killed.'
+        } else {
+            Write-Host '[watch] Development Supervisor and its owned services completed graceful shutdown.' -ForegroundColor Green
         }
     }
     Pop-Location

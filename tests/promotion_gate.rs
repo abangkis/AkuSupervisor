@@ -1,6 +1,9 @@
 #[test]
 fn stable_promotion_is_guarded_by_machine_readable_bridge_validation() {
     let script = include_str!("../scripts/promote-stable.ps1");
+    let status_preflight = script
+        .find("& $devExecutable @statusArguments")
+        .expect("promotion script must inspect the supervised Sidecar first");
     let validation = script
         .find("'validate'")
         .expect("promotion script must invoke bridge validate");
@@ -14,8 +17,14 @@ fn stable_promotion_is_guarded_by_machine_readable_bridge_validation() {
         .find("Copy-Item -LiteralPath $devExecutable -Destination $stableExecutable")
         .expect("promotion script must copy the development binary to stable");
 
+    assert!(status_preflight < validation);
     assert!(validation < exit_gate);
     assert!(exit_gate < promotion);
     assert!(json_gate < promotion);
+    assert!(script.contains("$sidecar.desiredState -ne 'running'"));
+    assert!(script.contains("$sidecar.health.status -ne 'healthy'"));
+    assert!(script.contains("AkuSidecar is stopped. Start it from a second terminal"));
+    assert!(script.contains("function Stop-Promotion"));
+    assert!(script.contains("exit 1"));
     assert!(script.contains("stable was not changed"));
 }
