@@ -157,9 +157,9 @@ Reliability evidence on the same date:
 
 The historical Gate 5 evidence above records the build that introduced the
 reload protocol. The current AkuWorkspace compatibility target is AkuBridge
-`0.5.29`, runtime `source-fidelity-v31`, with `x-dom-v12` and
-`linkedin-dom-v8`. AkuSidecar declares that minimum/version tuple explicitly;
-component package versions are otherwise independent.
+`0.5.33`, runtime `source-fidelity-v35`, with `x-dom-v13` and
+`linkedin-dom-v10`. AkuSidecar also requires the `report_capture_quality`
+capability. Component package versions are otherwise independent.
 
 On 2026-07-14, `bridge validate` again completed the ordered
 `requested -> relay_created -> delivered -> accepted -> heartbeat_observed -> completed`
@@ -168,3 +168,9 @@ operation. Subsequent LinkedIn capture from a long-backgrounded source tab
 completed with bounded scroll restoration. Chrome's page-timer throttling is
 handled inside AkuBridge and does not change AkuSupervisor's cooperative reload
 authority.
+
+The later request `quality-architecture-20260714-2121` completed in one second
+and observed exactly `aku-bridge-0.5.33-source-fidelity-v35`. The subsequent
+signed-in unified X + LinkedIn run completed both sources with the new generic
+quality-report and Sidecar-admission contract. This confirms cooperative reload
+can deploy a capability/version boundary change without browser control.
