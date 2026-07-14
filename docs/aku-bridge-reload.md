@@ -37,10 +37,12 @@ message. Its audit records are written to
    and writes a `requested` audit record before any external effect.
 2. The platform-neutral Sidecar relay adapter reads the existing local bridge
    identity and requests one `reload_self` action from AkuSidecar.
-3. The AkuBrowser page holds a bounded long poll, claims the in-memory action,
-   and posts the narrow message through its existing same-origin tab bridge.
-   A disconnected HTTP waiter is cancelled immediately and cannot consume a
-   later action.
+3. Only an AkuBrowser page that has completed a compatible AkuBridge
+   capability handshake starts the bounded long poll, claims the in-memory
+   action, and posts the narrow message through its existing same-origin tab
+   bridge. The same local URL opened in a browser without AkuBridge remains
+   passive. A disconnected HTTP waiter is cancelled immediately and cannot
+   consume a later action.
 4. The service worker validates the sender origin and acknowledges the action
    to Sidecar with the bridge token and contract headers.
 5. The service worker stores only the originating tab ID plus a short expiry in

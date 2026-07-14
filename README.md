@@ -241,7 +241,10 @@ The command relays `reload_self` through the open AkuBrowser tab, stores one
 short-lived originating-tab marker, invokes `chrome.runtime.reload()`, and lets
 the new worker invoke `chrome.tabs.reload()` for only that local tab. It
 succeeds only after Sidecar observes the expected new build heartbeat.
-Delivery uses a long poll, so a background AkuBrowser tab does not depend on a
+Delivery uses a long poll that starts only after the local page completes a
+compatible AkuBridge capability handshake. An AkuBrowser URL opened in a
+browser without the extension remains passive and cannot consume the action.
+The eligible background AkuBrowser tab therefore does not depend on a
 one-second page timer. The CLI waits by default; use `--no-wait` and later
 `bridge status --request-id <id>` when asynchronous control is preferable.
 Transport failures are retried with bounded backoff only for reads and
