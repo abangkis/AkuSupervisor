@@ -1,6 +1,7 @@
 # AkuSupervisor Testing Guide
 
-Current test scope: **Phase 2 ownership and Phase 3 local-control checkpoint**
+Current test scope: **Lifecycle ownership, authenticated control, read-only MCP,
+and AkuBridge cooperative reload**
 
 The visible CLI loads a validated configuration and accepts lifecycle commands
 in its own terminal. The same registry is reachable from a separate bounded CLI

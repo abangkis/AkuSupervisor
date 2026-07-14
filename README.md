@@ -303,6 +303,12 @@ New-Item -ItemType Directory -Force "$env:LOCALAPPDATA\AkuSupervisor"
 Copy-Item .\config\akuworkspace.services.json "$env:LOCALAPPDATA\AkuSupervisor\services.json"
 ```
 
+Keep the service profile's `environment` map empty for normal AkuBrowser use.
+Provider, models, efforts, planning policy, timeout, sources, and bounded engine
+settings belong in AkuBrowser Settings. AkuSidecar environment overrides remain
+legacy/recovery compatibility and are not the recommended install or daily-run
+path.
+
 The profile's health contract is enforced at runtime. Start and restart wait up
 to `startupDeadlineMs`; afterward a one-second monitor keeps `processReady`,
 `transportReady`, health status, detail, and check time current. A process that

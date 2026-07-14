@@ -184,7 +184,7 @@ Windows MVP safety requirements.
         "startupDeadlineMs": 15000,
         "expect": {
           "status": "ok",
-          "version": "0.5.7",
+          "version": "0.5.15",
           "provider": "codex-sdk"
         }
       },

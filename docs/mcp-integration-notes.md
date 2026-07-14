@@ -7,7 +7,7 @@ Current MCP protocol reference: **2025-11-25**
 ## 1. Purpose
 
 This document records the implemented read-only MCP checkpoint and preserves
-the deferred mutation and bootstrap decisions.
+the deliberately unexposed mutation and bootstrap decisions.
 
 MCP is an agent-facing adapter over the same lifecycle application core used by the CLI, dashboard, and authenticated local HTTP API. MCP is not the lifecycle core, the process-ownership mechanism, or the bootstrap mechanism for AkuSupervisor itself.
 
@@ -91,7 +91,10 @@ supervisor_restart_service
 supervisor_reload_extension
 ```
 
-`supervisor_reload_extension` is deferred with the AkuBridge cooperative-action work. It is not part of the initial service lifecycle implementation.
+These tools are not exposed by the current MCP server. AkuBridge cooperative
+self-reload is implemented through the authenticated CLI/HTTP control path, but
+it remains intentionally absent from MCP so the four-tool surface stays
+read-only. Service lifecycle mutations likewise remain CLI/HTTP operations.
 
 Every mutation requires:
 
