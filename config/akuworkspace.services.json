@@ -37,7 +37,7 @@
         "startupDeadlineMs": 60000,
         "expect": {
           "status": "ok",
-          "version": "1.0.0-dev.1",
+          "version": "1.0.0-dev.2",
           "runtime": "go",
           "bridgeContractVersion": "aku-browser.bridge.v2",
           "provider": "codex-app-server"

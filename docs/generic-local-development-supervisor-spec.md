@@ -548,7 +548,7 @@ executing them or treating their success as local service health.
 
 ### 18.3 AkuSidecar
 
-- `/api/health` passes with Go `1.0.0-dev.1`, Bridge Contract v2, and the
+- `/api/health` passes with Go `1.0.0-dev.2`, Bridge Contract v2, and the
   `codex-app-server` provider.
 - A normal restart preserves the current fresh-schema SQLite database.
 - AkuSidecar can perform one real native Codex invocation and record structured
