@@ -398,22 +398,22 @@ Status: **Completed and live-validated on 2026-07-14**
   identity, expected/observed heartbeat equality, and no active zombie action;
 - [x] success exits `0`, validation/execution failure exits `1`, and CLI usage
   errors exit `2`;
-- [x] `scripts/promote-stable.ps1` refuses to copy `target/dev` on nonzero,
-  failed, or malformed validation output; and
-- [x] promotion performs a non-mutating `running / healthy` AkuSidecar preflight
-  and prints the supervised recovery command instead of silently starting it;
-  and
-- [x] promotion rejects a locked stable Windows image before bridge validation,
-  reports candidate PIDs, and rechecks the lock immediately before copy; and
+- [x] `scripts/validate-akuworkspace-integration.ps1` owns the optional
+  AkuSidecar/AkuBridge preflight and refuses nonzero, failed, or malformed
+  validation output without touching stable;
+- [x] `scripts/promote-stable.ps1` is a separate generic core promotion adapter
+  with bounded candidate execution, byte-identical short-circuit, Windows lock
+  diagnostics, copy, and SHA-256 verification;
+- [x] AkuWorkspace integration validation is explicitly removable without
+  changing the core promotion contract; and
 - [x] release evaluation remains platform-neutral while PowerShell owns only
   the Windows copy adapter.
 
 Live request `bridge-validate-live-20260714-002` passed all five checks against
 `aku-bridge-0.5.19-source-fidelity-v21`. Reusing that request ID with a
 different actor returned JSON status `error` and exit code `1` without a
-second reload. The promotion script rejected the result and a before/after
-SHA-256 comparison proved the stable executable remained byte-for-byte
-unchanged.
+second reload. The integration gate rejected the result without invoking core
+promotion.
 
 ### Runtime health checkpoint
 

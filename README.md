@@ -205,45 +205,35 @@ separate, fail-closed release action:
 ```
 
 Run promotion at a release checkpoint, after the current development build has
-passed its tests and live validation and you want future normal launches to use
-it. Do not run it after every watcher rebuild or while a feature is still being
-implemented.
+passed its core tests and you want future normal launches to use it. Do not run
+it after every watcher rebuild or while a feature is still being implemented.
 
 Running without the watcher does not always require another promotion. If the
 watcher reports `Stable status: CURRENT`, stop it with Ctrl+C and run
 `.\target\aku-supervisor.exe`. If it reports `OUTDATED` or `MISSING` and the
 latest development build should become normal, use this order:
 
-1. keep the watcher and managed services running;
-2. run `.\scripts\promote-stable.ps1` from a second terminal;
-3. return to the watcher and press Ctrl+C for graceful cleanup; and
-4. run `.\target\aku-supervisor.exe`.
+1. run `.\scripts\promote-stable.ps1` from a second terminal;
+2. return to the watcher and press Ctrl+C for graceful cleanup; and
+3. run `.\target\aku-supervisor.exe`.
 
-Promotion is performed before stopping the watcher because its AkuBridge
-release validation needs the supervised Sidecar and extension bridge alive.
-If the script reports `relay_page_stale`, keep the watcher and services running,
-reload only the existing `http://127.0.0.1:47821` AkuBrowser tab, wait until it
-shows both AkuSidecar and AkuBridge ready, and rerun promotion. This restores
-the page's cooperative relay poller; it does not require restarting Chrome.
-Before spending that release gate, the promotion script acquires exclusive
-access to the stable executable. If a normal Supervisor or long-lived
-`mcp-proxy` is using `target\aku-supervisor.exe`, promotion fails immediately,
-prints candidate PIDs, and does not invoke AkuBridge. Keep the watcher and its
-supervised AkuSidecar running; recycle only the process using the stable path,
-then rerun promotion. The lock is checked again immediately before copy.
+Core promotion has no AkuSidecar, AkuBrowser, or AkuBridge dependency. It runs
+a bounded version preflight, skips byte-identical builds, rejects a locked
+stable Windows image, copies the candidate, and verifies the promoted SHA-256.
+If a normal Supervisor or long-lived `mcp-proxy` is using
+`target\aku-supervisor.exe`, recycle only that stable-path process and retry.
 
-After the lock preflight, the script checks that the configured `akusidecar`
-service is both running and healthy. It does not start the service implicitly;
-when it is stopped, the script prints the exact supervised start command and
-leaves stable unchanged.
+The AkuWorkspace-specific cooperative reload gate is deliberately separate:
 
-The script runs `target\dev\aku-supervisor.exe bridge validate` with a fresh
-request ID before copying anything. Validation emits one JSON document and
-requires cooperative completion, all six audit stages, matching actor/request
-identity, matching expected/observed heartbeat builds, and no active zombie
-operation. Exit code `0` means passed; `1` means validation/execution failed;
-CLI usage errors remain exit code `2`. A failed or malformed result leaves
-`target\aku-supervisor.exe` unchanged.
+```powershell
+.\scripts\validate-akuworkspace-integration.ps1
+```
+
+Run it explicitly when a change affects AkuSidecar/AkuBridge integration. It
+requires the supervised Sidecar and the existing AkuBrowser relay page, checks
+all six audit stages and heartbeat identity, and never copies or promotes an
+executable. This adapter-level gate is retained for evaluation and can later be
+removed without weakening the generic core promotion contract.
 
 For a visible process-tree and Ctrl+C cleanup demo, follow the
 [testing guide](docs/testing-guide.md).

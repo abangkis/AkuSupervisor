@@ -390,8 +390,7 @@ The startup and post-rebuild banner distinguishes the two executable roles:
 To leave development mode, follow the banner. When status is `CURRENT`, press
 Ctrl+C and launch the stable executable. When status is `OUTDATED` or
 `MISSING`, keep the watcher running, promote from a second terminal, then press
-Ctrl+C and launch stable. Promotion comes first because the release gate needs
-the supervised Sidecar and AkuBridge alive.
+Ctrl+C and launch stable. Core promotion has no Sidecar or browser prerequisite.
 
 Before the first build, the watcher prints its selected `Cargo:` and `Rustc:`
 paths. It deliberately prefers the complete toolchain under
@@ -454,41 +453,45 @@ Promotion is a release checkpoint, not part of the inner development loop. Run
 it once the feature set is complete, tests and live checks pass, and the stable
 path should become the default for subsequent normal launches.
 
-The script first requires exclusive access to `target\aku-supervisor.exe`. A
+The script runs a bounded `--version` preflight, skips the copy when stable and
+development hashes are already identical, then requires exclusive access to
+`target\aku-supervisor.exe`. A
 normal stable Supervisor or long-lived MCP proxy can keep that Windows image
-locked. In that case the script exits before Supervisor status or AkuBridge
-validation, prints candidate PIDs, and leaves stable unchanged. Keep the
-watcher running because it uses `target\dev`; stop or recycle only the process
-using the stable path, then rerun promotion. The script repeats the lock check
-after validation to close the ordinary check/copy race.
+locked. In that case the script prints candidate PIDs and leaves stable
+unchanged. Stop or recycle only the process using the stable path, then rerun
+promotion. After copying, the script verifies the promoted SHA-256.
 
-It then performs a read-only Supervisor status preflight before invoking the
-bridge gate. `akusidecar` must already be `running / healthy`; promotion never
-starts it implicitly. If it is stopped, follow the printed supervised start
-command, keep the watcher and AkuBrowser tab alive, and rerun promotion. This
-avoids creating a doomed bridge audit operation merely to discover that port
-47821 is absent.
+Core promotion deliberately does not inspect Supervisor status and does not
+contact AkuSidecar or AkuBridge. The optional AkuWorkspace integration gate is:
 
-`relay_page_stale` means Sidecar remained healthy but no open AkuBrowser page
+```powershell
+.\scripts\validate-akuworkspace-integration.ps1
+```
+
+Run this separately when a change touches cooperative reload or another
+AkuSidecar/AkuBridge boundary. The integration script never copies the stable
+binary. It requires `akusidecar` to already be `running / healthy`, then invokes
+the machine-readable `bridge validate` command.
+
+For that optional gate, `relay_page_stale` means Sidecar remained healthy but no open AkuBrowser page
 requested the queued cooperative action before its deadline. Keep the watcher
 and services running, reload only the existing
 `http://127.0.0.1:47821` tab, wait for both ready indicators, and rerun
-promotion. Do not stop Chrome, reload the extension manually, or close the
-watcher. The promotion script prints this recovery path before its terminal
-error.
+integration validation. Do not stop Chrome, reload the extension manually, or
+close the watcher.
 
-Use `-Config` for a non-default profile, `-Actor codex` when Codex owns the
-release action, and `-RequestId` only when an external release system supplies
-a guaranteed-fresh ID. Otherwise the script creates a unique bounded ID.
+Use `-Config` on the integration script for a non-default profile, `-Actor
+codex` when Codex owns the validation, and `-RequestId` only when an external
+system supplies a guaranteed-fresh ID. Otherwise it creates a unique bounded
+ID.
 
-Before copying, the development executable runs `bridge validate`. Its JSON
+The separate integration script runs `bridge validate`. Its JSON
 contract contains `schemaVersion`, `status`, `exitCode`, the structured actor,
 request ID, terminal operation, and five named checks. The six required audit
 stages are `requested`, `relay_created`, `delivered`, `accepted`,
 `heartbeat_observed`, and `completed`. A reused request ID, mismatched build,
-missing audit stage, active operation, malformed JSON, or nonzero exit leaves
-the stable executable byte-for-byte unchanged.
+missing audit stage, active operation, malformed JSON, or nonzero exit fails
+the integration check without touching the stable executable.
 
-The validator and audit evaluator are platform-neutral. The PowerShell copy is
-the Windows release adapter; Linux and macOS can enforce the same JSON and exit
-contract in their native promotion scripts.
+The validator and audit evaluator are platform-neutral but AkuWorkspace-specific.
+The PowerShell copy remains the independent Windows core release adapter.

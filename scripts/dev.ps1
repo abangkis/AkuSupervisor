@@ -77,13 +77,12 @@ function Show-ExecutionModeGuidance {
     $status = if (Test-Path $stableExecutable -PathType Leaf) { 'OUTDATED' } else { 'MISSING' }
     Write-Host "[watch] Stable status: $status (not the active development build)." -ForegroundColor Yellow
     Write-Host '[watch] To run this latest build without the watcher:' -ForegroundColor Yellow
-    Write-Host '[watch]   1. AkuSidecar and the AkuBrowser tab with AkuBridge must be live.' -ForegroundColor Yellow
-    Write-Host '[watch]      If AkuSidecar is stopped, use a second terminal:' -ForegroundColor Yellow
-    Write-Host '[watch]      .\target\dev\aku-supervisor.exe start akusidecar --actor user --reason "prepare stable promotion"' -ForegroundColor Yellow
-    Write-Host '[watch]   2. While this watcher and its services remain running:' -ForegroundColor Yellow
+    Write-Host '[watch]   1. Promote the core binary from a second terminal:' -ForegroundColor Yellow
     Write-Host '[watch]      .\scripts\promote-stable.ps1' -ForegroundColor Yellow
-    Write-Host '[watch]   3. Return here and press Ctrl+C for graceful cleanup.' -ForegroundColor Yellow
-    Write-Host '[watch]   4. Start normal mode: .\target\aku-supervisor.exe' -ForegroundColor Yellow
+    Write-Host '[watch]   2. Return here and press Ctrl+C for graceful cleanup.' -ForegroundColor Yellow
+    Write-Host '[watch]   3. Start normal mode: .\target\aku-supervisor.exe' -ForegroundColor Yellow
+    Write-Host '[watch] AkuWorkspace integration validation is separate and optional:' -ForegroundColor DarkGray
+    Write-Host '[watch]   .\scripts\validate-akuworkspace-integration.ps1' -ForegroundColor DarkGray
 }
 
 function Test-ControlPort {

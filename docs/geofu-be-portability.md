@@ -100,9 +100,10 @@ AkuSupervisor's bounded Job Object fallback.
 
 ## Known adapter boundary
 
-The lifecycle core and read-only MCP surface are generic. The development and
-stable-promotion scripts still contain AkuSidecar/AkuBridge release guidance;
-they are AkuWorkspace adapters and are not part of this Geofu proof.
+The lifecycle core, read-only MCP surface, and stable-promotion script are
+generic. AkuSidecar/AkuBridge validation lives only in the explicitly optional
+`validate-akuworkspace-integration.ps1` adapter and is not part of this Geofu
+proof.
 
 ## Validation evidence
 

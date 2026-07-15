@@ -125,9 +125,9 @@ The repeatable machine gate is:
 It always emits JSON. Exit `0` requires the terminal cooperative reload, the
 six ordered audit stages, matching structured actor and request ID, equal
 non-null expected/observed heartbeat build IDs, and a null active-operation
-snapshot. Exit `1` is a validation or execution failure. The stable promotion
-script refuses to copy the development executable unless both exit code and
-JSON status pass.
+snapshot. Exit `1` is a validation or execution failure. The optional
+`scripts\validate-akuworkspace-integration.ps1` adapter enforces this contract
+without copying or promoting the core AkuSupervisor executable.
 
 Live evidence on 2026-07-14:
 
