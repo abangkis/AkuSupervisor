@@ -4,6 +4,7 @@
 //! Unsafe Win32 calls must remain isolated in this module and wrapped by safe,
 //! ownership-aware interfaces.
 
+mod atomic_file;
 mod console_shutdown;
 mod port_observer;
 mod process_spawner;
@@ -11,6 +12,7 @@ mod process_tree;
 mod secure_random;
 mod token_permissions;
 
+pub use atomic_file::atomic_replace_file;
 pub use console_shutdown::{ConsoleShutdown, ConsoleShutdownError};
 pub use port_observer::{PortObserverError, WindowsPortInspector, inspect_tcp_port};
 pub use process_spawner::WindowsProcessSpawner;

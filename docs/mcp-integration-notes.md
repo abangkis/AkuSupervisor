@@ -62,7 +62,22 @@ ReadBoundedLogs
 
 No adapter may supply an executable, working directory, argument list, environment map, port, or arbitrary shell text at invocation time.
 
+The registration authority is the explicit exception at configuration time:
+it accepts a complete typed service definition, validates it against the whole
+profile, requires verbose hash-bound human approval, and commits it atomically.
+Lifecycle calls still accept only a registered service ID.
+
 ## 4. MCP surface
+
+AkuSupervisor now has two deliberately separate MCP identities:
+
+- `/mcp` plus `mcp-proxy` remains the exact read-only runtime observation
+  surface described below; and
+- `registration-mcp` is an independent stdio authority for human-gated config
+  registration through phase 3.
+
+The registration authority does not grant lifecycle control and exposes no
+approval tool. See [Human-Gated Service Registration](service-registration.md).
 
 ### 4.1 Read-only tools
 

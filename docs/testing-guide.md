@@ -495,3 +495,38 @@ the integration check without touching the stable executable.
 
 The validator and audit evaluator are platform-neutral but AkuWorkspace-specific.
 The PowerShell copy remains the independent Windows core release adapter.
+
+## 9. Human-gated service registration
+
+The registration contract is covered by unit and CLI tests in the ordinary
+suite. A safe smoke test against the real profile performs discovery only:
+
+```powershell
+.\target\dev\aku-supervisor.exe registration capabilities --json
+
+'{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' |
+  .\target\dev\aku-supervisor.exe registration-mcp
+```
+
+The tool list must contain six registration tools and no approval tool. The
+capabilities result must show the selected absolute configuration path,
+current SHA-256 revision, `autoStart: false`, and
+`approvalAvailableThroughMcp: false`.
+
+Do not create a disposable draft against the real AkuWorkspace profile merely
+to test persistence. The automated fixtures create an isolated valid profile
+and prove:
+
+- same-request prepare idempotency and conflicting request-ID rejection;
+- base-revision conflict rejection;
+- commit rejection before approval;
+- hash-bound approval and atomic register commit;
+- registered-but-stopped result with no auto-start;
+- commit recovery/idempotency;
+- update rejection when stopped state cannot be proved; and
+- secret-like environment-key rejection.
+
+For an intentional real registration, follow the MCP-provided workflow and
+read the entire CLI approval output. After commit, let the development watcher
+complete its configuration handoff, confirm the service appears as `stopped`
+with `simple-status`, and start it only through a separate lifecycle command.

@@ -501,6 +501,46 @@ The user subsequently confirmed successful MCP use from a newly started Codex
 task through the project-scoped stdio proxy, completing the client-registration
 checkpoint without granting lifecycle mutation or bootstrap authority.
 
+### Phase 6B - Generic service registration authority
+
+Status: **Phases 1 through 3 completed on 2026-07-16**
+
+The implementation and operator contract are maintained in
+[Human-Gated Service Registration](service-registration.md).
+
+Phase 1 - self-description:
+
+- [x] separate stdio MCP identity, tool list, strict input schemas, complete
+  service schema, examples, workflow, current config revision, and structured
+  error taxonomy;
+- [x] validation reuses the typed full-configuration validator, including
+  paths, health, deadlines, ports, and cross-service conflicts; and
+- [x] the existing four-tool `/mcp` observation endpoint remains unchanged.
+
+Phase 2 - verbose human approval:
+
+- [x] idempotent expiring drafts persist complete before/after configuration,
+  operation, request ID, base/proposed revisions, and proposal hash;
+- [x] approval exists only in a real interactive CLI and rejects piped input;
+- [x] the CLI displays the complete current and proposed configuration before
+  requiring an exact service-ID and hash-suffix phrase; and
+- [x] no MCP approval tool is exposed.
+
+Phase 3 - transactional mutation:
+
+- [x] exclusive commit lock and optimistic exact-revision conflict checks;
+- [x] same-directory atomic replace through platform-specific adapters;
+- [x] idempotent recovery when config replacement succeeded before draft
+  bookkeeping;
+- [x] register/update/unregister semantics with full revalidation;
+- [x] register never auto-starts and reports the new service as stopped;
+- [x] update/unregister require live stopped-state evidence; and
+- [x] append-only registration audit contains identity and hashes without full
+  environment/config values.
+
+Discovery adapters, unattended approval, secrets, dependency graphs, and
+agent-initiated Supervisor bootstrap remain outside this milestone.
+
 ### Phase 7 - Agent-initiated supervisor bootstrap
 
 Status: **Deferred and requires a separate design decision**

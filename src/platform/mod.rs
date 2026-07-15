@@ -6,3 +6,18 @@ pub mod linux;
 pub mod macos;
 #[cfg(windows)]
 pub mod windows;
+
+#[cfg(target_os = "linux")]
+pub use linux::atomic_replace_file;
+#[cfg(target_os = "macos")]
+pub use macos::atomic_replace_file;
+#[cfg(windows)]
+pub use windows::atomic_replace_file;
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+pub fn atomic_replace_file(
+    source: &std::path::Path,
+    destination: &std::path::Path,
+) -> std::io::Result<()> {
+    std::fs::rename(source, destination)
+}

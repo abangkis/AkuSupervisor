@@ -15,5 +15,7 @@ mod http_response;
 pub mod journal;
 pub mod mcp;
 pub mod mcp_proxy;
+pub mod registration;
+pub mod registration_mcp;
 pub mod runtime_token;
 pub mod service_logs;

@@ -91,6 +91,7 @@ AkuSupervisor/
     geofu-plugin-portability.md
     implementation-roadmap.md
     mcp-integration-notes.md
+    service-registration.md
     platform-portability.md
     testing-guide.md
   config/
@@ -132,6 +133,8 @@ cargo run -- restart akusidecar --actor codex --reason "source changed"
 cargo run -- bridge reload --actor codex --reason "load updated unpacked extension" --request-id "bridge-reload-001"
 cargo run -- bridge status --request-id "bridge-reload-001" --json
 cargo run -- bridge validate --actor codex --request-id "bridge-release-001"
+cargo run -- registration capabilities
+cargo run -- registration-mcp
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets --all-features
@@ -303,6 +306,14 @@ at `.codex/config.toml`; restart Codex or begin a new task after changing MCP
 configuration. During development it may temporarily point at
 `target\dev\aku-supervisor.exe`; after promotion it should return to the stable
 `target\aku-supervisor.exe` shown above.
+
+Generic service onboarding uses a second MCP identity, `registration-mcp`.
+It self-describes the full schema and workflow, creates revision-bound drafts,
+and can commit only after the user runs `registration approve <draft-id>` in a
+real terminal and reviews the full before/after configuration. There is no MCP
+approval tool, registration never auto-starts a service, and update/unregister
+require live stopped-state evidence. See
+[Human-gated service registration](docs/service-registration.md).
 
 After the Gate 5 build has been loaded into Chrome once, either the user or
 Codex can request the only browser-side mutation exposed by AkuSupervisor:

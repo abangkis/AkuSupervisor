@@ -25,6 +25,10 @@ Usage:\n\
   aku-supervisor bridge status --request-id <id> [--json] [--config <path>]\n\
   aku-supervisor bridge validate --request-id <id> [--actor <user|codex>] [--config <path>]\n\
   aku-supervisor mcp-proxy [--config <path>]\n\
+  aku-supervisor registration-mcp [--config <path>]\n\
+  aku-supervisor registration capabilities [--json] [--config <path>]\n\
+  aku-supervisor registration show <draft-id> [--json] [--config <path>]\n\
+  aku-supervisor registration approve <draft-id> [--config <path>]\n\
   aku-supervisor --help\n\
   aku-supervisor --version\n\n\
 Without --config, AkuSupervisor checks AKU_SUPERVISOR_CONFIG and then the default user configuration.";
@@ -42,6 +46,22 @@ enum Command {
         config: Option<PathBuf>,
     },
     McpProxy {
+        config: Option<PathBuf>,
+    },
+    RegistrationMcp {
+        config: Option<PathBuf>,
+    },
+    RegistrationCapabilities {
+        config: Option<PathBuf>,
+        json: bool,
+    },
+    RegistrationShow {
+        draft_id: String,
+        config: Option<PathBuf>,
+        json: bool,
+    },
+    RegistrationApprove {
+        draft_id: String,
         config: Option<PathBuf>,
     },
     Remote(RemoteCommand),
@@ -117,6 +137,26 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Ok(Command::RegistrationMcp { config }) => {
+            match crate::adapters::registration_mcp::run(config) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Ok(Command::RegistrationCapabilities { config, json }) => {
+            run_registration_capabilities(config, json)
+        }
+        Ok(Command::RegistrationShow {
+            draft_id,
+            config,
+            json,
+        }) => run_registration_show(config, &draft_id, json),
+        Ok(Command::RegistrationApprove { draft_id, config }) => {
+            run_registration_approve(config, &draft_id)
+        }
         Ok(Command::Remote(command)) => run_remote(command),
         Err(message) => {
             eprintln!("error: {message}\n\n{HELP}");
@@ -146,6 +186,15 @@ fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, Strin
                 config: Some(PathBuf::from(config)),
             })
         }
+        [proxy] if proxy == "registration-mcp" => Ok(Command::RegistrationMcp { config: None }),
+        [proxy, config_flag, config]
+            if proxy == "registration-mcp" && config_flag == "--config" =>
+        {
+            Ok(Command::RegistrationMcp {
+                config: Some(PathBuf::from(config)),
+            })
+        }
+        [registration, rest @ ..] if registration == "registration" => parse_registration(rest),
         [status, rest @ ..] if status == "status" => parse_remote_status(rest),
         [status, rest @ ..] if status == "simple-status" => parse_simple_status(rest),
         [events, rest @ ..] if events == "events" => parse_remote_events(rest),
@@ -167,6 +216,114 @@ fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, Strin
             argument.to_string_lossy()
         )),
         _ => Err("expected run, a lifecycle client command, --help, or --version".to_owned()),
+    }
+}
+
+fn parse_registration(arguments: &[OsString]) -> Result<Command, String> {
+    let Some(action) = arguments.first().and_then(|value| value.to_str()) else {
+        return Err("registration requires capabilities, show, or approve".to_owned());
+    };
+    match action {
+        "capabilities" => {
+            let (config, json) = parse_output_options(&arguments[1..])?;
+            Ok(Command::RegistrationCapabilities { config, json })
+        }
+        "show" => {
+            let draft_id = arguments
+                .get(1)
+                .and_then(|value| value.to_str())
+                .ok_or_else(|| "registration show requires a draft ID".to_owned())?
+                .to_owned();
+            let (config, json) = parse_output_options(&arguments[2..])?;
+            Ok(Command::RegistrationShow {
+                draft_id,
+                config,
+                json,
+            })
+        }
+        "approve" => {
+            let draft_id = arguments
+                .get(1)
+                .and_then(|value| value.to_str())
+                .ok_or_else(|| "registration approve requires a draft ID".to_owned())?
+                .to_owned();
+            let (config, json) = parse_output_options(&arguments[2..])?;
+            if json {
+                return Err("interactive approval does not support --json".to_owned());
+            }
+            Ok(Command::RegistrationApprove { draft_id, config })
+        }
+        _ => Err("registration requires capabilities, show, or approve".to_owned()),
+    }
+}
+
+fn run_registration_capabilities(config: Option<PathBuf>, json_output: bool) -> ExitCode {
+    let result = crate::adapters::registration::RegistrationAuthority::open(config)
+        .and_then(|authority| authority.capabilities());
+    print_registration_result(result, json_output)
+}
+
+fn run_registration_show(config: Option<PathBuf>, draft_id: &str, json_output: bool) -> ExitCode {
+    let result = crate::adapters::registration::RegistrationAuthority::open(config)
+        .and_then(|authority| authority.get_draft(draft_id))
+        .and_then(|draft| {
+            serde_json::to_value(draft).map_err(|error| {
+                crate::adapters::registration::RegistrationError::serialization(error)
+            })
+        });
+    print_registration_result(result, json_output)
+}
+
+fn run_registration_approve(config: Option<PathBuf>, draft_id: &str) -> ExitCode {
+    let result = crate::adapters::registration::RegistrationAuthority::open(config)
+        .and_then(|authority| authority.approve_interactive(draft_id));
+    match result {
+        Ok(draft) => {
+            println!(
+                "\nAPPROVED: {}\nProposal hash: {}\nThe configuration has not changed yet. Return to the MCP client to commit this one-time draft.",
+                draft.draft_id, draft.proposal_hash
+            );
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn print_registration_result(
+    result: Result<serde_json::Value, crate::adapters::registration::RegistrationError>,
+    json_output: bool,
+) -> ExitCode {
+    match result {
+        Ok(value) => {
+            if json_output {
+                println!(
+                    "{}",
+                    serde_json::to_string(&value).expect("JSON value serialization cannot fail")
+                );
+            } else {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&value)
+                        .expect("JSON value serialization cannot fail")
+                );
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            if json_output {
+                println!(
+                    "{}",
+                    serde_json::to_string(&serde_json::json!({"error":error.structured()}))
+                        .expect("JSON value serialization cannot fail")
+                );
+            } else {
+                eprintln!("error: {error}");
+            }
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -1178,6 +1335,39 @@ mod tests {
     #[test]
     fn version_flag_selects_version() {
         assert_eq!(parse(args(&["--version"])), Ok(Command::Version));
+    }
+
+    #[test]
+    fn registration_authority_keeps_mcp_and_human_approval_distinct() {
+        assert_eq!(
+            parse(args(&["registration-mcp", "--config", "services.json"])),
+            Ok(Command::RegistrationMcp {
+                config: Some(PathBuf::from("services.json"))
+            })
+        );
+        assert_eq!(
+            parse(args(&[
+                "registration",
+                "show",
+                "registration-0123456789abcdef0123",
+                "--json"
+            ])),
+            Ok(Command::RegistrationShow {
+                draft_id: "registration-0123456789abcdef0123".to_owned(),
+                config: None,
+                json: true,
+            })
+        );
+        assert!(
+            parse(args(&[
+                "registration",
+                "approve",
+                "registration-0123456789abcdef0123",
+                "--json"
+            ]))
+            .is_err()
+        );
+        assert!(parse(args(&["registration", "commit", "anything"])).is_err());
     }
 
     #[test]
