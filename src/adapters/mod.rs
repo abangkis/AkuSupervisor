@@ -11,6 +11,7 @@ pub mod development_shutdown;
 #[cfg(windows)]
 pub mod foreground;
 pub mod http_health;
+mod http_response;
 pub mod journal;
 pub mod mcp;
 pub mod mcp_proxy;

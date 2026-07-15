@@ -9,13 +9,14 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::adapters::http_response::parse_response as parse_http_response;
 use crate::application::{
     CooperativeActionControl, CooperativeActionError, CooperativeActionOutcome,
     CooperativeActionProgress, CooperativeActionStage, CooperativeActionStatus,
 };
 use crate::domain::{Actor, Reason};
 
-const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
+const MAX_RESPONSE_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug)]
 pub struct AkuBridgeReloadClient {
@@ -130,37 +131,12 @@ impl AkuBridgeReloadClient {
             })?;
             match action.get("status").and_then(Value::as_str) {
                 Some("completed") => {
-                    if last_stage == CooperativeActionStage::RelayCreated
-                        && action.get("deliveredAt").and_then(Value::as_str).is_some()
-                    {
-                        last_stage = CooperativeActionStage::Delivered;
+                    for stage in evidenced_intermediate_stages(action, last_stage) {
                         self.report_progress(
                             actor,
                             reason,
                             request_id,
-                            progress_from_action(
-                                action,
-                                last_stage,
-                                "AkuBrowser relay page claimed the cooperative action",
-                            ),
-                            progress,
-                        )?;
-                    }
-                    if matches!(
-                        last_stage,
-                        CooperativeActionStage::RelayCreated | CooperativeActionStage::Delivered
-                    ) && action.get("acceptedAt").and_then(Value::as_str).is_some()
-                    {
-                        last_stage = CooperativeActionStage::Accepted;
-                        self.report_progress(
-                            actor,
-                            reason,
-                            request_id,
-                            progress_from_action(
-                                action,
-                                last_stage,
-                                "AkuBridge accepted reload_self",
-                            ),
+                            progress_from_action(action, stage, intermediate_stage_message(stage)),
                             progress,
                         )?;
                     }
@@ -212,20 +188,13 @@ impl AkuBridgeReloadClient {
                 }
                 Some("pending" | "delivered") => {}
                 Some("accepted") => {
-                    if matches!(
-                        last_stage,
-                        CooperativeActionStage::RelayCreated | CooperativeActionStage::Delivered
-                    ) {
-                        last_stage = CooperativeActionStage::Accepted;
+                    for stage in evidenced_intermediate_stages(action, last_stage) {
+                        last_stage = stage;
                         self.report_progress(
                             actor,
                             reason,
                             request_id,
-                            progress_from_action(
-                                action,
-                                last_stage,
-                                "AkuBridge accepted reload_self",
-                            ),
+                            progress_from_action(action, stage, intermediate_stage_message(stage)),
                             progress,
                         )?;
                     }
@@ -298,9 +267,15 @@ impl AkuBridgeReloadClient {
         stream.flush().map_err(io_error)?;
         let mut response = Vec::new();
         stream
-            .take(MAX_RESPONSE_BYTES as u64)
+            .take(MAX_RESPONSE_BYTES + 1)
             .read_to_end(&mut response)
             .map_err(io_error)?;
+        if response.len() as u64 > MAX_RESPONSE_BYTES {
+            return Err(CooperativeActionError::new(
+                "relay_protocol",
+                "Sidecar response exceeded 1 MiB",
+            ));
+        }
         parse_response(&response)
     }
 
@@ -463,6 +438,36 @@ fn sidecar_error_category(action: &Value) -> &'static str {
     }
 }
 
+fn evidenced_intermediate_stages(
+    action: &Value,
+    last_stage: CooperativeActionStage,
+) -> Vec<CooperativeActionStage> {
+    let mut stages = Vec::with_capacity(2);
+    let mut current = last_stage;
+    if current == CooperativeActionStage::RelayCreated
+        && action.get("deliveredAt").and_then(Value::as_str).is_some()
+    {
+        stages.push(CooperativeActionStage::Delivered);
+        current = CooperativeActionStage::Delivered;
+    }
+    if matches!(
+        current,
+        CooperativeActionStage::RelayCreated | CooperativeActionStage::Delivered
+    ) && action.get("acceptedAt").and_then(Value::as_str).is_some()
+    {
+        stages.push(CooperativeActionStage::Accepted);
+    }
+    stages
+}
+
+const fn intermediate_stage_message(stage: CooperativeActionStage) -> &'static str {
+    match stage {
+        CooperativeActionStage::Delivered => "AkuBrowser relay page claimed the cooperative action",
+        CooperativeActionStage::Accepted => "AkuBridge accepted reload_self",
+        _ => "Sidecar reported an intermediate cooperative-action milestone",
+    }
+}
+
 const fn stage_name(stage: CooperativeActionStage) -> &'static str {
     match stage {
         CooperativeActionStage::Requested => "requested",
@@ -501,31 +506,19 @@ fn parse_loopback_origin(origin: &str) -> Result<SocketAddr, CooperativeActionEr
 }
 
 fn parse_response(response: &[u8]) -> Result<Value, CooperativeActionError> {
-    let separator = response
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
-        .ok_or_else(|| {
-            CooperativeActionError::new(
-                "relay_protocol",
-                "Sidecar returned an invalid HTTP response",
-            )
-        })?;
-    let headers = String::from_utf8_lossy(&response[..separator]);
-    let status = headers
-        .lines()
-        .next()
-        .and_then(|line| line.split_whitespace().nth(1))
-        .and_then(|value| value.parse::<u16>().ok())
-        .ok_or_else(|| {
-            CooperativeActionError::new("relay_protocol", "Sidecar response omitted HTTP status")
-        })?;
-    let payload: Value = serde_json::from_slice(&response[separator + 4..]).map_err(|error| {
+    let response = parse_http_response(response).map_err(|error| {
+        CooperativeActionError::new(
+            "relay_protocol",
+            format!("Sidecar returned an invalid HTTP response: {error}"),
+        )
+    })?;
+    let payload: Value = serde_json::from_slice(&response.body).map_err(|error| {
         CooperativeActionError::new(
             "relay_protocol",
             format!("Sidecar returned invalid JSON: {error}"),
         )
     })?;
-    if !(200..300).contains(&status) {
+    if !(200..300).contains(&response.status) {
         let message = payload
             .get("message")
             .and_then(Value::as_str)
@@ -622,7 +615,12 @@ fn unix_timestamp() -> u64 {
 mod tests {
     use serde_json::json;
 
-    use super::{parse_loopback_origin, parse_response, sidecar_error_category};
+    use crate::application::CooperativeActionStage;
+
+    use super::{
+        evidenced_intermediate_stages, parse_loopback_origin, parse_response,
+        sidecar_error_category,
+    };
 
     #[test]
     fn relay_accepts_only_pathless_loopback_http_origins() {
@@ -636,6 +634,38 @@ mod tests {
     fn relay_rejects_non_success_json_responses() {
         let response = b"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\n\r\n{\"message\":\"denied\"}";
         assert_eq!(parse_response(response).unwrap_err().message(), "denied");
+    }
+
+    #[test]
+    fn relay_decodes_go_chunked_json_responses() {
+        let payload = br#"{"action":{"id":"bridge_action_1","status":"pending"}}"#;
+        let response = format!(
+            "HTTP/1.1 202 Accepted\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{}\r\n0\r\n\r\n",
+            payload.len(),
+            std::str::from_utf8(payload).expect("fixture JSON")
+        );
+
+        let parsed = parse_response(response.as_bytes()).expect("valid Go HTTP response");
+
+        assert_eq!(parsed["action"]["id"], "bridge_action_1");
+        assert_eq!(parsed["action"]["status"], "pending");
+    }
+
+    #[test]
+    fn accepted_snapshot_backfills_proven_delivery_before_acceptance() {
+        let action = json!({
+            "status": "accepted",
+            "deliveredAt": "2026-07-15T15:30:00Z",
+            "acceptedAt": "2026-07-15T15:30:00.010Z"
+        });
+
+        assert_eq!(
+            evidenced_intermediate_stages(&action, CooperativeActionStage::RelayCreated),
+            [
+                CooperativeActionStage::Delivered,
+                CooperativeActionStage::Accepted
+            ]
+        );
     }
 
     #[test]
