@@ -22,6 +22,8 @@ $stableExecutable = Join-Path $repository 'target\aku-supervisor.exe'
 $shutdownRequest = Join-Path $devDirectory 'shutdown-request'
 $stagedExecutable = Join-Path $buildDirectory 'debug\aku-supervisor.exe'
 $supervisorProcess = $null
+$rustToolchainScript = Join-Path $PSScriptRoot 'rust-toolchain.ps1'
+. $rustToolchainScript
 
 function Resolve-ConfigPath {
     if ($Config) {
@@ -37,37 +39,6 @@ function Resolve-ConfigPath {
         throw 'LOCALAPPDATA is unavailable; pass -Config explicitly.'
     }
     return Join-Path $env:LOCALAPPDATA 'AkuSupervisor\services.json'
-}
-
-function Resolve-Cargo {
-    # Prefer the project-local, complete toolchain. A rustup shim on PATH may
-    # exist while its selected toolchain is missing or only partially installed.
-    $localToolchains = Join-Path $repository 'target\rustup-home\toolchains'
-    if (Test-Path $localToolchains) {
-        $candidate = Get-ChildItem $localToolchains -Directory |
-            Sort-Object Name -Descending |
-            Where-Object {
-                (Test-Path (Join-Path $_.FullName 'bin\cargo.exe')) -and
-                (Test-Path (Join-Path $_.FullName 'bin\rustc.exe')) -and
-                (Test-Path (Join-Path $_.FullName 'lib\rustlib'))
-            } |
-            ForEach-Object { Join-Path $_.FullName 'bin\cargo.exe' } |
-            Select-Object -First 1
-        if ($candidate) {
-            return $candidate
-        }
-    }
-
-    $command = Get-Command cargo -CommandType Application -ErrorAction SilentlyContinue
-    if ($command) {
-        return $command.Source
-    }
-
-    $userCargo = Join-Path $HOME '.cargo\bin\cargo.exe'
-    if (Test-Path $userCargo) {
-        return $userCargo
-    }
-    throw 'cargo was not found on PATH, in the project-local toolchain, or under ~/.cargo/bin.'
 }
 
 function Assert-RustToolchain {
@@ -150,9 +121,11 @@ function Get-WatchFingerprint {
     if ($script:configPath -and (Test-Path -LiteralPath $script:configPath -PathType Leaf)) {
         $files += Get-Item -LiteralPath $script:configPath
     }
-    $watcherPath = Join-Path $repository 'scripts\dev.ps1'
-    if (Test-Path -LiteralPath $watcherPath -PathType Leaf) {
-        $files += Get-Item -LiteralPath $watcherPath
+    foreach ($watcherRelativePath in @('scripts\dev.ps1', 'scripts\rust-toolchain.ps1')) {
+        $watcherPath = Join-Path $repository $watcherRelativePath
+        if (Test-Path -LiteralPath $watcherPath -PathType Leaf) {
+            $files += Get-Item -LiteralPath $watcherPath
+        }
     }
     return (($files | Sort-Object FullName | ForEach-Object {
         '{0}|{1}|{2}' -f $_.FullName, $_.Length, $_.LastWriteTimeUtc.Ticks
@@ -480,18 +453,11 @@ try {
         throw "Control port $script:controlHost`:$script:controlPort is already active. Type 'quit' in the current AkuSupervisor terminal before starting the watcher."
     }
 
-    $script:cargo = Resolve-Cargo
-    $toolchainBin = Split-Path -Parent $script:cargo
-    if (Test-Path (Join-Path $toolchainBin 'rustc.exe')) {
-        $env:RUSTC = Join-Path $toolchainBin 'rustc.exe'
-        $env:RUSTFMT = Join-Path $toolchainBin 'rustfmt.exe'
-    } else {
-        $rustcCommand = Get-Command rustc -CommandType Application -ErrorAction SilentlyContinue
-        if (-not $rustcCommand) {
-            throw "rustc was not found beside the selected Cargo or on PATH: $script:cargo"
-        }
-        $env:RUSTC = $rustcCommand.Source
-    }
+    $script:rustToolchain = Resolve-AkuRustToolchain -Repository $repository
+    $script:cargo = $script:rustToolchain.Cargo
+    $env:PATH = "$($script:rustToolchain.Bin);$env:PATH"
+    $env:RUSTC = $script:rustToolchain.Rustc
+    $env:RUSTFMT = $script:rustToolchain.Rustfmt
     Assert-RustToolchain
     $env:CARGO_TARGET_DIR = $buildDirectory
     $env:AKU_SUPERVISOR_DEV_SHUTDOWN_FILE = $shutdownRequest

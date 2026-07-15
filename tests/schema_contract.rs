@@ -36,6 +36,7 @@ fn checked_in_schema_is_valid_json_schema_document() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // One end-to-end profile contract is easier to audit in one place.
 fn checked_in_akuworkspace_profile_matches_the_typed_contract() {
     let config = SupervisorConfig::parse_json(include_str!("../config/akuworkspace.services.json"))
         .expect("checked-in AkuWorkspace profile must parse");

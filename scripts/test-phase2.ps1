@@ -3,6 +3,13 @@ param()
 
 $ErrorActionPreference = 'Stop'
 $repository = Split-Path -Parent $PSScriptRoot
+$rustToolchainScript = Join-Path $PSScriptRoot 'rust-toolchain.ps1'
+. $rustToolchainScript
+$rustToolchain = Resolve-AkuRustToolchain -Repository $repository
+$cargo = $rustToolchain.Cargo
+$env:PATH = "$($rustToolchain.Bin);$env:PATH"
+$env:RUSTC = $rustToolchain.Rustc
+$env:RUSTFMT = $rustToolchain.Rustfmt
 
 function Invoke-CargoChecked {
     param(
@@ -11,7 +18,7 @@ function Invoke-CargoChecked {
     )
 
     Write-Host "`n> cargo $($Arguments -join ' ')" -ForegroundColor Cyan
-    & cargo @Arguments
+    & $script:cargo @Arguments
     if ($LASTEXITCODE -ne 0) {
         throw "cargo command failed with exit code $LASTEXITCODE"
     }
@@ -19,17 +26,8 @@ function Invoke-CargoChecked {
 
 Push-Location $repository
 try {
-    if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
-        $cargoBin = Join-Path $HOME '.cargo\bin'
-        if (Test-Path (Join-Path $cargoBin 'cargo.exe')) {
-            $env:PATH = "$cargoBin;$env:PATH"
-        }
-    }
-    if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
-        throw 'cargo is not available. Install Rust or restart Visual Studio after Rust installation.'
-    }
-
     Write-Host 'AkuSupervisor verification through the Gate 4 AkuWorkspace MVP' -ForegroundColor Green
+    Write-Host "Rust toolchain: $($rustToolchain.Source) ($cargo)" -ForegroundColor DarkGray
     Invoke-CargoChecked @('fmt', '--check')
     Invoke-CargoChecked @('clippy', '--all-targets', '--all-features', '--', '-D', 'warnings')
     Invoke-CargoChecked @('test', '--all-targets', '--all-features')

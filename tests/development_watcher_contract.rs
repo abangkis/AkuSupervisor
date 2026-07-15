@@ -1,6 +1,7 @@
 #[test]
 fn watcher_requires_executable_release_without_force_killing_an_owner() {
     let script = include_str!("../scripts/dev.ps1");
+    let toolchain = include_str!("../scripts/rust-toolchain.ps1");
 
     assert!(script.contains("Wait-ForExecutableRelease -Path $devExecutable"));
     assert!(script.contains("[IO.FileShare]::None"));
@@ -12,6 +13,11 @@ fn watcher_requires_executable_release_without_force_killing_an_owner() {
     assert!(script.contains("ValueFromRemainingArguments = $true"));
     assert!(script.contains("Start-RequestedServices -ServiceIds $script:startServiceIds"));
     assert!(script.contains("AkuSupervisor itself is always started by dev.ps1"));
+    assert!(script.contains("Resolve-AkuRustToolchain -Repository $repository"));
+    assert!(script.contains("scripts\\rust-toolchain.ps1"));
+    assert!(toolchain.contains("Source = 'project-local'"));
+    assert!(toolchain.contains("Test-AkuRustExecutable"));
+    assert!(toolchain.contains("lib\\rustlib"));
     assert!(script.contains("Auto-started service: $serviceId"));
     assert!(script.contains("included in graceful shutdown"));
     assert!(script.contains("Show-RequestedServiceStartupSummary -Results $results"));

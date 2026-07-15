@@ -393,7 +393,9 @@ Before the first build, the watcher prints its selected `Cargo:` and `Rustc:`
 paths. It deliberately prefers the complete toolchain under
 `target/rustup-home/toolchains` over a `cargo` or `rustc` rustup shim on
 `PATH`. This prevents an incomplete user-level rustup selection from changing
-the repository's development compiler.
+the repository's development compiler. `scripts\test-phase2.ps1` uses the
+same shared resolver, so both the watcher and the release test gate select one
+verified toolchain instead of merely trusting that a rustup proxy exists.
 
 The signal exists only when the watcher sets
 `AKU_SUPERVISOR_DEV_SHUTDOWN_FILE`. AkuSupervisor accepts only an absolute path
