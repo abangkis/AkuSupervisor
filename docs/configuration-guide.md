@@ -55,6 +55,45 @@ Replace the example paths, arguments, port, and service ID. Both `cwd` and
 The command and every argument remain separate JSON values; AkuSupervisor does
 not accept an arbitrary shell command from a lifecycle request.
 
+## Handoff-aware application example: `instanceEpoch`
+
+AkuSupervisor proves that a newly owned process tree satisfies its configured
+health response. An application with additional in-memory clients may expose a
+per-process epoch so those clients can distinguish recovery to the same
+instance from recovery into a replacement instance.
+
+AkuSidecar 0.6.9 implements this pattern. It creates one random, non-persisted
+value at process construction and returns it from health and bootstrap:
+
+```js
+import crypto from "node:crypto";
+
+const instanceEpoch = crypto.randomUUID();
+
+// GET /api/health
+sendJson(response, 200, { status: "ok", instanceEpoch });
+
+// GET /api/bootstrap
+sendJson(response, 200, {
+  instanceEpoch,
+  // persisted application configuration follows
+});
+
+// Every API response can expose the same value for existing polling clients.
+response.setHeader("X-Aku-Sidecar-Instance-Epoch", instanceEpoch);
+```
+
+After a development watcher handoff, an existing client compares the new
+bootstrap epoch with its previous value. A change invalidates only ephemeral
+client readiness, not SQLite state or authentication material. The client then
+performs its own bounded integration handshake before allowing new work.
+
+`instanceEpoch` is an application example, not a Supervisor configuration
+field and not a service dependency. AkuSupervisor must not interpret the value,
+wait for AkuBridge, or acquire browser authority. Its generic health contract
+continues to match the declared shallow fields, while the application owns its
+deeper readiness recovery.
+
 ## Control fields
 
 | Field | Requirement |

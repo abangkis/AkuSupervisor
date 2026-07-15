@@ -131,16 +131,20 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
     }
 
     let foreground_result = wait_for_shutdown(control.as_ref(), &shutdown, &development_shutdown);
+    let shutdown_cause = foreground_result.as_ref().map_or_else(
+        |_| ShutdownCause::recovery("foreground shutdown after control-loop failure"),
+        Clone::clone,
+    );
 
     service_monitor.shutdown();
     let server_result = control_server.shutdown();
-    let cleanup_result = cleanup(control.as_ref());
+    let cleanup_result = cleanup(control.as_ref(), &shutdown_cause);
     if let Err(error) = server_result {
         cleanup_result?;
         return Err(ForegroundError::ControlApi(error));
     }
     cleanup_result?;
-    foreground_result
+    foreground_result.map(|_| ())
 }
 
 #[derive(Debug)]
@@ -233,7 +237,7 @@ fn wait_for_shutdown(
     control: &dyn SupervisorControl,
     shutdown: &ConsoleShutdown,
     development_shutdown: &DevelopmentShutdown,
-) -> Result<(), ForegroundError> {
+) -> Result<ShutdownCause, ForegroundError> {
     let input_receiver = if development_shutdown.request_path().is_none() {
         let (input_sender, input_receiver) = mpsc::channel();
         thread::spawn(move || read_input(&input_sender));
@@ -245,12 +249,14 @@ fn wait_for_shutdown(
     loop {
         if shutdown.is_requested() {
             println!("\nConsole shutdown requested.");
-            return Ok(());
+            return Ok(ShutdownCause::user(
+                "user requested Ctrl+C foreground shutdown",
+            ));
         }
         match development_shutdown.take_request() {
             Ok(Some(reason)) => {
                 println!("\nDevelopment restart requested: {reason}");
-                return Ok(());
+                return Ok(shutdown_cause_for_development(&reason));
             }
             Ok(None) => {}
             Err(error) => return Err(ForegroundError::DevelopmentShutdown(error)),
@@ -259,10 +265,12 @@ fn wait_for_shutdown(
             match input_receiver.recv_timeout(INPUT_POLL_INTERVAL) {
                 Ok(InputEvent::Line(line)) => {
                     if handle_line(control, &line) {
-                        return Ok(());
+                        return Ok(ShutdownCause::user("user requested interactive quit"));
                     }
                 }
-                Ok(InputEvent::End) | Err(RecvTimeoutError::Disconnected) => return Ok(()),
+                Ok(InputEvent::End) | Err(RecvTimeoutError::Disconnected) => {
+                    return Ok(ShutdownCause::user("foreground input closed"));
+                }
                 Ok(InputEvent::Error(error)) => return Err(ForegroundError::Input(error)),
                 Err(RecvTimeoutError::Timeout) => {}
             }
@@ -490,7 +498,10 @@ fn print_snapshot(snapshot: &ServiceSnapshot) {
     }
 }
 
-fn cleanup(control: &dyn SupervisorControl) -> Result<(), ForegroundError> {
+fn cleanup(
+    control: &dyn SupervisorControl,
+    shutdown_cause: &ShutdownCause,
+) -> Result<(), ForegroundError> {
     let mut failures = Vec::new();
     let service_ids = control
         .snapshots()
@@ -499,9 +510,12 @@ fn cleanup(control: &dyn SupervisorControl) -> Result<(), ForegroundError> {
         .map(|snapshot| snapshot.id)
         .collect::<Vec<_>>();
     for service_id in service_ids {
-        let reason = Reason::new("visible supervisor shutdown").expect("static reason is valid");
-        if let Err(error) = control.mutate(ControlAction::Stop, &service_id, Actor::UserCli, reason)
-        {
+        if let Err(error) = control.mutate(
+            ControlAction::Stop,
+            &service_id,
+            shutdown_cause.actor,
+            shutdown_cause.reason.clone(),
+        ) {
             failures.push(format!("{service_id}: {error}"));
         }
     }
@@ -510,6 +524,43 @@ fn cleanup(control: &dyn SupervisorControl) -> Result<(), ForegroundError> {
         Ok(())
     } else {
         Err(ForegroundError::Cleanup(failures))
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ShutdownCause {
+    actor: Actor,
+    reason: Reason,
+}
+
+impl ShutdownCause {
+    fn user(reason: &'static str) -> Self {
+        Self {
+            actor: Actor::UserCli,
+            reason: Reason::new(reason).expect("static user shutdown reason is valid"),
+        }
+    }
+
+    fn recovery(reason: &'static str) -> Self {
+        Self {
+            actor: Actor::Recovery,
+            reason: Reason::new(reason).expect("static recovery shutdown reason is valid"),
+        }
+    }
+}
+
+fn shutdown_cause_for_development(reason: &str) -> ShutdownCause {
+    if reason == "development watcher stopped by user" {
+        return ShutdownCause::user("user stopped development watcher");
+    }
+    let reason =
+        Reason::new(format!("development watcher handoff: {reason}")).unwrap_or_else(|_| {
+            Reason::new("development watcher requested bounded handoff")
+                .expect("static watcher handoff reason is valid")
+        });
+    ShutdownCause {
+        actor: Actor::Recovery,
+        reason,
     }
 }
 
@@ -618,7 +669,8 @@ impl std::error::Error for ForegroundError {}
 
 #[cfg(test)]
 mod tests {
-    use super::{InteractiveCommand, parse_interactive};
+    use super::{InteractiveCommand, parse_interactive, shutdown_cause_for_development};
+    use crate::domain::Actor;
 
     #[test]
     fn interactive_commands_keep_service_and_reason_bounded() {
@@ -631,5 +683,22 @@ mod tests {
         ));
         assert!(parse_interactive("restart").is_err());
         assert!(parse_interactive("shell arbitrary command").is_err());
+    }
+
+    #[test]
+    fn development_handoff_and_user_stop_keep_distinct_audit_identity() {
+        let handoff = shutdown_cause_for_development("successful build or configuration change");
+        assert_eq!(handoff.actor, Actor::Recovery);
+        assert_eq!(
+            handoff.reason.as_str(),
+            "development watcher handoff: successful build or configuration change",
+        );
+
+        let user_stop = shutdown_cause_for_development("development watcher stopped by user");
+        assert_eq!(user_stop.actor, Actor::UserCli);
+        assert_eq!(
+            user_stop.reason.as_str(),
+            "user stopped development watcher"
+        );
     }
 }

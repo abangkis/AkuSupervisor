@@ -29,6 +29,11 @@ The original product specification remains the detailed source for lifecycle beh
 7. **Portability by boundary:** keep project-specific details in configuration, but defer non-AkuWorkspace live validation.
 8. **Bounded scope:** do not add service graphs, remote control, login startup, browser automation, or production orchestration during the MVP.
 
+Cross-component readiness remains layered on this lifecycle core. A managed
+application may publish a per-process epoch so its existing clients can recover
+after replacement, but the epoch is not interpreted by AkuSupervisor and does
+not create a dependency graph. AkuSidecar 0.6.9 is the reference example.
+
 ## 3. Target architecture
 
 ```mermaid

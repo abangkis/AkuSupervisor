@@ -465,7 +465,7 @@ try {
         }
 
         $runningServices = @(Get-RunningServiceIds)
-        Request-GracefulShutdown -Reason 'Rust source or Cargo manifest changed'
+        Request-GracefulShutdown -Reason 'successful build or configuration change'
         if (-not (Wait-ForExit -Process $supervisorProcess)) {
             throw 'Graceful development restart timed out.'
         }
@@ -478,7 +478,7 @@ try {
 finally {
     if ($null -ne $supervisorProcess -and -not $supervisorProcess.HasExited) {
         Write-Host "`n[watch] Stopping development supervisor gracefully..." -ForegroundColor Cyan
-        Request-GracefulShutdown -Reason 'development watcher stopped'
+        Request-GracefulShutdown -Reason 'development watcher stopped by user'
         if (-not (Wait-ForExit -Process $supervisorProcess)) {
             Write-Warning 'AkuSupervisor is still running; it was not force-killed.'
         } else {

@@ -320,6 +320,16 @@ Supervisor. Ctrl+C requests the ordinary graceful Supervisor shutdown, waits
 for owned-service cleanup, and prints a completion message; it never kills the
 service tree directly.
 
+After an automatic build/configuration handoff, inspect the lifecycle journal:
+cleanup from the replaced instance uses actor `recovery/supervisor` and a
+`development watcher handoff:` reason. Ctrl+C, interactive `quit`, and stopping
+the watcher use `user/cli`. In every case, `ownedPidsAfter` must be empty.
+
+For applications following the `instanceEpoch` example, also verify that the
+new process returns a different epoch, the existing client discards its old
+integration-ready state, and the bounded application handshake completes
+without changing Supervisor ownership or health policy.
+
 The terminal prints the constant executable path
 `target\dev\aku-supervisor.exe`. The script polls `src/**/*.rs`, `Cargo.toml`,
 and `Cargo.lock`, with a short debounce. Its rebuild sequence is:

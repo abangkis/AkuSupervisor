@@ -72,10 +72,13 @@ ID retained on failures whenever Sidecar created one. If a reload completes
 between two Supervisor polls, Sidecar timestamps allow the missing delivery
 and acceptance milestones to be written deterministically.
 
-The AkuBrowser client retries bootstrap after a transient Sidecar restart and
-uses a versioned module URL during development. Long polls are tied to the HTTP
-connection lifetime so a reloaded page cannot leave a waiter that steals the
-next action.
+The AkuBrowser client retries bootstrap after a transient Sidecar restart,
+observes the new Sidecar `instanceEpoch` on ordinary API responses, and uses a
+versioned module URL during development. It discards Bridge-ready state from
+the replaced process and performs a fresh bounded handshake. Long polls are
+tied to the HTTP connection lifetime so a reloaded page cannot leave a waiter
+that steals the next action. The epoch is application readiness evidence;
+AkuSupervisor does not interpret it or add a service dependency.
 
 Codex identity is preserved in operation and audit data as
 `{"actorType":"agent","actorId":"codex"}` rather than being flattened to a

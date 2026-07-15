@@ -59,6 +59,23 @@ a staging target and performs a bounded service-aware handoff. AkuSidecar now
 runs without Node file watching; backend changes are restarted explicitly
 through AkuSupervisor, while Vite retains frontend HMR.
 
+The handoff intentionally replaces the Sidecar process. AkuSidecar 0.6.9 is a
+worked example of how a managed application can make that boundary safe: it
+publishes a new `instanceEpoch` on every start, allowing its browser client to
+discard stale in-memory Bridge readiness and re-handshake without asking
+AkuSupervisor to understand Chrome. This is application-level recovery layered
+on top of Supervisor lifecycle ownership, not a service dependency graph.
+
+Audit identity distinguishes these paths without changing cleanup:
+
+- Ctrl+C, interactive `quit`, or stopping the watcher is `user/cli`; and
+- a successful development build/configuration handoff is
+  `recovery/supervisor`.
+
+Both still use the same bounded graceful stop and complete owned-tree cleanup.
+There is no detach-on-exit mode; closing the foreground owner means stopping
+the services it owns.
+
 Use the simpler tool when its boundary is sufficient. AkuSupervisor is justified
 when local browser state, persisted jobs, full-tree cleanup, and cooperative
 cross-component evidence must be treated as one lifecycle contract.

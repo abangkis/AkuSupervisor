@@ -15,6 +15,8 @@ fn watcher_requires_executable_release_without_force_killing_an_owner() {
     assert!(script.contains("Auto-started service: $serviceId"));
     assert!(script.contains("included in graceful shutdown"));
     assert!(script.contains("owned services completed graceful shutdown"));
+    assert!(script.contains("successful build or configuration change"));
+    assert!(script.contains("development watcher stopped by user"));
     let auto_start = script
         .find("Start-RequestedServices -ServiceIds $script:startServiceIds")
         .expect("requested services must be started");

@@ -284,7 +284,20 @@ The implementation must test npm's Windows process chain (`npm.cmd -> cmd.exe ->
 
 ### 10.4 Supervisor shutdown
 
-On Ctrl+C, the default behavior is to stop every child service started by the current supervisor session, then exit. A future `leaveRunningOnExit` option is out of scope for v0.
+On Ctrl+C, interactive `quit`, input closure, or watcher termination, the
+required behavior is to stop every child service started by the current
+supervisor instance, prove its owned process trees are empty, and only then
+exit. This is the foreground-owner contract, not a configurable default.
+
+A successful development watcher handoff uses the same cleanup mechanism for
+the old instance and then explicitly restores the services observed running
+under a new instance. Its lifecycle audit uses `recovery/supervisor`; a user
+exit uses `user/cli`. The shared cleanup mechanism does not make those two
+intentions equivalent.
+
+A future `leaveRunningOnExit` or detached-daemon mode would require a separate
+ownership and control contract and is out of scope for v0. It must not silently
+change the meaning of Ctrl+C on the foreground owner.
 
 ## 11. Restart policy
 
