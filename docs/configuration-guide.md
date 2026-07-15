@@ -196,10 +196,31 @@ ordinary five-second control-plane response timeout.
 
 The canonical
 [`config/akuworkspace.services.json`](../config/akuworkspace.services.json)
-contains three relevant real cases behind one control boundary: Geofu BE is a
-cooperative direct executable; AkuSidecar uses a registered Windows command
-wrapper; and the Geofu plugin uses an npm wrapper with a long-lived Rollup
-watcher. All use bounded health and retained process-tree ownership.
+contains five services behind one control boundary: Geofu BE is a cooperative
+direct executable; AkuSidecar uses a registered Windows command wrapper; the
+Geofu plugin uses an npm wrapper with a long-lived Rollup watcher; and two
+GeoLibre profiles run the same Vite host under unlocked and locked plugin
+policies. All use bounded health and retained process-tree ownership.
+
+The repository-native GeoLibre commands both default to port 6060. The
+canonical profile keeps unlocked development on 6060 and maps locked QA to
+6061, preserving the one-declared-owner-per-port contract while allowing an
+explicit side-by-side QA comparison. The unlocked mode also needs the
+independently supervised `geofu-plugin` service for complete workflow
+readiness. See
+[Geofu daily workflows](geofu-daily-workflows.md) for startup order and the
+boundary between long-running services and one-shot deployment tasks.
+
+The profile deliberately leaves `GEOLIBRE_DEV_HOST` unset. This preserves the
+host binding selected by the checked-out GeoLibre branch instead of silently
+narrowing a repository-native LAN-capable development server to loopback.
+Health checks may still target `127.0.0.1` because a server bound to
+`0.0.0.0` also accepts loopback connections.
+
+Both GeoLibre health checks request the static `/favicon.png` asset. Probing the
+application root can trigger Vite's dependency optimizer and confuse build work
+with listener readiness; the static asset proves that the intended Vite server
+owns the port without forcing the application module graph to bundle first.
 
 ## Run and inspect
 

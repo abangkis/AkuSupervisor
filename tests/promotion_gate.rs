@@ -38,4 +38,7 @@ fn stable_promotion_is_guarded_by_machine_readable_bridge_validation() {
     assert!(script.contains("Get-StableExecutableUsers"));
     assert!(script.contains("target\\aku-supervisor.exe"));
     assert!(script.contains("target\\dev"));
+    assert!(script.contains("$category -eq 'relay_page_stale'"));
+    assert!(script.contains("Reload only the existing http://127.0.0.1:47821 AkuBrowser tab"));
+    assert!(script.contains("without stopping the watcher"));
 }

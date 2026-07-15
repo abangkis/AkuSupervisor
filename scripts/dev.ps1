@@ -172,6 +172,20 @@ function Invoke-DevelopmentBuild {
     return $true
 }
 
+function Test-ConfigurationBeforeHandoff {
+    $validationOutput = @(& $stagedExecutable status --json --config $script:configPath 2>&1)
+    $validationExitCode = $LASTEXITCODE
+    if ($validationExitCode -eq 0) {
+        return $true
+    }
+
+    Write-Host '[watch] Configuration validation failed. The current supervisor and services remain active.' -ForegroundColor Red
+    foreach ($line in $validationOutput) {
+        Write-Host "[watch]   $line" -ForegroundColor Red
+    }
+    return $false
+}
+
 function Get-RunningServiceIds {
     try {
         $response = Invoke-RestMethod -Uri "http://${script:controlHost}:$script:controlPort/v1/services" `
@@ -368,19 +382,74 @@ function Restore-RunningServices {
     }
 }
 
+function Show-RequestedServiceStartupSummary {
+    param([object[]] $Results)
+
+    if (-not $Results -or $Results.Count -eq 0) {
+        return
+    }
+
+    $servicesById = @{}
+    try {
+        $response = Invoke-RestMethod -Uri "http://${script:controlHost}:$script:controlPort/v1/services" `
+            -Method Get -TimeoutSec 2
+        foreach ($service in @($response.services)) {
+            $servicesById[[string] $service.id] = $service
+        }
+    }
+    catch {
+        Write-Warning "Could not read final service state for the startup summary: $($_.Exception.Message)"
+    }
+
+    Write-Host ''
+    Write-Host '[watch] Requested service startup summary:' -ForegroundColor Cyan
+    Write-Host ('[watch] {0,-20} {1,-10} {2,-12} {3,-10}' -f 'SERVICE', 'REQUEST', 'STATE', 'HEALTH') -ForegroundColor DarkGray
+
+    foreach ($result in $Results) {
+        $service = $servicesById[[string] $result.ServiceId]
+        $lifecycle = if ($null -ne $service) { [string] $service.lifecycle } else { 'unknown' }
+        $health = if ($null -ne $service -and $null -ne $service.health) {
+            [string] $service.health.status
+        } else {
+            'unknown'
+        }
+        $requestResult = if ($result.ExitCode -eq 0) { 'STARTED' } else { 'FAILED' }
+        $color = if ($result.ExitCode -eq 0) { 'Green' } else { 'Yellow' }
+        Write-Host ('[watch] {0,-20} {1,-10} {2,-12} {3,-10}' -f `
+                $result.ServiceId, $requestResult, $lifecycle, $health) -ForegroundColor $color
+    }
+
+    $failedServiceIds = @($Results |
+        Where-Object { $_.ExitCode -ne 0 } |
+        ForEach-Object { [string] $_.ServiceId })
+    if ($failedServiceIds.Count -gt 0) {
+        Write-Host "[watch] Failed service(s): $($failedServiceIds -join ', '). See the error above for the cause." -ForegroundColor Yellow
+        Write-Host '[watch] The watcher and successfully started services remain active; retry a failed service from a second terminal.' -ForegroundColor Yellow
+    }
+}
+
 function Start-RequestedServices {
     param([string[]] $ServiceIds)
 
+    $results = @()
     foreach ($serviceId in $ServiceIds) {
         Write-Host "[watch] Starting requested service: $serviceId" -ForegroundColor Cyan
         & $devExecutable start $serviceId --actor user `
             --reason 'development watcher requested startup service' --config $script:configPath
-        if ($LASTEXITCODE -ne 0) {
-            throw "Could not start requested service '$serviceId'."
+        $startExitCode = $LASTEXITCODE
+        $results += [pscustomobject]@{
+            ServiceId = $serviceId
+            ExitCode = $startExitCode
+        }
+        if ($startExitCode -ne 0) {
+            Write-Warning "Requested service '$serviceId' did not reach its startup contract. The watcher and other services remain active; inspect status and logs."
+            continue
         }
         Write-Host "[watch] Auto-started service: $serviceId" -ForegroundColor Green
         Write-Host '[watch] This service is owned by the development Supervisor and is included in graceful shutdown.' -ForegroundColor Green
     }
+
+    Show-RequestedServiceStartupSummary -Results $results
 }
 
 Push-Location $repository
@@ -461,6 +530,10 @@ try {
         $pendingSince = $null
 
         if (-not (Invoke-DevelopmentBuild)) {
+            continue
+        }
+
+        if (-not (Test-ConfigurationBeforeHandoff)) {
             continue
         }
 

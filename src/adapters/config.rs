@@ -644,7 +644,15 @@ impl fmt::Display for ConfigError {
                     formatter,
                     "configuration has {} validation issue(s)",
                     issues.len()
-                )
+                )?;
+                for issue in issues {
+                    write!(
+                        formatter,
+                        "; {} [{}] {}",
+                        issue.path, issue.code, issue.message
+                    )?;
+                }
+                Ok(())
             }
             Self::Fingerprint(message) => {
                 write!(formatter, "configuration fingerprint failed: {message}")
@@ -666,9 +674,9 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        CONFIG_VERSION, ConfigError, ConsoleEvents, ControlConfig, CooperativeActionsConfig,
-        HealthCheck, McpConfig, ObservabilityConfig, RestartPolicy, ServiceConfig,
-        SupervisorConfig,
+        CONFIG_VERSION, ConfigError, ConfigIssue, ConsoleEvents, ControlConfig,
+        CooperativeActionsConfig, HealthCheck, McpConfig, ObservabilityConfig, RestartPolicy,
+        ServiceConfig, SupervisorConfig,
     };
 
     static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(1);
@@ -827,6 +835,20 @@ mod tests {
         assert!(codes.contains(&"cwd_not_absolute".to_owned()));
         assert!(codes.contains(&"command_not_absolute".to_owned()));
         assert!(codes.contains(&"declared_port_conflict".to_owned()));
+    }
+
+    #[test]
+    fn invalid_configuration_display_includes_structured_issue_details() {
+        let error = ConfigError::Invalid(vec![ConfigIssue::new(
+            "services.fixture.ports",
+            "declared_port_conflict",
+            "port 49001 is already declared by control",
+        )]);
+
+        assert_eq!(
+            error.to_string(),
+            "configuration has 1 validation issue(s); services.fixture.ports [declared_port_conflict] port 49001 is already declared by control"
+        );
     }
 
     #[test]

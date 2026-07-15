@@ -56,7 +56,7 @@ fn checked_in_akuworkspace_profile_matches_the_typed_contract() {
         Some("http://127.0.0.1:47821")
     );
     assert_eq!(config.control.port, 47_820);
-    assert_eq!(config.services.len(), 3);
+    assert_eq!(config.services.len(), 5);
 
     let service = config.services.get("geofu-be").expect("Geofu BE service");
     assert_eq!(
@@ -113,6 +113,62 @@ fn checked_in_akuworkspace_profile_matches_the_typed_contract() {
             assert_eq!(expect.get("id"), Some(&serde_json::json!("geofu")));
         }
         other => panic!("expected HTTP JSON health, got {other:?}"),
+    }
+
+    for (service_id, expected_script, expected_port) in [
+        ("geolibre", "geofu:dev", 6_060),
+        ("geolibre-locked", "geofu:locked-dev", 6_061),
+    ] {
+        assert_geolibre_service(&config, service_id, expected_script, expected_port);
+    }
+}
+
+fn assert_geolibre_service(
+    config: &SupervisorConfig,
+    service_id: &str,
+    expected_script: &str,
+    expected_port: u16,
+) {
+    let geolibre = config
+        .services
+        .get(service_id)
+        .unwrap_or_else(|| panic!("{service_id} service"));
+    assert_eq!(
+        geolibre.cwd,
+        PathBuf::from(r"C:\WorkspaceCodex\GeofuWorkspace\GeoLibre")
+    );
+    assert_eq!(geolibre.command, PathBuf::from(r"C:\nvm4w\nodejs\npm.cmd"));
+    assert_eq!(geolibre.args, ["run", expected_script]);
+    assert_eq!(geolibre.ports, vec![expected_port]);
+    assert_eq!(geolibre.restart_policy, RestartPolicy::Manual);
+    assert_eq!(geolibre.shutdown_grace_ms, 5_000);
+    assert!(
+        !geolibre.environment.contains_key("GEOLIBRE_DEV_HOST"),
+        "{service_id} must preserve the repository-native host binding"
+    );
+    let expected_port_string = expected_port.to_string();
+    assert_eq!(
+        geolibre
+            .environment
+            .get("GEOLIBRE_DEV_PORT")
+            .map(String::as_str),
+        Some(expected_port_string.as_str())
+    );
+    match &geolibre.health {
+        HealthCheck::HttpStatus {
+            url,
+            expected_status,
+            startup_deadline_ms,
+            ..
+        } => {
+            assert_eq!(
+                url,
+                &format!("http://127.0.0.1:{expected_port}/favicon.png")
+            );
+            assert_eq!(*expected_status, 200);
+            assert_eq!(*startup_deadline_ms, 120_000);
+        }
+        other => panic!("expected HTTP status health, got {other:?}"),
     }
 }
 

@@ -76,7 +76,9 @@ in AkuSupervisor rather than in an otherwise valid managed application.
 
 ## Phase boundary
 
-This proof covers the plugin-only development server. It does not start or
+This proof covers the plugin-only development server. It does not itself
 validate the GeoLibre Vite/Tauri host, install a plugin into a browser profile,
-or claim Linux/macOS process ownership. GeoLibre remains the next independent
-Phase 8 target.
+or claim Linux/macOS process ownership. The subsequent GeoLibre slice uses the
+live plugin server in unlocked development and a copied bundled-plugin snapshot
+in locked QA. Their daily and deployment boundaries are defined in
+[Geofu daily workflows](geofu-daily-workflows.md).

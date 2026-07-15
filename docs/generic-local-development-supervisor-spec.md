@@ -514,6 +514,18 @@ cooperative shutdown instead of the bounded forced fallback.
 
 Multi-service Geofu orchestration and dependency ordering remain deferred.
 
+After the independent proof passes, one configuration may register additional
+long-running Geofu-family development modes. Every declared port still has one
+configured owner; alternative modes that share a repository default must use
+explicit port overrides or separate profiles. Startup order remains an explicit
+operator or CLI choice; registration must not imply a dependency graph.
+
+Repository tasks that copy artifacts, build releases, upload to cloud storage,
+invalidate caches, or switch remote production state are not services. They
+remain outside the supervisor even when they are adjacent to the daily
+development workflow. AkuSupervisor may document their handoff points without
+executing them or treating their success as local service health.
+
 ## 18. Acceptance criteria
 
 ### 18.1 Core

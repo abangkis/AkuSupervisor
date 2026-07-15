@@ -147,6 +147,11 @@ if ($validationExitCode -ne 0 -or $validation.validation.status -ne 'passed') {
         Write-Host '[release] AkuSidecar became unreachable during bridge validation.' -ForegroundColor Yellow
         Write-Host '[release] Keep the watcher, AkuSidecar, and the AkuBrowser tab with AkuBridge alive, then retry.' -ForegroundColor Yellow
     }
+    if ($category -eq 'relay_page_stale') {
+        Write-Host '[release] AkuSidecar is healthy, but the open AkuBrowser page is not polling the cooperative relay.' -ForegroundColor Yellow
+        Write-Host '[release] Reload only the existing http://127.0.0.1:47821 AkuBrowser tab.' -ForegroundColor Yellow
+        Write-Host '[release] Wait until that page shows AkuSidecar ready and AkuBridge ready, then rerun promotion without stopping the watcher.' -ForegroundColor Yellow
+    }
     if ($message) {
         Write-Host "[release] Detail: $message" -ForegroundColor Yellow
     }

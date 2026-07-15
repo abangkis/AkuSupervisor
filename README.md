@@ -86,6 +86,8 @@ cross-component evidence must be treated as one lifecycle contract.
 AkuSupervisor/
   docs/
     generic-local-development-supervisor-spec.md
+    geofu-daily-workflows.md
+    geolibre-portability.md
     geofu-plugin-portability.md
     implementation-roadmap.md
     mcp-integration-notes.md
@@ -219,6 +221,10 @@ latest development build should become normal, use this order:
 
 Promotion is performed before stopping the watcher because its AkuBridge
 release validation needs the supervised Sidecar and extension bridge alive.
+If the script reports `relay_page_stale`, keep the watcher and services running,
+reload only the existing `http://127.0.0.1:47821` AkuBrowser tab, wait until it
+shows both AkuSidecar and AkuBridge ready, and rerun promotion. This restores
+the page's cooperative relay poller; it does not require restarting Chrome.
 Before spending that release gate, the promotion script acquires exclusive
 access to the stable executable. If a normal Supervisor or long-lived
 `mcp-proxy` is using `target\aku-supervisor.exe`, promotion fails immediately,
@@ -395,12 +401,17 @@ between Supervisor lifecycle events and managed-service stdout/stderr logs.
 The Windows proof for the npm/Rollup service, including the generic HTTP
 chunked-transfer health fix and graceful owned-tree shutdown evidence, is in
 the [Geofu plugin portability proof](docs/geofu-plugin-portability.md).
+The development, locked-QA, and production deployment boundaries across all
+three Geofu-family repositories are mapped in the
+[Geofu daily workflows](docs/geofu-daily-workflows.md).
 
 The checked-in canonical AkuWorkspace profile is
 [`config/akuworkspace.services.json`](config/akuworkspace.services.json). It
-registers AkuSidecar, Geofu BE, and the Geofu plugin development server behind
-one control API, runtime token, and read-only MCP boundary. All services remain
-`manual`; registration does not start either Geofu service implicitly.
+registers AkuSidecar, Geofu BE, the Geofu plugin development server, and two
+distinct GeoLibre modes behind one control API, runtime token, and
+read-only MCP boundary. All services remain `manual`; registration does not
+start any Geofu-family service implicitly. `geolibre` is the normal unlocked
+development mode; `geolibre-locked` is the explicit bundled-plugin QA mode.
 AkuSidecar keeps its persisted dashboard/SQLite configuration. Copy the profile
 to the default user location for argument-free startup:
 
@@ -452,3 +463,6 @@ without inferring it from elapsed time or service logs.
 - [MCP integration notes](docs/mcp-integration-notes.md)
 - [AkuBridge cooperative reload](docs/aku-bridge-reload.md)
 - [Geofu BE portability proof](docs/geofu-be-portability.md)
+- [Geofu plugin portability proof](docs/geofu-plugin-portability.md)
+- [GeoLibre portability proof](docs/geolibre-portability.md)
+- [Geofu daily development and deployment workflows](docs/geofu-daily-workflows.md)

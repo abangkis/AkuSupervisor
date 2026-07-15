@@ -14,9 +14,22 @@ fn watcher_requires_executable_release_without_force_killing_an_owner() {
     assert!(script.contains("AkuSupervisor itself is always started by dev.ps1"));
     assert!(script.contains("Auto-started service: $serviceId"));
     assert!(script.contains("included in graceful shutdown"));
+    assert!(script.contains("Show-RequestedServiceStartupSummary -Results $results"));
+    assert!(script.contains("Requested service startup summary:"));
+    assert!(script.contains("'SERVICE', 'REQUEST', 'STATE', 'HEALTH'"));
+    assert!(script.contains("Failed service(s): $($failedServiceIds -join ', ')"));
+    assert!(script.contains("retry a failed service from a second terminal"));
+    assert!(
+        script.contains("The watcher and other services remain active; inspect status and logs.")
+    );
+    assert!(!script.contains("throw \"Could not start requested service '$serviceId'.\""));
     assert!(script.contains("owned services completed graceful shutdown"));
     assert!(script.contains("successful build or configuration change"));
     assert!(script.contains("development watcher stopped by user"));
+    assert!(script.contains("Test-ConfigurationBeforeHandoff"));
+    assert!(script.contains(
+        "Configuration validation failed. The current supervisor and services remain active."
+    ));
     let auto_start = script
         .find("Start-RequestedServices -ServiceIds $script:startServiceIds")
         .expect("requested services must be started");
@@ -31,6 +44,13 @@ fn watcher_requires_executable_release_without_force_killing_an_owner() {
         .find("if (-not (Wait-ForExecutableRelease -Path $devExecutable))")
         .expect("different staged bytes must wait for executable release");
     assert!(identical_hash_gate < release_wait);
+    let configuration_gate = script
+        .rfind("if (-not (Test-ConfigurationBeforeHandoff))")
+        .expect("configuration must be validated before a live handoff");
+    let graceful_handoff = script
+        .rfind("Request-GracefulShutdown -Reason 'successful build or configuration change'")
+        .expect("successful changes should request graceful handoff");
+    assert!(configuration_gate < graceful_handoff);
     assert!(!script.contains("Stop-Process"));
     assert!(!script.contains(".Kill("));
 }

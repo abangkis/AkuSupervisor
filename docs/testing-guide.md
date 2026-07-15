@@ -63,9 +63,11 @@ For this AkuWorkspace pilot, the source profile is checked in at:
 C:\WorkspaceCodex\AkuWorkspace\AkuSupervisor\config\akuworkspace.services.json
 ```
 
-It registers `akusidecar`, the built `geofu-be` executable, and the
-`geofu-plugin` npm/Rollup watcher as independently controlled manual services
-behind one control API. Registration does not start any service implicitly.
+It registers `akusidecar`, the built `geofu-be` executable, the `geofu-plugin`
+npm/Rollup watcher, and the `geolibre` unlocked and `geolibre-locked` QA modes
+as independently controlled manual services behind one control API.
+Registration does not start any service implicitly. Unlocked GeoLibre uses port
+6060 and locked QA uses the configured override 6061.
 Startup prints both the absolute selected path and its source, for example:
 
 ```text
@@ -266,6 +268,19 @@ The canonical `geofu-plugin` service exercises this path through Node's native
 HTTP server at `http://127.0.0.1:8766/geofu/plugin.json`; its health expectation
 matches the stable `id: geofu` field rather than a release-specific version.
 
+The GeoLibre profiles use `http-status` health against the static
+`/favicon.png` asset on ports 6060 and 6061. This proves Vite listener readiness
+without making the health probe trigger the large dependency optimizer. It
+deliberately does not hide the unlocked mode's separate plugin dependency. For
+a full daily-dev check, both `geofu-plugin` and `geolibre` must report healthy.
+Validate that the locked profile honors its 6061 override and does not steal the
+unlocked listener.
+
+Locked QA additionally requires the operator-run `npm run deploy:geolibre`
+copy before start or restart. Deployment commands are not test services; the
+complete boundary is documented in
+[Geofu daily workflows](geofu-daily-workflows.md).
+
 ### Process-exit supervision
 
 The same one-second monitor distinguishes a failed health expectation from a
@@ -319,6 +334,18 @@ Additional configured service IDs may be supplied positionally. With no service
 argument, the watcher retains its original Supervisor-only behavior. The script
 validates every requested ID against the selected configuration before building;
 `akusupervisor` is not a service ID because `dev.ps1` already starts it.
+
+For every later source or configuration change, the watcher first builds the
+staged binary and uses it to validate the selected configuration before asking
+the running Supervisor to stop. If validation fails, the current Supervisor and
+its services remain active and the watcher prints the structured validation
+path, code, and message. A malformed edit therefore cannot turn a safe live
+handoff into avoidable service downtime.
+
+Requested startup services are independent. If one service misses its startup
+contract, `dev.ps1` warns and continues to own the Supervisor and every service
+that did start; it does not tear down the complete development stack. Inspect
+the retained service with `status` and `logs`, then stop or restart it normally.
 After automatic startup succeeds, the standard watcher banner is still printed
 and an additional message confirms that the service is owned by the development
 Supervisor. Ctrl+C requests the ordinary graceful Supervisor shutdown, waits
@@ -434,6 +461,14 @@ starts it implicitly. If it is stopped, follow the printed supervised start
 command, keep the watcher and AkuBrowser tab alive, and rerun promotion. This
 avoids creating a doomed bridge audit operation merely to discover that port
 47821 is absent.
+
+`relay_page_stale` means Sidecar remained healthy but no open AkuBrowser page
+requested the queued cooperative action before its deadline. Keep the watcher
+and services running, reload only the existing
+`http://127.0.0.1:47821` tab, wait for both ready indicators, and rerun
+promotion. Do not stop Chrome, reload the extension manually, or close the
+watcher. The promotion script prints this recovery path before its terminal
+error.
 
 Use `-Config` for a non-default profile, `-Actor codex` when Codex owns the
 release action, and `-RequestId` only when an external release system supplies

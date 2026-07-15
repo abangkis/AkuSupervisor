@@ -523,15 +523,18 @@ Do not implement this phase by directly spawning AkuSupervisor from an ordinary 
 
 ### Phase 8 - Geofu portability validation
 
-Status: **Geofu BE and Geofu plugin Windows portability proofs complete**
+Status: **Geofu BE and Geofu plugin proofs complete; GeoLibre proof in progress**
 
-Potential future targets:
+Target family:
 
 - Geofu;
 - GeoLibre; and
 - Geofu_be.
 
-Begin with exactly one independently runnable service profile. Add the remaining profiles only after the first portability proof passes without project-specific changes to the lifecycle core.
+The first independently runnable profiles passed without project-specific
+changes to the lifecycle core. GeoLibre now extends the proof to two distinct
+modes and a cross-service development workflow without adding
+dependency graphs or arbitrary hooks.
 
 Current Geofu BE slice:
 
@@ -568,6 +571,35 @@ Current Geofu plugin slice:
 - [x] port `8766` is released after stop; and
 - [x] Geofu source remains unchanged by the supervision proof.
 
+Current GeoLibre slice:
+
+- [x] repository-native daily workflow assessed read-only: `geofu:dev` aliases
+  `geofu:unlocked-dev`, while `geofu:locked-dev` is the explicit bundled-plugin
+  QA mode;
+- [x] production boundaries recorded: `deploy:geolibre`, `deploy-be.ps1`, the
+  EC2 `switch-geofu-current` command, and `deploy-fe` remain explicit tasks
+  outside AkuSupervisor;
+- [x] canonical profiles use only generic npm-wrapper, environment, HTTP-status,
+  declared-port, ownership, log, journal, and console-event contracts;
+- [x] unlocked and locked modes use deterministic ports 6060 and 6061 so the
+  existing one-owner-per-declared-port configuration invariant remains intact;
+- [x] unlocked composite readiness remains visible as two service states rather
+  than introducing a hidden `geofu-plugin` dependency graph;
+- [x] Vite health uses a static asset so first-run dependency optimization does
+  not masquerade as listener failure;
+- [x] one failed requested service no longer tears down the watcher and other
+  successfully started services;
+- [x] the focused repository-owned profile/plugin suite passes 74 tests without
+  source changes; the full Windows suite baseline passes 2,584 of 2,587 tests,
+  with two environment-only failures (locale and missing `bash` on `PATH`) and
+  one skip;
+- [x] supervised unlocked start reaches healthy while `geofu-plugin` is healthy;
+- [x] locked mode honors the 6061 override without stealing the unlocked port;
+- [x] unlocked stop leaves no listener or owned PID and records shutdown evidence;
+- [x] after an explicit plugin copy, locked start/stop passes the same ownership
+  and cleanup checks; and
+- [x] the canonical profile and daily-workflow documentation are live-validated.
+
 The proof also fixed a generic client defect: lifecycle responses now use a
 service-derived timeout while ordinary control-plane requests retain the short
 five-second I/O timeout. A `go run` trial proved descendant cleanup but required
@@ -592,12 +624,18 @@ Recipe maintenance and evidence rules are defined in
 
 The detailed commands and evidence requirements are in
 [Geofu BE portability proof](geofu-be-portability.md) and
-[Geofu plugin portability proof](geofu-plugin-portability.md).
+[Geofu plugin portability proof](geofu-plugin-portability.md). Cross-repository
+daily development, locked QA, and production boundaries are in
+[Geofu daily workflows](geofu-daily-workflows.md).
+The active host proof and its Windows test baseline are maintained in
+[GeoLibre portability proof](geolibre-portability.md).
 
 After the isolated proof passed, `geofu-be` was merged into the canonical
-`config/akuworkspace.services.json`. AkuSidecar, Geofu BE, and the Geofu plugin
-development server now share one control listener, token, MCP boundary, and
-lifecycle journal; the obsolete duplicated Geofu profile was removed.
+`config/akuworkspace.services.json`. AkuSidecar, Geofu BE, the Geofu plugin
+development server, and both GeoLibre modes now share one control listener,
+token, MCP boundary, and lifecycle journal. The obsolete duplicated Geofu
+profile was removed. Registration remains manual; locked QA is normally an
+explicit mode switch, while its separate port permits deliberate comparison.
 
 ### Phase 9 - Linux and macOS platform adapters
 
@@ -654,7 +692,7 @@ The following items require an explicit roadmap update before implementation:
 - Codex-initiated AkuSupervisor bootstrap;
 - automatic Windows login startup;
 - tray application or Windows Service;
-- Geofu-family validation;
+- additional Geofu-family validation beyond the active Phase 8 slice;
 - Linux and macOS platform implementations;
 - remote network access;
 - dependency graphs or service groups;
