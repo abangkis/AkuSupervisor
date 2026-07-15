@@ -1,15 +1,15 @@
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpStream};
+use std::net::{IpAddr, SocketAddr, TcpStream};
 
 use crate::application::{HealthCheckSpec, HealthProbe, TransportHealth};
 
 const MAX_RESPONSE_BYTES: u64 = 1024 * 1024;
 
-/// Small loopback-only HTTP/1.1 health adapter with no OS-specific behavior.
+/// Small loopback-only TCP and HTTP/1.1 health adapter with no OS-specific behavior.
 #[derive(Debug, Default)]
-pub struct LoopbackHttpHealthProbe;
+pub struct LoopbackTransportHealthProbe;
 
-impl HealthProbe for LoopbackHttpHealthProbe {
+impl HealthProbe for LoopbackTransportHealthProbe {
     fn probe(&self, check: &HealthCheckSpec, timeout: std::time::Duration) -> TransportHealth {
         match check {
             HealthCheckSpec::Process => TransportHealth {
@@ -17,6 +17,16 @@ impl HealthProbe for LoopbackHttpHealthProbe {
                 healthy: true,
                 detail: "owned process tree is ready".to_owned(),
             },
+            HealthCheckSpec::TcpConnect { host, port, .. } => {
+                match connect_tcp(host, *port, timeout) {
+                    Ok(()) => TransportHealth {
+                        transport_ready: true,
+                        healthy: true,
+                        detail: format!("TCP connect to {host}:{port} succeeded"),
+                    },
+                    Err(detail) => failed_transport(detail),
+                }
+            }
             HealthCheckSpec::HttpStatus {
                 url,
                 expected_status,
@@ -81,6 +91,22 @@ impl HealthProbe for LoopbackHttpHealthProbe {
             },
         }
     }
+}
+
+fn connect_tcp(host: &str, port: u16, timeout: std::time::Duration) -> Result<(), String> {
+    if timeout.is_zero() {
+        return Err("TCP health deadline was exhausted".to_owned());
+    }
+    let ip = host
+        .parse::<IpAddr>()
+        .map_err(|_| "TCP health host must be an explicit loopback IP".to_owned())?;
+    if !ip.is_loopback() {
+        return Err("TCP health host must target loopback".to_owned());
+    }
+    let address = SocketAddr::new(ip, port);
+    TcpStream::connect_timeout(&address, timeout)
+        .map(|_| ())
+        .map_err(|error| format!("TCP connection failed: {error}"))
 }
 
 fn failed_transport(detail: String) -> TransportHealth {
@@ -227,7 +253,34 @@ fn decode_chunked_body(encoded: &[u8]) -> Result<Vec<u8>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_chunked_body, parse_loopback_url, parse_response};
+    use std::net::TcpListener;
+    use std::time::Duration;
+
+    use crate::application::{HealthCheckSpec, HealthProbe};
+
+    use super::{
+        LoopbackTransportHealthProbe, connect_tcp, decode_chunked_body, parse_loopback_url,
+        parse_response,
+    };
+
+    #[test]
+    fn tcp_probe_accepts_only_a_live_loopback_listener() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback fixture");
+        let port = listener.local_addr().expect("fixture address").port();
+        let check = HealthCheckSpec::TcpConnect {
+            host: "127.0.0.1".to_owned(),
+            port,
+            timeout: Duration::from_millis(100),
+            startup_deadline: Duration::from_secs(1),
+        };
+
+        let result = LoopbackTransportHealthProbe.probe(&check, Duration::from_millis(100));
+
+        assert!(result.transport_ready);
+        assert!(result.healthy);
+        assert!(result.detail.contains(&format!("127.0.0.1:{port}")));
+        assert!(connect_tcp("192.0.2.1", port, Duration::from_millis(1)).is_err());
+    }
 
     #[test]
     fn loopback_url_parser_keeps_query_and_path() {

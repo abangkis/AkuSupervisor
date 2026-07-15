@@ -130,11 +130,19 @@ impl ServiceConfig {
     }
 }
 
-/// Supported Phase 1 health-check configuration.
+/// Supported health-check configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum HealthCheck {
     Process,
+    TcpConnect {
+        host: String,
+        port: u16,
+        #[serde(rename = "timeoutMs")]
+        timeout_ms: u64,
+        #[serde(rename = "startupDeadlineMs")]
+        startup_deadline_ms: u64,
+    },
     HttpStatus {
         url: String,
         #[serde(rename = "expectedStatus")]
@@ -160,7 +168,11 @@ impl HealthCheck {
     pub const fn startup_deadline_ms(&self) -> u64 {
         match self {
             Self::Process => 0,
-            Self::HttpStatus {
+            Self::TcpConnect {
+                startup_deadline_ms,
+                ..
+            }
+            | Self::HttpStatus {
                 startup_deadline_ms,
                 ..
             }
@@ -174,6 +186,17 @@ impl HealthCheck {
     fn to_spec(&self) -> HealthCheckSpec {
         match self {
             Self::Process => HealthCheckSpec::Process,
+            Self::TcpConnect {
+                host,
+                port,
+                timeout_ms,
+                startup_deadline_ms,
+            } => HealthCheckSpec::TcpConnect {
+                host: host.clone(),
+                port: *port,
+                timeout: Duration::from_millis(*timeout_ms),
+                startup_deadline: Duration::from_millis(*startup_deadline_ms),
+            },
             Self::HttpStatus {
                 url,
                 expected_status,
@@ -474,6 +497,31 @@ fn validate_executable(path: &Path, prefix: &str, issues: &mut Vec<ConfigIssue>)
 fn validate_health(health: &HealthCheck, prefix: &str, issues: &mut Vec<ConfigIssue>) {
     match health {
         HealthCheck::Process => {}
+        HealthCheck::TcpConnect {
+            host,
+            port,
+            timeout_ms,
+            startup_deadline_ms,
+        } => {
+            let valid_loopback_host = host
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|address| address.is_loopback());
+            if !valid_loopback_host {
+                issues.push(ConfigIssue::new(
+                    format!("{prefix}.health.host"),
+                    "health_host_invalid",
+                    "TCP health host must be an explicit loopback IP",
+                ));
+            }
+            if *port == 0 {
+                issues.push(ConfigIssue::new(
+                    format!("{prefix}.health.port"),
+                    "health_port_invalid",
+                    "TCP health port must be greater than zero",
+                ));
+            }
+            validate_transport_deadlines(*timeout_ms, *startup_deadline_ms, prefix, issues);
+        }
         HealthCheck::HttpStatus {
             url,
             expected_status,
@@ -536,6 +584,15 @@ fn validate_http_fields(
             "health URL must use an explicit loopback HTTP IP and port",
         ));
     }
+    validate_transport_deadlines(timeout_ms, startup_deadline_ms, prefix, issues);
+}
+
+fn validate_transport_deadlines(
+    timeout_ms: u64,
+    startup_deadline_ms: u64,
+    prefix: &str,
+    issues: &mut Vec<ConfigIssue>,
+) {
     if timeout_ms == 0 {
         issues.push(ConfigIssue::new(
             format!("{prefix}.health.timeoutMs"),
@@ -817,6 +874,28 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(codes.contains(&"control_host_not_loopback".to_owned()));
         assert!(codes.contains(&"token_path_outside_runtime".to_owned()));
+    }
+
+    #[test]
+    fn tcp_health_requires_a_bounded_loopback_listener() {
+        let (_directory, mut config) = valid_config();
+        let service = config.services.get_mut("fixture").expect("fixture service");
+        service.health = HealthCheck::TcpConnect {
+            host: "0.0.0.0".to_owned(),
+            port: 0,
+            timeout_ms: 0,
+            startup_deadline_ms: 0,
+        };
+
+        let codes = config
+            .validation_issues()
+            .into_iter()
+            .map(|issue| issue.code)
+            .collect::<Vec<_>>();
+
+        assert!(codes.contains(&"health_host_invalid".to_owned()));
+        assert!(codes.contains(&"health_port_invalid".to_owned()));
+        assert!(codes.contains(&"health_timeout_invalid".to_owned()));
     }
 
     #[test]

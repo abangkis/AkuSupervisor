@@ -1,6 +1,6 @@
 # GeoLibre Portability Proof
 
-Status: **Windows unlocked and locked supervision proof complete**
+Status: **Windows LAN HTTPS and locked supervision proof complete**
 
 ## Scope
 
@@ -10,10 +10,10 @@ plugins, QA, or production deployment.
 
 The proof covers:
 
-- unlocked daily development through `npm run geofu:dev`;
+- hardened LAN development through `npm run geofu:lan`;
 - locked production-style QA through `npm run geofu:locked-dev`;
-- explicit host and port overrides through the existing environment contract;
-- HTTP readiness, npm/Node/Vite process-tree ownership, logs, journal, and
+- repository-owned HTTPS certificate and same-origin proxy setup;
+- TCP/HTTP readiness, npm/Node/Vite process-tree ownership, logs, journal, and
   bounded shutdown; and
 - the handoff boundary to plugin copy and production deploy tasks.
 
@@ -26,42 +26,43 @@ GeoLibre defines:
 
 ```text
 geofu:dev        -> geofu:unlocked-dev
+geofu:lan        -> node scripts/geofu-lan-dev.mjs
 geofu:locked-dev -> node scripts/geofu-locked-dev.mjs
 ```
 
-Both scripts spawn the desktop workspace's Vite development server and inherit
-forwarded arguments. Vite defaults to `0.0.0.0:6060`, honors
+All wrappers spawn the desktop workspace's Vite development server and inherit
+forwarded arguments. Vite honors
 `GEOLIBRE_DEV_HOST` and `GEOLIBRE_DEV_PORT`, and enables `strictPort`.
 
-Unlocked mode permits external plugins and points at the live Geofu manifest,
-which defaults to `http://127.0.0.1:8766/geofu/plugin.json`. Locked mode disables
-plugin management and allows only the bundled `geofu` plugin.
+LAN mode requires `.certs/geofu-lan.json`, loads its PFX, binds `0.0.0.0`, and
+proxies the loopback Geofu manifest and catalog behind the trusted LAN HTTPS
+origin. Locked mode disables plugin management and allows only the bundled
+`geofu` plugin.
 
 ## Canonical profiles
 
 The checked-in profile registers:
 
-- `geolibre`: unlocked mode on the repository-native `0.0.0.0:6060`;
+- `geolibre`: hardened LAN HTTPS mode on the repository-native
+  `0.0.0.0:6060`;
 - `geolibre-locked`: locked QA on the repository-native host, with its port
   overridden to 6061.
 
-AkuSupervisor intentionally does not set `GEOLIBRE_DEV_HOST`: supervision must
-preserve the checked-out branch's native host semantics. The locked port
-override is intentional. AkuSupervisor requires one configured owner for each
-declared port, while the repository defaults both commands to 6060. Using 6061
-keeps the single canonical configuration valid and permits deliberate
-side-by-side comparison without changing GeoLibre source.
+AkuSupervisor calls `geofu:lan` rather than recreating its certificate, proxy,
+or deep-link policy. It sets only the deterministic 6060 port. The locked port
+override is intentional: using 6061 keeps the single canonical configuration
+valid and permits deliberate side-by-side comparison without changing
+GeoLibre source.
 
-Both profiles use HTTP-status health against the static `/favicon.png` asset and
-a 120-second startup deadline. The static probe proves that Vite is listening
-without triggering its application dependency optimizer. The
-larger startup budget covers GeoLibre's repository-owned `predev` JupyterLite
-preparation and Vite dependency optimization; it does not change ordinary
-control-plane timeouts.
+LAN mode uses bounded `tcp-connect` readiness against `127.0.0.1:6060` because
+the application listener is HTTPS and AkuSupervisor must not bypass its
+certificate hardening. Locked mode keeps HTTP-status health against the static
+`/favicon.png` asset. Both retain a 120-second startup deadline.
 
-Unlocked health proves only that Vite is serving. Complete workflow readiness
-requires both `geofu-plugin` and `geolibre` to report healthy because their
-processes and HTTP endpoints are independently owned.
+LAN health proves only that Vite's TLS listener is accepting connections.
+Complete workflow readiness requires `geofu-be`, `geofu-plugin`, and `geolibre`
+to report healthy because their processes and endpoints remain independently
+owned behind the GeoLibre same-origin proxies.
 
 ## Test baseline
 
@@ -98,7 +99,7 @@ Then inspect from a second terminal:
 .\target\dev\aku-supervisor.exe logs geolibre --stream stdout --tail 50
 ```
 
-The live proof produced:
+The earlier pre-hardening unlocked proof produced:
 
 - sequence 316: unlocked start reached healthy on 6060 with ten owned
   npm/Node/Vite processes while `geofu-plugin` was healthy on 8766;
@@ -111,6 +112,14 @@ The live proof produced:
 - sequence 319: locked stop reported `forced: false`, an empty
   `ownedPidsAfter`, and released port 6061; and
 - sequence 320 restored daily unlocked development to healthy on 6060.
+
+The hardening migration was then live-validated against the repository-owned
+certificate configuration for `192.168.1.9:6060`:
+
+- sequence 430 started `geofu:lan`, retained eight npm/Node/Vite PIDs, opened
+  `0.0.0.0:6060`, and reached healthy through the loopback TCP probe; and
+- sequence 431 stopped it with `forced: false`, an empty `ownedPidsAfter`, and
+  no listener left on port 6060.
 
 AkuSidecar, Geofu BE, and the live Geofu plugin remained healthy throughout the
 mode proof. The GeoLibre and Geofu repositories had no tracked source changes;

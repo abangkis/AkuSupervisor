@@ -187,6 +187,39 @@
           "additionalProperties": false,
           "required": [
             "type",
+            "host",
+            "port",
+            "timeoutMs",
+            "startupDeadlineMs"
+          ],
+          "properties": {
+            "type": {
+              "const": "tcp-connect"
+            },
+            "host": {
+              "type": "string",
+              "minLength": 1
+            },
+            "port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            },
+            "timeoutMs": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "startupDeadlineMs": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
             "url",
             "expectedStatus",
             "timeoutMs",

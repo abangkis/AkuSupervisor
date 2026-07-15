@@ -195,7 +195,7 @@ Windows MVP safety requirements.
 This example intentionally assumes that the target cannot be modified. Source
 changes are not required for process ownership, start, health observation, or
 bounded cleanup. See the [configuration guide](configuration-guide.md) for
-HTTP health variants, wrapper caveats, field descriptions, and actual
+TCP/HTTP health variants, wrapper caveats, field descriptions, and actual
 AkuWorkspace/Geofu profiles.
 
 ### 8.2 Required validation
@@ -404,7 +404,7 @@ Service status distinguishes:
 
 For AkuSidecar, HTTP health does not prove that Codex CLI can spawn. The supervisor reports transport health only. A real reasoning invocation remains an application-level readiness check performed by AkuSidecar or its existing operational diagnostics.
 
-HTTP health targets are loopback-only in v0 and use an explicit IP and port.
+TCP and HTTP health targets are loopback-only in v0 and use an explicit IP and port.
 Start and restart retry health until `startupDeadlineMs`. After startup, a
 bounded periodic monitor refreshes health independently of status reads. A
 spawned process that fails health remains owned and transitions to `unhealthy`;
@@ -607,7 +607,7 @@ Use fixture child processes that emulate:
 - single-service process lifecycle;
 - Windows process-tree ownership;
 - file logs and JSONL journal;
-- process and HTTP health checks; and
+- process, TCP-connect, and HTTP health checks; and
 - tests with fixture services.
 
 ### Phase B — autonomous local control, approximately 2–4 hours

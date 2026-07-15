@@ -410,7 +410,7 @@ The checked-in canonical AkuWorkspace profile is
 registers AkuSidecar, Geofu BE, the Geofu plugin development server, and two
 distinct GeoLibre modes behind one control API, runtime token, and
 read-only MCP boundary. All services remain `manual`; registration does not
-start any Geofu-family service implicitly. `geolibre` is the normal unlocked
+start any Geofu-family service implicitly. `geolibre` is the hardened LAN HTTPS
 development mode; `geolibre-locked` is the explicit bundled-plugin QA mode.
 AkuSidecar is the Go `1.0.0-dev.1` fresh boundary: the profile starts its Go
 watcher, requires Bridge v2 plus `codex-app-server`, and uses the new SQLite schema.

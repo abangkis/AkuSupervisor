@@ -67,7 +67,9 @@ It registers `akusidecar`, the built `geofu-be` executable, the `geofu-plugin`
 npm/Rollup watcher, and the `geolibre` unlocked and `geolibre-locked` QA modes
 as independently controlled manual services behind one control API.
 Registration does not start any service implicitly. Unlocked GeoLibre uses port
-6060 and locked QA uses the configured override 6061.
+6060 through the repository-owned `geofu:lan` HTTPS wrapper and loopback TCP
+readiness; locked QA uses the configured HTTP override 6061. The LAN wrapper
+requires its one-time certificate setup before supervised startup.
 Startup prints both the absolute selected path and its source, for example:
 
 ```text
@@ -268,13 +270,12 @@ The canonical `geofu-plugin` service exercises this path through Node's native
 HTTP server at `http://127.0.0.1:8766/geofu/plugin.json`; its health expectation
 matches the stable `id: geofu` field rather than a release-specific version.
 
-The GeoLibre profiles use `http-status` health against the static
-`/favicon.png` asset on ports 6060 and 6061. This proves Vite listener readiness
-without making the health probe trigger the large dependency optimizer. It
-deliberately does not hide the unlocked mode's separate plugin dependency. For
-a full daily-dev check, both `geofu-plugin` and `geolibre` must report healthy.
+The LAN GeoLibre profile uses `tcp-connect` readiness on 6060 because its Vite
+listener is HTTPS; the probe must not bypass or duplicate GeoLibre's certificate
+policy. Locked QA uses `http-status` against `/favicon.png` on 6061. For a full
+daily-dev check, `geofu-be`, `geofu-plugin`, and `geolibre` must report healthy.
 Validate that the locked profile honors its 6061 override and does not steal the
-unlocked listener.
+LAN listener.
 
 Locked QA additionally requires the operator-run `npm run deploy:geolibre`
 copy before start or restart. Deployment commands are not test services; the

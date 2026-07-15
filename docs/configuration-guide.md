@@ -154,6 +154,23 @@ Use process health when the immutable program has no readiness endpoint:
 { "type": "process" }
 ```
 
+Use a bounded loopback TCP connection when a service exposes a non-HTTP or TLS
+listener that AkuSupervisor should not weaken or terminate at the transport
+boundary:
+
+```json
+{
+  "type": "tcp-connect",
+  "host": "127.0.0.1",
+  "port": 8090,
+  "timeoutMs": 3000,
+  "startupDeadlineMs": 20000
+}
+```
+
+The host must be an explicit loopback IP. This proves listener readiness while
+keeping health traffic local; it does not claim an application-level response.
+
 Use HTTP status when an existing endpoint is available without source changes:
 
 ```json
@@ -199,28 +216,23 @@ The canonical
 contains five services behind one control boundary: Geofu BE is a cooperative
 direct executable; AkuSidecar uses a registered Windows command wrapper; the
 Geofu plugin uses an npm wrapper with a long-lived Rollup watcher; and two
-GeoLibre profiles run the same Vite host under unlocked and locked plugin
+GeoLibre profiles run the same Vite host under LAN HTTPS and locked plugin
 policies. All use bounded health and retained process-tree ownership.
 
-The repository-native GeoLibre commands both default to port 6060. The
-canonical profile keeps unlocked development on 6060 and maps locked QA to
+The repository-native GeoLibre profiles both default to port 6060. The
+canonical profile uses the hardened `geofu:lan` HTTPS workflow on 6060 and maps locked QA to
 6061, preserving the one-declared-owner-per-port contract while allowing an
-explicit side-by-side QA comparison. The unlocked mode also needs the
+explicit side-by-side QA comparison. The LAN mode also needs the
 independently supervised `geofu-plugin` service for complete workflow
 readiness. See
 [Geofu daily workflows](geofu-daily-workflows.md) for startup order and the
 boundary between long-running services and one-shot deployment tasks.
 
-The profile deliberately leaves `GEOLIBRE_DEV_HOST` unset. This preserves the
-host binding selected by the checked-out GeoLibre branch instead of silently
-narrowing a repository-native LAN-capable development server to loopback.
-Health checks may still target `127.0.0.1` because a server bound to
-`0.0.0.0` also accepts loopback connections.
-
-Both GeoLibre health checks request the static `/favicon.png` asset. Probing the
-application root can trigger Vite's dependency optimizer and confuse build work
-with listener readiness; the static asset proves that the intended Vite server
-owns the port without forcing the application module graph to bundle first.
+`geofu:lan` owns HTTPS certificate loading, the `0.0.0.0` bind, and same-origin
+proxies for the Geofu plugin and catalog. AkuSupervisor keeps only the explicit
+6060 port override and uses `tcp-connect` against `127.0.0.1:6060`, proving the
+TLS listener is accepting connections without bypassing certificate hardening.
+The locked HTTP profile continues to use a static `/favicon.png` status check.
 
 ## Run and inspect
 

@@ -8,6 +8,12 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HealthCheckSpec {
     Process,
+    TcpConnect {
+        host: String,
+        port: u16,
+        timeout: Duration,
+        startup_deadline: Duration,
+    },
     HttpStatus {
         url: String,
         expected_status: u16,
@@ -27,7 +33,10 @@ impl HealthCheckSpec {
     pub const fn startup_deadline(&self) -> Duration {
         match self {
             Self::Process => Duration::ZERO,
-            Self::HttpStatus {
+            Self::TcpConnect {
+                startup_deadline, ..
+            }
+            | Self::HttpStatus {
                 startup_deadline, ..
             }
             | Self::HttpJson {
@@ -40,7 +49,9 @@ impl HealthCheckSpec {
     pub const fn timeout(&self) -> Option<Duration> {
         match self {
             Self::Process => None,
-            Self::HttpStatus { timeout, .. } | Self::HttpJson { timeout, .. } => Some(*timeout),
+            Self::TcpConnect { timeout, .. }
+            | Self::HttpStatus { timeout, .. }
+            | Self::HttpJson { timeout, .. } => Some(*timeout),
         }
     }
 }
@@ -105,7 +116,7 @@ impl HealthSnapshot {
     }
 }
 
-/// HTTP probe result before process readiness is combined by the registry.
+/// Transport probe result before process readiness is combined by the registry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransportHealth {
     pub transport_ready: bool,

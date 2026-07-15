@@ -14,7 +14,7 @@ use crate::adapters::config::{ConfigError, SupervisorConfig};
 use crate::adapters::config_path::ResolvedConfigPath;
 use crate::adapters::control_http::{ControlHttpError, ControlHttpServer};
 use crate::adapters::development_shutdown::{DevelopmentShutdown, DevelopmentShutdownError};
-use crate::adapters::http_health::LoopbackHttpHealthProbe;
+use crate::adapters::http_health::LoopbackTransportHealthProbe;
 use crate::adapters::journal::{AuditedControl, FileJournal, FileJournalError};
 use crate::adapters::runtime_token::{RuntimeToken, RuntimeTokenError, resolve_token_path};
 use crate::adapters::service_logs::ServiceLogStore;
@@ -78,7 +78,7 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
             config.service_registrations_with_logs(&runtime_services_directory),
             WindowsProcessSpawner,
             WindowsPortInspector,
-            Arc::new(LoopbackHttpHealthProbe),
+            Arc::new(LoopbackTransportHealthProbe),
         )
         .map_err(ForegroundError::RegistryBuild)?,
     );

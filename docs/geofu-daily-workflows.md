@@ -15,20 +15,31 @@ model, but they are not disguised as services or lifecycle hooks.
 
 | Mode | Long-running services owned by AkuSupervisor | Explicit task outside AkuSupervisor | Important behavior |
 |---|---|---|---|
-| Daily unlocked development | `geofu-plugin`, `geolibre`, and optionally `geofu-be` | None after dependencies are installed and the BE executable is built | GeoLibre loads the live plugin manifest from port 8766; edits rebuild through Rollup and Vite |
+| Daily LAN development | `geofu-plugin`, `geolibre`, and optionally `geofu-be` | One-time `npm run geofu:lan:cert -- <LAN-IP>` after the LAN address or certificate changes | GeoLibre serves trusted local HTTPS and proxies the live plugin and catalog through the same LAN origin |
 | Locked QA / production-style development | `geolibre-locked` and optionally `geofu-be` | Run `npm run deploy:geolibre` from Geofu before starting or restarting locked GeoLibre | GeoLibre uses the copied bundled plugin and does not need the live plugin server |
 | BE deployment | None | `./scripts/deploy-be.ps1 -NoVerifySsl`, then `sudo /usr/local/bin/switch-geofu-current` on EC2 | Builds/uploads a release and then changes remote current state; both operations are outside local process supervision |
 | FE deployment | None | `npm run deploy-fe` from Geofu | Copies the plugin, builds locked GeoLibre, uploads assets, and invalidates CloudFront |
 
-## Daily unlocked development
+## Daily LAN development
 
 The repository-native commands are:
 
 ```text
 Geofu:    npm run dev
-GeoLibre: npm run geofu:dev
-           -> npm run geofu:unlocked-dev
+GeoLibre: npm run geofu:lan
 ```
+
+Before the first supervised LAN start, generate and trust the repository-owned
+development certificate from the GeoLibre checkout:
+
+```powershell
+cd C:\WorkspaceCodex\GeofuWorkspace\GeoLibre
+npm run geofu:lan:cert -- 192.168.1.9
+```
+
+Rerun that explicit setup if the workstation LAN IP changes. The generated
+`.certs/geofu-lan.json` and PFX remain GeoLibre-owned local secrets; they are not
+copied into AkuSupervisor configuration or logs.
 
 The canonical profile exposes those processes as `geofu-plugin` and
 `geolibre`. When starting the watcher, service arguments also express the
@@ -50,14 +61,15 @@ The equivalent explicit commands from a second terminal are:
 .\target\dev\aku-supervisor.exe start geofu-plugin `
   --reason "Geofu live plugin development"
 .\target\dev\aku-supervisor.exe start geolibre `
-  --reason "GeoLibre unlocked development"
+  --reason "GeoLibre LAN HTTPS development"
 ```
 
-`geolibre` health proves that Vite serves its static favicon on port 6060.
-Complete unlocked workflow readiness still requires `geofu-plugin` to be healthy because
-the plugin manifest is served independently on port 8766. Inspect both services
-with `status`; AkuSupervisor does not collapse that relationship into one
-misleading health value.
+`geolibre` health proves that the HTTPS listener accepts a loopback TCP
+connection on port 6060. The GeoLibre wrapper publishes the plugin and catalog
+through same-origin HTTPS proxy paths while their source services remain
+independently supervised on ports 8766 and 8765. Inspect all three service
+states with `status`; AkuSupervisor does not collapse that relationship into
+one misleading health value.
 
 ## Locked QA development
 
@@ -84,8 +96,8 @@ cd C:\WorkspaceCodex\AkuWorkspace\AkuSupervisor
   --reason "locked QA against bundled Geofu plugin"
 ```
 
-The repository-native command defaults both modes to port 6060. The canonical
-AkuSupervisor profile keeps daily unlocked development on 6060 and explicitly
+The repository-native profiles default both modes to port 6060. The canonical
+AkuSupervisor profile keeps daily LAN development on 6060 and explicitly
 maps locked QA to 6061. This preserves the configuration rule that every
 declared port has one owner, avoids an ambiguous duplicate declaration, and
 allows side-by-side comparison when useful. The locked URL under supervision is
@@ -145,17 +157,14 @@ lifecycle code:
 - a live external plugin versus a copied bundled-plugin snapshot.
 
 The 120-second GeoLibre startup deadline accommodates its repository-owned
-`predev` JupyterLite preparation and Vite dependency optimization. It does not
-weaken ordinary control-plane timeouts. The profiles leave
-`GEOLIBRE_DEV_HOST` unset so the checked-out GeoLibre branch retains its native
-host binding. In the current `geofu-viewer-v2.1` branch that is `0.0.0.0`, so
-the UI remains reachable through both loopback and the workstation's LAN
-address. AkuSupervisor only sets the ports to 6060 and 6061.
-
-The health request uses `/favicon.png`, not the application root. This keeps
-listener readiness independent from Vite's potentially long first dependency
-optimization. If any requested startup service still fails, the watcher remains
-active and retains other successful services for inspection.
+certificate loading, `predev` JupyterLite preparation, and Vite dependency
+optimization. `geofu:lan` itself binds `0.0.0.0`, enables HTTPS from the local
+PFX, and constructs the LAN deep link. AkuSupervisor sets only port 6060 and
+uses a loopback TCP readiness check so supervision neither overrides the
+hardening nor needs access to the certificate passphrase. Locked QA retains its
+HTTP static-asset health check on 6061. If any requested startup service still
+fails, the watcher remains active and retains other successful services for
+inspection.
 
 Still deferred are dependency graphs, arbitrary pre/post hooks, one-shot task
 execution, remote deployment control, and automatic production promotion.

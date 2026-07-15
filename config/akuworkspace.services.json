@@ -98,20 +98,20 @@
       "shutdownGraceMs": 5000
     },
     "geolibre": {
-      "label": "GeoLibre Geofu Unlocked Dev",
+      "label": "GeoLibre Geofu LAN HTTPS Dev",
       "cwd": "C:\\WorkspaceCodex\\GeofuWorkspace\\GeoLibre",
       "command": "C:\\nvm4w\\nodejs\\npm.cmd",
       "args": [
         "run",
-        "geofu:dev"
+        "geofu:lan"
       ],
       "environment": {
         "GEOLIBRE_DEV_PORT": "6060"
       },
       "health": {
-        "type": "http-status",
-        "url": "http://127.0.0.1:6060/favicon.png",
-        "expectedStatus": 200,
+        "type": "tcp-connect",
+        "host": "127.0.0.1",
+        "port": 6060,
         "timeoutMs": 5000,
         "startupDeadlineMs": 120000
       },
