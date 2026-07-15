@@ -410,6 +410,11 @@ bounded periodic monitor refreshes health independently of status reads. A
 spawned process that fails health remains owned and transitions to `unhealthy`;
 a later passing observation returns it to `running`.
 
+The loopback HTTP adapter accepts bounded HTTP/1.1 responses with either a
+direct body or standard chunked transfer framing. Chunk sizes and terminators
+are validated before status or JSON matching; malformed or truncated framing
+fails health without releasing process ownership.
+
 ## 14. Logs and audit journal
 
 Runtime layout:

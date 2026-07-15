@@ -19,7 +19,7 @@ Language support and recipe validation are separate:
 | Language/runtime | Direct executable supervision | Maintained cooperative recipe | Validation status |
 |---|---|---|---|
 | Go | Supported by the generic command contract | Yes, below | Windows live-validated; Linux amd64 and macOS arm64 compile-checked |
-| Node.js | Supported, including registered `.cmd` launchers | Planned | AkuSidecar ownership is validated; reusable non-forced shutdown recipe is not yet certified |
+| Node.js | Supported, including registered `.cmd` launchers | Planned | Geofu npm/Rollup service is Windows live-validated with `forced: false`; automated shutdown and Linux/macOS recipe evidence remain |
 | Rust | Supported by the generic command contract | Planned | AkuSupervisor itself uses Rust, but a reusable managed-application recipe is not yet certified |
 | Kotlin/JVM | Supported when launched as an owned Java process | Planned | Signal/JVM shutdown-hook behavior still requires native live validation |
 | Other executables | Supported when the process remains inside the native ownership boundary | Not yet maintained | Use the immutable-program contract and expect forced fallback when the target does not cooperate |
@@ -158,6 +158,22 @@ function to return, and confirm that the listener no longer accepts requests.
 The checked-in pilot reference currently lives in the sibling checkout at
 `C:\WorkspaceCodex\GeofuWorkspace\Geofu_be\cmd\geofu-server\main_test.go`.
 Its production implementation is the adjacent `main.go`.
+
+## Node.js current evidence
+
+The sibling Geofu plugin server at
+`C:\WorkspaceCodex\GeofuWorkspace\Geofu\scripts\serve-geofu-plugin.mjs` handles
+`SIGINT` and `SIGTERM`, closes its HTTP server, and closes its Rollup watcher.
+AkuSupervisor owns it through `npm.cmd run dev`; a Windows live stop reported
+`gracefulSignalSent: true`, `forced: false`, and an empty four-process owned
+tree. See the [Geofu plugin portability proof](geofu-plugin-portability.md).
+
+This remains validation evidence rather than a maintained recipe because the
+application repository does not yet have a deterministic test that injects its
+shutdown path and proves both the listener and watcher close. Linux and macOS
+also need native live evidence before the matrix can claim cross-platform
+recipe support. No source change was required for the Windows supervision
+proof.
 
 ## Live acceptance gate for every recipe
 

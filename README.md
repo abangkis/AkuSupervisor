@@ -86,6 +86,7 @@ cross-component evidence must be treated as one lifecycle contract.
 AkuSupervisor/
   docs/
     generic-local-development-supervisor-spec.md
+    geofu-plugin-portability.md
     implementation-roadmap.md
     mcp-integration-notes.md
     platform-portability.md
@@ -391,13 +392,17 @@ prints one bounded line such as:
 See the [configuration guide](docs/configuration-guide.md) for the distinction
 between Supervisor lifecycle events and managed-service stdout/stderr logs.
 
+The Windows proof for the npm/Rollup service, including the generic HTTP
+chunked-transfer health fix and graceful owned-tree shutdown evidence, is in
+the [Geofu plugin portability proof](docs/geofu-plugin-portability.md).
+
 The checked-in canonical AkuWorkspace profile is
 [`config/akuworkspace.services.json`](config/akuworkspace.services.json). It
-registers AkuSidecar and Geofu BE behind one control API, runtime token, and
-read-only MCP boundary. Both services remain `manual`; registration does not
-start Geofu BE implicitly. AkuSidecar keeps its persisted dashboard/SQLite
-configuration. Copy the profile to the default user location for argument-free
-startup:
+registers AkuSidecar, Geofu BE, and the Geofu plugin development server behind
+one control API, runtime token, and read-only MCP boundary. All services remain
+`manual`; registration does not start either Geofu service implicitly.
+AkuSidecar keeps its persisted dashboard/SQLite configuration. Copy the profile
+to the default user location for argument-free startup:
 
 ```powershell
 New-Item -ItemType Directory -Force "$env:LOCALAPPDATA\AkuSupervisor"

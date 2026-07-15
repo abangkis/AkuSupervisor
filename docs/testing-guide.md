@@ -63,10 +63,10 @@ For this AkuWorkspace pilot, the source profile is checked in at:
 C:\WorkspaceCodex\AkuWorkspace\AkuSupervisor\config\akuworkspace.services.json
 ```
 
-It registers `akusidecar` using `C:\nvm4w\nodejs\npm.cmd run dev` and the built
-`geofu-be` executable as independently controlled manual services behind one
-control API. Registration does not start either service implicitly. Startup
-prints both the absolute selected path and its source, for example:
+It registers `akusidecar`, the built `geofu-be` executable, and the
+`geofu-plugin` npm/Rollup watcher as independently controlled manual services
+behind one control API. Registration does not start any service implicitly.
+Startup prints both the absolute selected path and its source, for example:
 
 ```text
 Configuration: C:\Users\Force\AppData\Local\AkuSupervisor\services.json
@@ -260,6 +260,11 @@ proves the configured expectation matched. `checkedAtUnixMs` should advance
 between reads even when no lifecycle command is issued. HTTP health is still a
 transport/contract check; AkuSidecar's real Codex reasoning invocation remains
 an application-level readiness validation.
+
+The HTTP adapter also decodes bounded `Transfer-Encoding: chunked` responses.
+The canonical `geofu-plugin` service exercises this path through Node's native
+HTTP server at `http://127.0.0.1:8766/geofu/plugin.json`; its health expectation
+matches the stable `id: geofu` field rather than a release-specific version.
 
 ### Process-exit supervision
 

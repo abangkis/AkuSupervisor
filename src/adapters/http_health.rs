@@ -168,13 +168,66 @@ fn parse_response(bytes: &[u8]) -> Result<HttpResponse, String> {
         .and_then(|line| line.split_whitespace().nth(1))
         .and_then(|status| status.parse::<u16>().ok())
         .ok_or_else(|| "HTTP response status was invalid".to_owned())?;
-    let body = bytes[(header_end + 4)..].to_vec();
+    let encoded_body = &bytes[(header_end + 4)..];
+    let chunked = header.lines().skip(1).any(|line| {
+        line.split_once(':').is_some_and(|(name, value)| {
+            name.eq_ignore_ascii_case("transfer-encoding")
+                && value
+                    .split(',')
+                    .any(|coding| coding.trim().eq_ignore_ascii_case("chunked"))
+        })
+    });
+    let body = if chunked {
+        decode_chunked_body(encoded_body)?
+    } else {
+        encoded_body.to_vec()
+    };
     Ok(HttpResponse { status, body })
+}
+
+fn decode_chunked_body(encoded: &[u8]) -> Result<Vec<u8>, String> {
+    let mut cursor = 0;
+    let mut decoded = Vec::new();
+    loop {
+        let line_end = encoded[cursor..]
+            .windows(2)
+            .position(|window| window == b"\r\n")
+            .map(|offset| cursor + offset)
+            .ok_or_else(|| "HTTP chunk size line was incomplete".to_owned())?;
+        let size_line = std::str::from_utf8(&encoded[cursor..line_end])
+            .map_err(|_| "HTTP chunk size was not ASCII".to_owned())?;
+        let size_token = size_line
+            .split_once(';')
+            .map_or(size_line, |(size, _)| size);
+        let size = usize::from_str_radix(size_token.trim(), 16)
+            .map_err(|_| "HTTP chunk size was invalid".to_owned())?;
+        cursor = line_end + 2;
+
+        if size == 0 {
+            let trailers = &encoded[cursor..];
+            if trailers == b"\r\n" || trailers.ends_with(b"\r\n\r\n") {
+                return Ok(decoded);
+            }
+            return Err("HTTP chunk trailers were incomplete".to_owned());
+        }
+
+        let data_end = cursor
+            .checked_add(size)
+            .ok_or_else(|| "HTTP chunk size exceeded the response bound".to_owned())?;
+        let framing_end = data_end
+            .checked_add(2)
+            .ok_or_else(|| "HTTP chunk framing exceeded the response bound".to_owned())?;
+        if framing_end > encoded.len() || &encoded[data_end..framing_end] != b"\r\n" {
+            return Err("HTTP chunk data was incomplete".to_owned());
+        }
+        decoded.extend_from_slice(&encoded[cursor..data_end]);
+        cursor = framing_end;
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_loopback_url, parse_response};
+    use super::{decode_chunked_body, parse_loopback_url, parse_response};
 
     #[test]
     fn loopback_url_parser_keeps_query_and_path() {
@@ -195,5 +248,23 @@ mod tests {
         .expect("valid response");
         assert_eq!(response.status, 200);
         assert_eq!(response.body, br#"{"status":"ok"}"#);
+    }
+
+    #[test]
+    fn response_parser_decodes_chunked_bodies_case_insensitively() {
+        let response = parse_response(
+            b"HTTP/1.1 200 OK\r\ntransfer-encoding: Chunked\r\nContent-Type: application/json\r\n\r\n7\r\n{\"id\":\"\r\n6;source=node\r\ngeofu\"\r\n1\r\n}\r\n0\r\nX-Probe: complete\r\n\r\n",
+        )
+        .expect("valid chunked response");
+
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, br#"{"id":"geofu"}"#);
+    }
+
+    #[test]
+    fn chunked_decoder_rejects_invalid_or_truncated_framing() {
+        assert!(decode_chunked_body(b"not-hex\r\ndata\r\n0\r\n\r\n").is_err());
+        assert!(decode_chunked_body(b"4\r\nabc\r\n0\r\n\r\n").is_err());
+        assert!(decode_chunked_body(b"0\r\nmissing trailer terminator").is_err());
     }
 }

@@ -196,9 +196,10 @@ ordinary five-second control-plane response timeout.
 
 The canonical
 [`config/akuworkspace.services.json`](../config/akuworkspace.services.json)
-contains both relevant real cases behind one control boundary: Geofu BE is a
-cooperative direct executable, while AkuSidecar uses a registered Windows
-command wrapper and HTTP JSON health.
+contains three relevant real cases behind one control boundary: Geofu BE is a
+cooperative direct executable; AkuSidecar uses a registered Windows command
+wrapper; and the Geofu plugin uses an npm wrapper with a long-lived Rollup
+watcher. All use bounded health and retained process-tree ownership.
 
 ## Run and inspect
 

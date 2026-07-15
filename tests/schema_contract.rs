@@ -56,7 +56,7 @@ fn checked_in_akuworkspace_profile_matches_the_typed_contract() {
         Some("http://127.0.0.1:47821")
     );
     assert_eq!(config.control.port, 47_820);
-    assert_eq!(config.services.len(), 2);
+    assert_eq!(config.services.len(), 3);
 
     let service = config.services.get("geofu-be").expect("Geofu BE service");
     assert_eq!(
@@ -83,6 +83,34 @@ fn checked_in_akuworkspace_profile_matches_the_typed_contract() {
             assert_eq!(url, "http://127.0.0.1:8765/catalog.json");
             assert_eq!(*startup_deadline_ms, 30_000);
             assert_eq!(expect.get("schemaVersion"), Some(&serde_json::json!(1)));
+        }
+        other => panic!("expected HTTP JSON health, got {other:?}"),
+    }
+
+    let plugin = config
+        .services
+        .get("geofu-plugin")
+        .expect("Geofu plugin service");
+    assert_eq!(
+        plugin.cwd,
+        PathBuf::from(r"C:\WorkspaceCodex\GeofuWorkspace\Geofu")
+    );
+    assert_eq!(plugin.command, PathBuf::from(r"C:\nvm4w\nodejs\npm.cmd"));
+    assert_eq!(plugin.args, ["run", "dev"]);
+    assert_eq!(plugin.ports, vec![8_766]);
+    assert_eq!(plugin.restart_policy, RestartPolicy::Manual);
+    assert_eq!(plugin.shutdown_grace_ms, 5_000);
+    assert!(plugin.environment.is_empty());
+    match &plugin.health {
+        HealthCheck::HttpJson {
+            url,
+            startup_deadline_ms,
+            expect,
+            ..
+        } => {
+            assert_eq!(url, "http://127.0.0.1:8766/geofu/plugin.json");
+            assert_eq!(*startup_deadline_ms, 30_000);
+            assert_eq!(expect.get("id"), Some(&serde_json::json!("geofu")));
         }
         other => panic!("expected HTTP JSON health, got {other:?}"),
     }

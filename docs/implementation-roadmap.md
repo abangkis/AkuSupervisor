@@ -523,7 +523,7 @@ Do not implement this phase by directly spawning AkuSupervisor from an ordinary 
 
 ### Phase 8 - Geofu portability validation
 
-Status: **Geofu BE Windows portability proof complete**
+Status: **Geofu BE and Geofu plugin Windows portability proofs complete**
 
 Potential future targets:
 
@@ -552,6 +552,22 @@ Current Geofu BE slice:
   `gracefulSignalSent`, `forced`, and owned-PID shutdown evidence; and
 - [x] live validation leaves no unexpected tracked or runtime process changes.
 
+Current Geofu plugin slice:
+
+- [x] the repository-owned `npm run verify` workflow passes 80 JavaScript tests;
+- [x] canonical configuration uses only generic npm-wrapper, HTTP JSON health,
+  declared-port, ownership, journal, log, and console-event contracts;
+- [x] registration remains manual and does not start the plugin implicitly;
+- [x] live start retains the four-process npm/cmd/Node/Rollup tree and reaches
+  `running / healthy` against the versionless manifest on port `8766`;
+- [x] bounded stdout exposes Rollup build completion and manifest URLs;
+- [x] a generic HTTP health defect was fixed by decoding bounded chunked
+  transfer framing rather than changing the managed Geofu server;
+- [x] live stop records `gracefulSignalSent: true`, `forced: false`, and an
+  empty authoritative owned tree;
+- [x] port `8766` is released after stop; and
+- [x] Geofu source remains unchanged by the supervision proof.
+
 The proof also fixed a generic client defect: lifecycle responses now use a
 service-derived timeout while ordinary control-plane requests retain the short
 five-second I/O timeout. A `go run` trial proved descendant cleanup but required
@@ -566,6 +582,8 @@ Application integration recipes:
 - [x] Go `net/http` graceful shutdown is documented, application-tested, and
   live-validated on Windows; Linux amd64 and macOS arm64 are compile-checked;
 - [ ] certify a reusable Node.js recipe independently of AkuSidecar ownership;
+  the npm/Rollup service is Windows live-validated with `forced: false`, while
+  a deterministic application shutdown test and Linux/macOS evidence remain;
 - [ ] certify a reusable Rust managed-application recipe; and
 - [ ] certify Kotlin/JVM shutdown-hook and Windows console behavior.
 
@@ -573,12 +591,13 @@ Recipe maintenance and evidence rules are defined in
 [Cooperative shutdown recipes](cooperative-shutdown-recipes.md).
 
 The detailed commands and evidence requirements are in
-[Geofu BE portability proof](geofu-be-portability.md).
+[Geofu BE portability proof](geofu-be-portability.md) and
+[Geofu plugin portability proof](geofu-plugin-portability.md).
 
 After the isolated proof passed, `geofu-be` was merged into the canonical
-`config/akuworkspace.services.json`. AkuSidecar and Geofu BE now share one
-control listener, token, MCP boundary, and lifecycle journal; the obsolete
-duplicated Geofu profile was removed.
+`config/akuworkspace.services.json`. AkuSidecar, Geofu BE, and the Geofu plugin
+development server now share one control listener, token, MCP boundary, and
+lifecycle journal; the obsolete duplicated Geofu profile was removed.
 
 ### Phase 9 - Linux and macOS platform adapters
 

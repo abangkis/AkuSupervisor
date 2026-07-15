@@ -73,6 +73,30 @@
       ],
       "restartPolicy": "manual",
       "shutdownGraceMs": 5000
+    },
+    "geofu-plugin": {
+      "label": "Geofu Plugin Dev Server",
+      "cwd": "C:\\WorkspaceCodex\\GeofuWorkspace\\Geofu",
+      "command": "C:\\nvm4w\\nodejs\\npm.cmd",
+      "args": [
+        "run",
+        "dev"
+      ],
+      "environment": {},
+      "health": {
+        "type": "http-json",
+        "url": "http://127.0.0.1:8766/geofu/plugin.json",
+        "timeoutMs": 5000,
+        "startupDeadlineMs": 30000,
+        "expect": {
+          "id": "geofu"
+        }
+      },
+      "ports": [
+        8766
+      ],
+      "restartPolicy": "manual",
+      "shutdownGraceMs": 5000
     }
   }
 }
