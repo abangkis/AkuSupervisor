@@ -23,9 +23,11 @@ forced exit for a server that can safely drain HTTP work.
 
 ## Profile
 
-The checked-in profile is `config/geofu-be.services.json`.
+The service is now part of the canonical checked-in profile
+`config/akuworkspace.services.json`. The earlier isolated proof profile was
+removed after validation so service definitions cannot drift between files.
 
-- Supervisor control API: `127.0.0.1:47830`
+- Supervisor control API: `127.0.0.1:47820`
 - Service ID: `geofu-be`
 - Working directory: `C:\WorkspaceCodex\GeofuWorkspace\Geofu_be`
 - Command: `Geofu_be\output\geofu-server.exe`
@@ -58,11 +60,11 @@ precondition failure and must not be replaced with an implicit build step.
 The current GoLand-owned server must first be stopped through GoLand so port
 8765 is free. Do not kill it by PID and do not let AkuSupervisor claim it.
 
-Start the isolated Supervisor:
+Start the canonical Supervisor:
 
 ```powershell
 cd C:\WorkspaceCodex\AkuWorkspace\AkuSupervisor
-.\target\aku-supervisor.exe --config .\config\geofu-be.services.json
+.\target\aku-supervisor.exe --config .\config\akuworkspace.services.json
 ```
 
 From a second terminal:
@@ -71,13 +73,13 @@ From a second terminal:
 .\target\aku-supervisor.exe start geofu-be `
   --actor user `
   --reason "Geofu BE portability proof" `
-  --config .\config\geofu-be.services.json
+  --config .\config\akuworkspace.services.json
 
 .\target\aku-supervisor.exe status --json `
-  --config .\config\geofu-be.services.json
+  --config .\config\akuworkspace.services.json
 
 .\target\aku-supervisor.exe logs geofu-be --stream stderr --tail 100 `
-  --config .\config\geofu-be.services.json
+  --config .\config\akuworkspace.services.json
 ```
 
 Acceptance evidence:

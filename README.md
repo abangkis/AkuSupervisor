@@ -75,7 +75,6 @@ AkuSupervisor/
     testing-guide.md
   config/
     akuworkspace.services.json
-    geofu-be.services.json
     examples/
       immutable-windows.services.json
   examples/
@@ -234,7 +233,7 @@ continues running visibly:
 
 ```powershell
 cargo run -- status
-cargo run -- start akusidecar --reason "manual development start"
+cargo run -- start akusidecar
 cargo run -- restart akusidecar --actor codex --reason "backend source changed"
 cargo run -- events --after 0 --limit 20
 cargo run -- logs akusidecar --stream stderr --tail 100
@@ -317,10 +316,13 @@ the configuration path, control API, and response. It does not expose arbitrary
 extension commands, Chrome management, CDP, tab closure, or whole-browser restart. See the
 [AkuBridge reload design](docs/aku-bridge-reload.md).
 
-`user` is the default client actor. Codex must pass `--actor codex`. Every
-mutation requires an explicit reason and can select only a service already
-registered in configuration; executable paths and arguments are never accepted
-by the control protocol. Audit and operation responses preserve Codex as
+`user` is the default client actor. A user CLI mutation without `--reason`
+receives a bounded reason such as `user CLI start request` at the CLI boundary;
+an explicit reason remains available when more context is useful. Codex must
+pass `--actor codex` and an explicit `--reason`. Every request sent to the
+control protocol therefore contains a reason and can select only a service
+already registered in configuration; executable paths and arguments are never
+accepted by the control protocol. Audit and operation responses preserve Codex as
 `{"actorType":"agent","actorId":"codex"}` while older string-valued journal
 records remain readable. Use `--request-id <id>` when a caller may retry a
 mutation; an identical retry replays the original response, while reusing the
@@ -359,10 +361,13 @@ Each output stream rotates continuously at 5 MB and retains five generations.
 The `events` command returns at most 200 records per request; `logs` returns at
 most 1,000 lines from the active generation.
 
-The checked-in AkuWorkspace pilot profile is
+The checked-in canonical AkuWorkspace profile is
 [`config/akuworkspace.services.json`](config/akuworkspace.services.json). It
-registers AkuSidecar without overriding its persisted dashboard/SQLite
-configuration. Copy it to the default user location for argument-free startup:
+registers AkuSidecar and Geofu BE behind one control API, runtime token, and
+read-only MCP boundary. Both services remain `manual`; registration does not
+start Geofu BE implicitly. AkuSidecar keeps its persisted dashboard/SQLite
+configuration. Copy the profile to the default user location for argument-free
+startup:
 
 ```powershell
 New-Item -ItemType Directory -Force "$env:LOCALAPPDATA\AkuSupervisor"

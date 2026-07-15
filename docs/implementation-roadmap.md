@@ -568,6 +568,11 @@ Recipe maintenance and evidence rules are defined in
 The detailed commands and evidence requirements are in
 [Geofu BE portability proof](geofu-be-portability.md).
 
+After the isolated proof passed, `geofu-be` was merged into the canonical
+`config/akuworkspace.services.json`. AkuSidecar and Geofu BE now share one
+control listener, token, MCP boundary, and lifecycle journal; the obsolete
+duplicated Geofu profile was removed.
+
 ### Phase 9 - Linux and macOS platform adapters
 
 Status: **Boundary prepared; implementation deferred until the Windows MVP is stable**

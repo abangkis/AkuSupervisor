@@ -45,21 +45,8 @@ fn checked_in_akuworkspace_profile_matches_the_typed_contract() {
             .map(|reload| reload.sidecar_origin.as_str()),
         Some("http://127.0.0.1:47821")
     );
-}
-
-#[test]
-fn checked_in_geofu_be_profile_uses_only_generic_service_contracts() {
-    let config = SupervisorConfig::parse_json(include_str!("../config/geofu-be.services.json"))
-        .expect("checked-in Geofu BE profile must parse");
-
-    assert_eq!(config.control.port, 47_830);
-    assert_eq!(
-        config.control.token_file,
-        PathBuf::from(".runtime/geofu-be/control-token")
-    );
-    assert!(config.control.mcp.enabled);
-    assert!(config.cooperative_actions.aku_bridge_reload.is_none());
-    assert_eq!(config.services.len(), 1);
+    assert_eq!(config.control.port, 47_820);
+    assert_eq!(config.services.len(), 2);
 
     let service = config.services.get("geofu-be").expect("Geofu BE service");
     assert_eq!(

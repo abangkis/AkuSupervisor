@@ -129,11 +129,11 @@ ordinary five-second control-plane response timeout.
 | Runs through a build/toolchain wrapper such as `go run` | No, but signal delivery may stop at the wrapper | Ownership still bounds cleanup; prefer a built executable for reliable graceful behavior |
 | Starts an external OS service or detached daemon that is not retained as a child | Usually needs a different adapter | Do not claim ownership through a mere start command; use a future native service adapter |
 
-The real Geofu BE profile at
-[`config/geofu-be.services.json`](../config/geofu-be.services.json) demonstrates
-the cooperative direct-executable case. The AkuWorkspace profile at
+The canonical
 [`config/akuworkspace.services.json`](../config/akuworkspace.services.json)
-demonstrates a registered Windows command wrapper and HTTP JSON health.
+contains both relevant real cases behind one control boundary: Geofu BE is a
+cooperative direct executable, while AkuSidecar uses a registered Windows
+command wrapper and HTTP JSON health.
 
 ## Run and inspect
 

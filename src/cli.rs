@@ -19,7 +19,7 @@ Usage:\n\
   aku-supervisor status [--json] [--config <path>]\n\
   aku-supervisor events [--after <sequence>] [--limit <n>] [--json] [--config <path>]\n\
   aku-supervisor logs <service> [--stream <stdout|stderr>] [--tail <n>] [--json] [--config <path>]\n\
-  aku-supervisor <start|stop|restart> <service> --reason <text> [--actor <user|codex>] [--request-id <id>] [--json] [--config <path>]\n\
+  aku-supervisor <start|stop|restart> <service> [--reason <text>] [--actor <user|codex>] [--request-id <id>] [--json] [--config <path>]\n\
   aku-supervisor bridge reload --reason <text> --request-id <id> [--actor <user|codex>] [--wait|--no-wait] [--json] [--config <path>]\n\
   aku-supervisor bridge status --request-id <id> [--json] [--config <path>]\n\
   aku-supervisor bridge validate --request-id <id> [--actor <user|codex>] [--config <path>]\n\
@@ -155,7 +155,7 @@ fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, Strin
             parse_bridge_validate(rest)
         }
         [action, rest @ ..] if action == "start" || action == "stop" || action == "restart" => {
-            parse_remote_mutation(action, rest)
+            parse_remote_mutation(action, rest, true)
         }
         [argument] => Err(format!(
             "unsupported argument: {}",
@@ -233,7 +233,7 @@ fn parse_bridge_reload(arguments: &[OsString]) -> Result<Command, String> {
     }
     let mut mutation_arguments = vec![OsString::from("aku-bridge")];
     mutation_arguments.extend(mutation_options);
-    let parsed = parse_remote_mutation(&OsString::from("restart"), &mutation_arguments)?;
+    let parsed = parse_remote_mutation(&OsString::from("restart"), &mutation_arguments, false)?;
     let Command::Remote(RemoteCommand::Mutate {
         reason,
         actor,
@@ -410,7 +410,11 @@ fn parse_remote_logs(arguments: &[OsString]) -> Result<Command, String> {
     }))
 }
 
-fn parse_remote_mutation(action: &OsString, arguments: &[OsString]) -> Result<Command, String> {
+fn parse_remote_mutation(
+    action: &OsString,
+    arguments: &[OsString],
+    allow_default_user_reason: bool,
+) -> Result<Command, String> {
     let Some(service_id) = arguments.first() else {
         return Err("service ID is required".to_owned());
     };
@@ -472,12 +476,23 @@ fn parse_remote_mutation(action: &OsString, arguments: &[OsString]) -> Result<Co
         }
         index += 2;
     }
-    let reason = reason.ok_or_else(|| "--reason <text> is required".to_owned())?;
     let action = match action.to_str() {
         Some("start") => ControlAction::Start,
         Some("stop") => ControlAction::Stop,
         Some("restart") => ControlAction::Restart,
         _ => unreachable!("caller selected a lifecycle action"),
+    };
+    let reason = match reason {
+        Some(reason) => reason,
+        None if allow_default_user_reason && actor == ApiActor::User => {
+            let action = match action {
+                ControlAction::Start => "start",
+                ControlAction::Stop => "stop",
+                ControlAction::Restart => "restart",
+            };
+            format!("user CLI {action} request")
+        }
+        None => return Err("--reason <text> is required".to_owned()),
     };
     Ok(Command::Remote(RemoteCommand::Mutate {
         action,
@@ -1083,8 +1098,9 @@ mod tests {
 
     #[test]
     fn lifecycle_timeout_tracks_the_registered_service_budget() {
-        let config = SupervisorConfig::parse_json(include_str!("../config/geofu-be.services.json"))
-            .expect("Geofu BE profile must parse");
+        let config =
+            SupervisorConfig::parse_json(include_str!("../config/akuworkspace.services.json"))
+                .expect("canonical AkuWorkspace profile must parse");
         let command = |action| RemoteCommand::Mutate {
             action,
             service_id: "geofu-be".to_owned(),
@@ -1110,10 +1126,22 @@ mod tests {
     }
 
     #[test]
-    fn lifecycle_client_requires_service_and_reason() {
+    fn lifecycle_client_requires_service_and_defaults_user_reason() {
         assert!(parse(args(&["start"])).is_err());
-        assert!(parse(args(&["start", "api"])).is_err());
         assert!(parse(args(&["start", "../api", "--reason", "bad"])).is_err());
+        assert_eq!(
+            parse(args(&["start", "api"])),
+            Ok(Command::Remote(RemoteCommand::Mutate {
+                action: ControlAction::Start,
+                service_id: "api".to_owned(),
+                reason: "user CLI start request".to_owned(),
+                actor: ApiActor::User,
+                request_id: None,
+                config: None,
+                json: false,
+            }))
+        );
+        assert!(parse(args(&["start", "api", "--actor", "codex"])).is_err());
     }
 
     #[test]

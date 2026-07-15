@@ -63,9 +63,10 @@ For this AkuWorkspace pilot, the source profile is checked in at:
 C:\WorkspaceCodex\AkuWorkspace\AkuSupervisor\config\akuworkspace.services.json
 ```
 
-It registers `akusidecar` using `C:\nvm4w\nodejs\npm.cmd run dev` from the
-AkuSidecar repository. Startup prints both the absolute selected path and its
-source, for example:
+It registers `akusidecar` using `C:\nvm4w\nodejs\npm.cmd run dev` and the built
+`geofu-be` executable as independently controlled manual services behind one
+control API. Registration does not start either service implicitly. Startup
+prints both the absolute selected path and its source, for example:
 
 ```text
 Configuration: C:\Users\Force\AppData\Local\AkuSupervisor\services.json
@@ -115,15 +116,17 @@ Leave `cargo run` active in the first terminal. In a second terminal:
 ```powershell
 cd C:\WorkspaceCodex\AkuWorkspace\AkuSupervisor
 cargo run -- status
-cargo run -- start akusidecar --reason "manual supervised start"
+cargo run -- start akusidecar
 cargo run -- restart akusidecar --actor codex --reason "source changed"
 cargo run -- stop akusidecar --reason "manual supervised stop"
 ```
 
-The default actor is `user`; Codex uses `--actor codex`. `--reason` is mandatory
-for every mutation. The client discovers the same configuration and token file
-as the server, then prints the absolute configuration path, API address, and
-bounded JSON response. It never accepts executable, argument, environment, or
+The default actor is `user`. For a user CLI mutation, `--reason` is optional;
+when omitted the client supplies a bounded audit reason such as
+`user CLI start request`. Codex uses `--actor codex` and must supply an explicit
+`--reason`. The client discovers the same configuration and token file as the
+server, then prints the absolute configuration path, API address, and bounded
+JSON response. It never accepts executable, argument, environment, or
 working-directory input.
 
 Read-only service status is loopback-visible. Start, stop, and restart require a
