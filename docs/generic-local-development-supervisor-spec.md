@@ -380,6 +380,7 @@ The same lifecycle core exposes:
 
 ```text
 supervisor status
+supervisor simple-status
 supervisor start <service>
 supervisor stop <service>
 supervisor restart <service> --reason "..."

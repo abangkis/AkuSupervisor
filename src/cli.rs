@@ -17,6 +17,7 @@ Usage:\n\
   aku-supervisor run\n\
   aku-supervisor run --config <path>\n\
   aku-supervisor status [--json] [--config <path>]\n\
+  aku-supervisor simple-status [--config <path>]\n\
   aku-supervisor events [--after <sequence>] [--limit <n>] [--json] [--config <path>]\n\
   aku-supervisor logs <service> [--stream <stdout|stderr>] [--tail <n>] [--json] [--config <path>]\n\
   aku-supervisor <start|stop|restart> <service> [--reason <text>] [--actor <user|codex>] [--request-id <id>] [--json] [--config <path>]\n\
@@ -51,6 +52,9 @@ enum RemoteCommand {
     Status {
         config: Option<PathBuf>,
         json: bool,
+    },
+    SimpleStatus {
+        config: Option<PathBuf>,
     },
     Events {
         after: u64,
@@ -143,6 +147,7 @@ fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, Strin
             })
         }
         [status, rest @ ..] if status == "status" => parse_remote_status(rest),
+        [status, rest @ ..] if status == "simple-status" => parse_simple_status(rest),
         [events, rest @ ..] if events == "events" => parse_remote_events(rest),
         [logs, rest @ ..] if logs == "logs" => parse_remote_logs(rest),
         [bridge, reload, rest @ ..] if bridge == "bridge" && reload == "reload" => {
@@ -261,6 +266,17 @@ fn parse_bridge_reload(arguments: &[OsString]) -> Result<Command, String> {
 fn parse_remote_status(arguments: &[OsString]) -> Result<Command, String> {
     let (config, json) = parse_output_options(arguments)?;
     Ok(Command::Remote(RemoteCommand::Status { config, json }))
+}
+
+fn parse_simple_status(arguments: &[OsString]) -> Result<Command, String> {
+    let (config, json) = parse_output_options(arguments)?;
+    if json {
+        return Err(
+            "simple-status always uses the human-readable table; use status --json for machine output"
+                .to_owned(),
+        );
+    }
+    Ok(Command::Remote(RemoteCommand::SimpleStatus { config }))
 }
 
 fn parse_bridge_status(arguments: &[OsString]) -> Result<Command, String> {
@@ -773,6 +789,7 @@ fn remote_request(command: RemoteCommand) -> Result<(), String> {
 
     let explicit_config = match &command {
         RemoteCommand::Status { config, .. }
+        | RemoteCommand::SimpleStatus { config }
         | RemoteCommand::Events { config, .. }
         | RemoteCommand::Logs { config, .. }
         | RemoteCommand::Mutate { config, .. }
@@ -786,7 +803,9 @@ fn remote_request(command: RemoteCommand) -> Result<(), String> {
         | RemoteCommand::Mutate { json, .. }
         | RemoteCommand::BridgeReload { json, .. }
         | RemoteCommand::BridgeStatus { json, .. } => *json,
+        RemoteCommand::SimpleStatus { .. } => false,
     };
+    let simple_status = matches!(&command, RemoteCommand::SimpleStatus { .. });
     let resolved = resolve_config_path(explicit_config).map_err(|error| error.to_string())?;
     let source = fs::read_to_string(resolved.path())
         .map_err(|error| format!("failed to read {}: {error}", resolved.path().display()))?;
@@ -823,7 +842,13 @@ fn remote_request(command: RemoteCommand) -> Result<(), String> {
             response,
         )?;
     }
-    print_remote_response(resolved.path(), address, &response, json_output);
+    print_remote_response(
+        resolved.path(),
+        address,
+        &response,
+        json_output,
+        simple_status,
+    )?;
     if waited_for_operation && response["operation"]["status"].as_str() == Some("failed") {
         let category = response["operation"]["errorCategory"]
             .as_str()
@@ -870,7 +895,9 @@ fn prepare_remote_request(
     bool,
 ) {
     match command {
-        RemoteCommand::Status { .. } => ("GET", "/v1/services".to_owned(), None, None, true),
+        RemoteCommand::Status { .. } | RemoteCommand::SimpleStatus { .. } => {
+            ("GET", "/v1/services".to_owned(), None, None, true)
+        }
         RemoteCommand::Events { after, limit, .. } => (
             "GET",
             format!("/v1/events?after={after}&limit={limit}"),
@@ -1043,7 +1070,12 @@ fn print_remote_response(
     address: std::net::SocketAddr,
     response: &serde_json::Value,
     json_output: bool,
-) {
+    simple_status: bool,
+) -> Result<(), String> {
+    if simple_status {
+        println!("{}", format_simple_status(response)?);
+        return Ok(());
+    }
     if json_output {
         println!(
             "{}",
@@ -1054,7 +1086,7 @@ fn print_remote_response(
             }))
             .expect("control response JSON serialization cannot fail")
         );
-        return;
+        return Ok(());
     }
     println!("Configuration: {}", configuration.display());
     println!("Control API: http://{address}");
@@ -1063,6 +1095,58 @@ fn print_remote_response(
         serde_json::to_string_pretty(response)
             .expect("control response JSON serialization cannot fail")
     );
+    Ok(())
+}
+
+fn format_simple_status(response: &serde_json::Value) -> Result<String, String> {
+    let services = response
+        .get("services")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "service status response omitted the services array".to_owned())?;
+    let mut lines = vec![
+        "SERVICE              STATE       DESIRED     HEALTH      ROOT PID   OWNED PIDS       HOLD"
+            .to_owned(),
+    ];
+    for service in services {
+        let text = |field: &str| {
+            service
+                .get(field)
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("-")
+        };
+        let root_pid = service
+            .get("rootPid")
+            .and_then(serde_json::Value::as_u64)
+            .map_or_else(|| "-".to_owned(), |pid| pid.to_string());
+        let owned_pids = service
+            .get("ownedPids")
+            .and_then(serde_json::Value::as_array)
+            .map(|pids| {
+                pids.iter()
+                    .filter_map(serde_json::Value::as_u64)
+                    .map(|pid| pid.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            })
+            .filter(|pids| !pids.is_empty())
+            .unwrap_or_else(|| "-".to_owned());
+        let health = service
+            .get("health")
+            .and_then(|health| health.get("status"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("-");
+        lines.push(format!(
+            "{:<20} {:<11} {:<11} {:<11} {:<10} {:<16} {}",
+            text("id"),
+            text("lifecycle"),
+            text("desiredState"),
+            health,
+            root_pid,
+            owned_pids,
+            text("operatorHold")
+        ));
+    }
+    Ok(lines.join("\n"))
 }
 
 #[cfg(not(windows))]
@@ -1076,7 +1160,7 @@ mod tests {
     use std::path::PathBuf;
     use std::time::Duration;
 
-    use super::{Command, RemoteCommand, lifecycle_response_timeout, parse};
+    use super::{Command, RemoteCommand, format_simple_status, lifecycle_response_timeout, parse};
     use crate::adapters::config::SupervisorConfig;
     use crate::adapters::control_http::ApiActor;
     use crate::application::ControlAction;
@@ -1284,6 +1368,39 @@ mod tests {
             }))
         );
         assert!(parse(args(&["status", "--json", "--json"])).is_err());
+    }
+
+    #[test]
+    fn simple_status_is_an_explicit_human_table_command() {
+        assert_eq!(
+            parse(args(&["simple-status"])),
+            Ok(Command::Remote(RemoteCommand::SimpleStatus {
+                config: None
+            }))
+        );
+        assert_eq!(
+            parse(args(&["simple-status", "--config", "services.json"])),
+            Ok(Command::Remote(RemoteCommand::SimpleStatus {
+                config: Some(PathBuf::from("services.json"))
+            }))
+        );
+        assert!(parse(args(&["simple-status", "--json"])).is_err());
+
+        let table = format_simple_status(&serde_json::json!({
+            "services": [{
+                "id": "api",
+                "lifecycle": "running",
+                "desiredState": "running",
+                "health": { "status": "healthy" },
+                "rootPid": 1234,
+                "ownedPids": [1234, 5678],
+                "operatorHold": "none"
+            }]
+        }))
+        .expect("valid service table");
+        assert!(table.contains("SERVICE              STATE"));
+        assert!(table.contains("api                  running"));
+        assert!(table.contains("1234,5678"));
     }
 
     #[test]

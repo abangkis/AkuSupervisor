@@ -120,12 +120,16 @@ Leave `cargo run` active in the first terminal. In a second terminal:
 ```powershell
 cd C:\WorkspaceCodex\AkuWorkspace\AkuSupervisor
 cargo run -- status
+cargo run -- simple-status
 cargo run -- start akusidecar
 cargo run -- restart akusidecar --actor codex --reason "source changed"
 cargo run -- stop akusidecar --reason "manual supervised stop"
 ```
 
-The default actor is `user`. For a user CLI mutation, `--reason` is optional;
+`simple-status` prints the same compact service table used by the watcher;
+`status` retains the detailed human JSON view and `status --json` remains the
+machine-readable envelope. The default actor is `user`. For a user CLI
+mutation, `--reason` is optional;
 when omitted the client supplies a bounded audit reason such as
 `user CLI start request`. Codex uses `--actor codex` and must supply an explicit
 `--reason`. The client discovers the same configuration and token file as the

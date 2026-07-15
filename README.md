@@ -190,7 +190,7 @@ without killing the owner.
 The watcher also observes its selected configuration file; a valid config
 change receives the same graceful handoff without restarting the watcher.
 The watcher owns stdin; use the control CLI from a second terminal for
-`status`, `start`, `stop`, or `restart` while it is active.
+`simple-status`, `status`, `start`, `stop`, or `restart` while it is active.
 It prefers the complete project-local Rust toolchain over any rustup shim found
 on `PATH`, and prints the selected Cargo and Rust compiler paths before build.
 At startup and after each successful rebuild it also prints `Stable status` as
@@ -257,6 +257,7 @@ continues running visibly:
 
 ```powershell
 cargo run -- status
+cargo run -- simple-status
 cargo run -- start akusidecar
 cargo run -- restart akusidecar --actor codex --reason "backend source changed"
 cargo run -- events --after 0 --limit 20
