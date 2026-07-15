@@ -414,7 +414,7 @@ distinct GeoLibre modes behind one control API, runtime token, and
 read-only MCP boundary. All services remain `manual`; registration does not
 start any Geofu-family service implicitly. `geolibre` is the hardened LAN HTTPS
 development mode; `geolibre-locked` is the explicit bundled-plugin QA mode.
-AkuSidecar is the Go `1.0.0-dev.3` fresh boundary: the profile starts its Go
+AkuSidecar is the Go `1.0.0-dev.4` fresh boundary: the profile starts its Go
 watcher, requires Bridge v2 plus `codex-app-server`, and uses the new SQLite schema.
 Copy the profile to the default user location for argument-free startup:
 
