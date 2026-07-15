@@ -213,6 +213,12 @@ Repeating the last command with the same ID and body must replay its original
 response without creating another lifecycle event. Reusing that ID with a
 different reason must fail with HTTP `409`.
 
+A successful stop or restart that replaced an owned tree must include
+`response.shutdown` in `--json` output. Confirm that `ownedPidsAfter` is empty
+and inspect `gracefulSignalSent` plus `forced`; the matching `events` record
+must contain the same shutdown object. `forced: true` is bounded cleanup
+evidence, not a successful cooperative shutdown claim.
+
 The token file must have a protected current-user-only Windows DACL. The
 default suite verifies this in the normal host context because a restricted
 sandbox is not permitted to change file DACLs.
@@ -385,7 +391,15 @@ Promotion is a release checkpoint, not part of the inner development loop. Run
 it once the feature set is complete, tests and live checks pass, and the stable
 path should become the default for subsequent normal launches.
 
-The script performs a read-only Supervisor status preflight before invoking the
+The script first requires exclusive access to `target\aku-supervisor.exe`. A
+normal stable Supervisor or long-lived MCP proxy can keep that Windows image
+locked. In that case the script exits before Supervisor status or AkuBridge
+validation, prints candidate PIDs, and leaves stable unchanged. Keep the
+watcher running because it uses `target\dev`; stop or recycle only the process
+using the stable path, then rerun promotion. The script repeats the lock check
+after validation to close the ordinary check/copy race.
+
+It then performs a read-only Supervisor status preflight before invoking the
 bridge gate. `akusidecar` must already be `running / healthy`; promotion never
 starts it implicitly. If it is stopped, follow the printed supervised start
 command, keep the watcher and AkuBrowser tab alive, and rerun promotion. This

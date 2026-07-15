@@ -122,6 +122,22 @@ pub enum HealthCheck {
 }
 
 impl HealthCheck {
+    /// Maximum time allowed for a newly spawned service to become healthy.
+    #[must_use]
+    pub const fn startup_deadline_ms(&self) -> u64 {
+        match self {
+            Self::Process => 0,
+            Self::HttpStatus {
+                startup_deadline_ms,
+                ..
+            }
+            | Self::HttpJson {
+                startup_deadline_ms,
+                ..
+            } => *startup_deadline_ms,
+        }
+    }
+
     fn to_spec(&self) -> HealthCheckSpec {
         match self {
             Self::Process => HealthCheckSpec::Process,

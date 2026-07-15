@@ -3,6 +3,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Duration;
 
 use crate::VERSION;
 use crate::adapters::control_http::ApiActor;
@@ -782,10 +783,18 @@ fn remote_request(command: RemoteCommand) -> Result<(), String> {
         .parse()
         .map_err(|error| format!("invalid control address: {error}"))?;
 
+    let response_timeout = lifecycle_response_timeout(&config, &command);
     let (method, target, body, wait_request_id, retry_safe) = prepare_remote_request(command);
     let waited_for_operation = wait_request_id.is_some();
-    let mut response =
-        control_request_with_retry(address, &token, method, &target, body.as_ref(), retry_safe)?;
+    let mut response = control_request_with_retry_timeout(
+        address,
+        &token,
+        method,
+        &target,
+        body.as_ref(),
+        retry_safe,
+        response_timeout,
+    )?;
     if let Some(request_id) = wait_request_id {
         let reload = config.cooperative_actions.aku_bridge_reload.as_ref();
         let timeout = reload.map_or(25_000, |value| value.timeout_ms.saturating_add(5_000));
@@ -810,6 +819,30 @@ fn remote_request(command: RemoteCommand) -> Result<(), String> {
         return Err(format!("{category}: {message}"));
     }
     Ok(())
+}
+
+fn lifecycle_response_timeout(
+    config: &crate::adapters::config::SupervisorConfig,
+    command: &RemoteCommand,
+) -> Option<Duration> {
+    const OPERATION_MARGIN_MS: u64 = 10_000;
+
+    let RemoteCommand::Mutate {
+        action, service_id, ..
+    } = command
+    else {
+        return None;
+    };
+    let service = config.services.get(service_id)?;
+    let startup_ms = service.health.startup_deadline_ms();
+    let operation_ms = match action {
+        ControlAction::Start => startup_ms,
+        ControlAction::Stop => service.shutdown_grace_ms,
+        ControlAction::Restart => service.shutdown_grace_ms.saturating_add(startup_ms),
+    };
+    Some(Duration::from_millis(
+        operation_ms.saturating_add(OPERATION_MARGIN_MS),
+    ))
 }
 
 fn prepare_remote_request(
@@ -912,17 +945,41 @@ fn control_request_with_retry(
     body: Option<&serde_json::Value>,
     retry_safe: bool,
 ) -> Result<serde_json::Value, String> {
+    control_request_with_retry_timeout(address, token, method, target, body, retry_safe, None)
+}
+
+fn control_request_with_retry_timeout(
+    address: std::net::SocketAddr,
+    address_token: &crate::adapters::runtime_token::RuntimeToken,
+    method: &str,
+    target: &str,
+    body: Option<&serde_json::Value>,
+    retry_safe: bool,
+    response_timeout: Option<Duration>,
+) -> Result<serde_json::Value, String> {
     const MAX_ATTEMPTS: usize = 5;
     let mut attempt = 0;
     loop {
         attempt += 1;
-        match crate::adapters::control_http::client_request(
-            address,
-            token,
-            method,
-            target,
-            body.cloned(),
-        ) {
+        let response = if let Some(timeout) = response_timeout {
+            crate::adapters::control_http::client_request_with_response_timeout(
+                address,
+                address_token,
+                method,
+                target,
+                body.cloned(),
+                timeout,
+            )
+        } else {
+            crate::adapters::control_http::client_request(
+                address,
+                address_token,
+                method,
+                target,
+                body.cloned(),
+            )
+        };
+        match response {
             Ok(response) => return Ok(response),
             Err(error) if retry_safe && error.is_transient() && attempt < MAX_ATTEMPTS => {
                 let backoff_ms = 100_u64 << (attempt - 1);
@@ -1002,8 +1059,10 @@ fn run_foreground(_explicit_config: Option<PathBuf>) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::time::Duration;
 
-    use super::{Command, RemoteCommand, parse};
+    use super::{Command, RemoteCommand, lifecycle_response_timeout, parse};
+    use crate::adapters::config::SupervisorConfig;
     use crate::adapters::control_http::ApiActor;
     use crate::application::ControlAction;
 
@@ -1020,6 +1079,34 @@ mod tests {
     #[test]
     fn version_flag_selects_version() {
         assert_eq!(parse(args(&["--version"])), Ok(Command::Version));
+    }
+
+    #[test]
+    fn lifecycle_timeout_tracks_the_registered_service_budget() {
+        let config = SupervisorConfig::parse_json(include_str!("../config/geofu-be.services.json"))
+            .expect("Geofu BE profile must parse");
+        let command = |action| RemoteCommand::Mutate {
+            action,
+            service_id: "geofu-be".to_owned(),
+            reason: "timeout contract".to_owned(),
+            actor: ApiActor::User,
+            request_id: None,
+            config: None,
+            json: false,
+        };
+
+        assert_eq!(
+            lifecycle_response_timeout(&config, &command(ControlAction::Start)),
+            Some(Duration::from_secs(40))
+        );
+        assert_eq!(
+            lifecycle_response_timeout(&config, &command(ControlAction::Stop)),
+            Some(Duration::from_secs(15))
+        );
+        assert_eq!(
+            lifecycle_response_timeout(&config, &command(ControlAction::Restart)),
+            Some(Duration::from_secs(45))
+        );
     }
 
     #[test]

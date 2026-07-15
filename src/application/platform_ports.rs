@@ -85,7 +85,8 @@ impl LaunchSpec {
 }
 
 /// Platform-neutral outcome of stopping one owned process tree.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TreeStopReport {
     pub owned_pids_before: Vec<u32>,
     pub owned_pids_after: Vec<u32>,

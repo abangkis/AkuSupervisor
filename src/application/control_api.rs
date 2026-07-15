@@ -6,7 +6,7 @@ use crate::domain::{Actor, Reason};
 
 use super::{
     PortInspector, ProcessTreeSpawner, RegistryError, RestartOutcome, ServiceRegistry,
-    ServiceSnapshot, StartOutcome, StopOutcome,
+    ServiceSnapshot, StartOutcome, StopOutcome, TreeStopReport,
 };
 
 /// Registered lifecycle operation accepted by external control adapters.
@@ -26,6 +26,22 @@ pub enum ControlMutationOutcome {
     Stopped,
     AlreadyStopped,
     Restarted,
+}
+
+/// Successful control result including optional owned-tree shutdown evidence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ControlMutationResult {
+    pub outcome: ControlMutationOutcome,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shutdown: Option<TreeStopReport>,
+}
+
+impl ControlMutationResult {
+    #[must_use]
+    pub const fn new(outcome: ControlMutationOutcome, shutdown: Option<TreeStopReport>) -> Self {
+        Self { outcome, shutdown }
+    }
 }
 
 /// Adapter-safe failure category that does not expose platform error types.
@@ -97,7 +113,7 @@ pub trait SupervisorControl: Send + Sync {
         service_id: &str,
         actor: Actor,
         reason: Reason,
-    ) -> Result<ControlMutationOutcome, ControlError>;
+    ) -> Result<ControlMutationResult, ControlError>;
 }
 
 impl<Spawner, Inspector> SupervisorControl for ServiceRegistry<Spawner, Inspector>
@@ -118,27 +134,42 @@ where
         service_id: &str,
         actor: Actor,
         reason: Reason,
-    ) -> Result<ControlMutationOutcome, ControlError> {
+    ) -> Result<ControlMutationResult, ControlError> {
         match action {
             ControlAction::Start => self
                 .start(service_id, actor, reason)
-                .map(|outcome| match outcome {
-                    StartOutcome::Started => ControlMutationOutcome::Started,
-                    StartOutcome::AlreadyRunning => ControlMutationOutcome::AlreadyRunning,
+                .map(|outcome| {
+                    ControlMutationResult::new(
+                        match outcome {
+                            StartOutcome::Started => ControlMutationOutcome::Started,
+                            StartOutcome::AlreadyRunning => ControlMutationOutcome::AlreadyRunning,
+                        },
+                        None,
+                    )
                 })
                 .map_err(|error| control_error(&error)),
             ControlAction::Stop => self
-                .stop(service_id, actor, reason)
-                .map(|outcome| match outcome {
-                    StopOutcome::Stopped => ControlMutationOutcome::Stopped,
-                    StopOutcome::AlreadyStopped => ControlMutationOutcome::AlreadyStopped,
+                .stop_with_report(service_id, actor, reason)
+                .map(|result| {
+                    ControlMutationResult::new(
+                        match result.outcome {
+                            StopOutcome::Stopped => ControlMutationOutcome::Stopped,
+                            StopOutcome::AlreadyStopped => ControlMutationOutcome::AlreadyStopped,
+                        },
+                        result.shutdown,
+                    )
                 })
                 .map_err(|error| control_error(&error)),
             ControlAction::Restart => self
-                .restart(service_id, actor, reason)
-                .map(|outcome| match outcome {
-                    RestartOutcome::Restarted => ControlMutationOutcome::Restarted,
-                    RestartOutcome::Started => ControlMutationOutcome::Started,
+                .restart_with_report(service_id, actor, reason)
+                .map(|result| {
+                    ControlMutationResult::new(
+                        match result.outcome {
+                            RestartOutcome::Restarted => ControlMutationOutcome::Restarted,
+                            RestartOutcome::Started => ControlMutationOutcome::Started,
+                        },
+                        result.shutdown,
+                    )
                 })
                 .map_err(|error| control_error(&error)),
         }
@@ -183,5 +214,31 @@ where
     ControlError {
         kind,
         message: error.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ControlMutationOutcome, ControlMutationResult};
+    use crate::application::TreeStopReport;
+
+    #[test]
+    fn mutation_result_serializes_portable_shutdown_evidence() {
+        let value = serde_json::to_value(ControlMutationResult::new(
+            ControlMutationOutcome::Stopped,
+            Some(TreeStopReport {
+                owned_pids_before: vec![41, 42],
+                owned_pids_after: Vec::new(),
+                graceful_signal_sent: true,
+                graceful_signal_error: None,
+                forced: false,
+            }),
+        ))
+        .expect("serialize mutation result");
+
+        assert_eq!(value["outcome"], "stopped");
+        assert_eq!(value["shutdown"]["gracefulSignalSent"], true);
+        assert_eq!(value["shutdown"]["forced"], false);
+        assert_eq!(value["shutdown"]["ownedPidsAfter"], serde_json::json!([]));
     }
 }

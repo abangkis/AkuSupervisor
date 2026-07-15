@@ -408,7 +408,8 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use crate::application::{
-        ControlAction, ControlError, ControlMutationOutcome, HealthSnapshot, ServiceSnapshot,
+        ControlAction, ControlError, ControlMutationOutcome, ControlMutationResult, HealthSnapshot,
+        ServiceSnapshot,
     };
     use crate::domain::{Actor, DesiredState, LifecycleState, OperatorHold, Reason};
 
@@ -446,9 +447,12 @@ mod tests {
             _service_id: &str,
             _actor: Actor,
             _reason: Reason,
-        ) -> Result<ControlMutationOutcome, ControlError> {
+        ) -> Result<ControlMutationResult, ControlError> {
             *self.mutations.lock().expect("mutation lock") += 1;
-            Ok(ControlMutationOutcome::Started)
+            Ok(ControlMutationResult::new(
+                ControlMutationOutcome::Started,
+                None,
+            ))
         }
     }
 

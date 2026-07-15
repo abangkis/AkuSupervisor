@@ -14,7 +14,7 @@ use crate::domain::{
 use super::{
     HealthCheckSpec, HealthProbe, HealthSnapshot, LaunchSpec, ManagedProcessTree, PortInspector,
     PortOccupant, ProcessTreeSpawner, RestartOutcome, ServiceRuntime, ServiceRuntimeError,
-    StartOutcome, StopOutcome,
+    StartOutcome, StopOutcome, TreeStopReport,
 };
 
 const DEFAULT_RESTART_STABILITY_WINDOW: Duration = Duration::from_mins(1);
@@ -42,6 +42,20 @@ pub struct ProcessExitEvent {
 pub struct ServiceRefresh {
     pub health: HealthSnapshot,
     pub process_exit: Option<ProcessExitEvent>,
+}
+
+/// Stop outcome plus owned-tree shutdown evidence when a process was present.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceStopResult {
+    pub outcome: StopOutcome,
+    pub shutdown: Option<TreeStopReport>,
+}
+
+/// Restart outcome plus shutdown evidence for the replaced process tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceRestartResult {
+    pub outcome: RestartOutcome,
+    pub shutdown: Option<TreeStopReport>,
 }
 
 /// Platform-neutral definition of one validated, registered service.
@@ -254,6 +268,23 @@ where
         actor: Actor,
         reason: Reason,
     ) -> Result<StopOutcome, RegistryError<ProcessError<Spawner>, Inspector::Error>> {
+        self.stop_with_report(service_id, actor, reason)
+            .map(|result| result.outcome)
+    }
+
+    /// Stops one registered service and preserves the platform-neutral
+    /// graceful/forced shutdown evidence returned by its owned process tree.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same typed lookup, authority, platform, or runtime errors as
+    /// [`Self::stop`].
+    pub fn stop_with_report(
+        &self,
+        service_id: &str,
+        actor: Actor,
+        reason: Reason,
+    ) -> Result<ServiceStopResult, RegistryError<ProcessError<Spawner>, Inspector::Error>> {
         let entry = self.entry(service_id)?;
         let _mutation = lock(&entry.mutation)?;
         let mut control = lock(&entry.control)?;
@@ -272,19 +303,21 @@ where
         lock(&entry.supervision)?.request_stopped();
         let grace = entry.registration.shutdown_grace;
 
+        let mut shutdown = None;
         let outcome = entry
             .runtime
             .stop_with(|process| {
-                process
+                let report = process
                     .stop(grace)
-                    .map(|_| ())
-                    .map_err(BackendOperationError::Process)
+                    .map_err(BackendOperationError::Process)?;
+                shutdown = Some(report);
+                Ok(())
             })
             .map_err(RegistryError::Runtime)?;
         if outcome == StopOutcome::Stopped {
             *lock(&entry.health)? = HealthSnapshot::unknown();
         }
-        Ok(outcome)
+        Ok(ServiceStopResult { outcome, shutdown })
     }
 
     /// Replaces one owned tree atomically, or starts it if currently stopped.
@@ -298,6 +331,23 @@ where
         actor: Actor,
         reason: Reason,
     ) -> Result<RestartOutcome, RegistryError<ProcessError<Spawner>, Inspector::Error>> {
+        self.restart_with_report(service_id, actor, reason)
+            .map(|result| result.outcome)
+    }
+
+    /// Restarts one registered service and preserves shutdown evidence for the
+    /// replaced owned process tree, when one existed.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same typed lookup, authority, platform, or runtime errors as
+    /// [`Self::restart`].
+    pub fn restart_with_report(
+        &self,
+        service_id: &str,
+        actor: Actor,
+        reason: Reason,
+    ) -> Result<ServiceRestartResult, RegistryError<ProcessError<Spawner>, Inspector::Error>> {
         let entry = self.entry(service_id)?;
         let _mutation = lock(&entry.mutation)?;
         let mut control = lock(&entry.control)?;
@@ -317,14 +367,16 @@ where
         lock(&entry.supervision)?.request_running(actor);
         let grace = entry.registration.shutdown_grace;
 
+        let mut shutdown = None;
         let outcome = entry
             .runtime
             .restart_with(
                 |process| {
-                    process
+                    let report = process
                         .stop(grace)
-                        .map(|_| ())
-                        .map_err(BackendOperationError::Process)
+                        .map_err(BackendOperationError::Process)?;
+                    shutdown = Some(report);
+                    Ok(())
                 },
                 || {
                     self.ensure_ports_available(&entry.registration.ports)?;
@@ -336,7 +388,7 @@ where
             .map_err(RegistryError::Runtime)?;
         lock(&entry.supervision)?.record_started(LifecycleAction::Restart);
         self.wait_until_healthy(entry)?;
-        Ok(outcome)
+        Ok(ServiceRestartResult { outcome, shutdown })
     }
 
     /// Returns a consistent snapshot of all registered services.
@@ -1193,9 +1245,16 @@ mod tests {
         registry
             .start("fixture", Actor::UserCli, reason("user start"))
             .expect("user starts fixture");
-        registry
-            .stop("fixture", Actor::UserCli, reason("user stop"))
+        let result = registry
+            .stop_with_report("fixture", Actor::UserCli, reason("user stop"))
             .expect("user stops fixture");
+        assert_eq!(result.outcome, super::StopOutcome::Stopped);
+        let report = result
+            .shutdown
+            .expect("stopped owner reports shutdown evidence");
+        assert!(report.graceful_signal_sent);
+        assert!(!report.forced);
+        assert!(report.owned_pids_after.is_empty());
         let blocked = registry.start("fixture", Actor::Agent, reason("agent retry"));
 
         assert!(matches!(

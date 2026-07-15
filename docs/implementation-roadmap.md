@@ -396,6 +396,8 @@ Status: **Completed and live-validated on 2026-07-14**
 - [x] promotion performs a non-mutating `running / healthy` AkuSidecar preflight
   and prints the supervised recovery command instead of silently starting it;
   and
+- [x] promotion rejects a locked stable Windows image before bridge validation,
+  reports candidate PIDs, and rechecks the lock immediately before copy; and
 - [x] release evaluation remains platform-neutral while PowerShell owns only
   the Windows copy adapter.
 
@@ -514,7 +516,7 @@ Do not implement this phase by directly spawning AkuSupervisor from an ordinary 
 
 ### Phase 8 - Geofu portability validation
 
-Status: **Deferred**
+Status: **Geofu BE Windows portability proof complete**
 
 Potential future targets:
 
@@ -523,6 +525,33 @@ Potential future targets:
 - Geofu_be.
 
 Begin with exactly one independently runnable service profile. Add the remaining profiles only after the first portability proof passes without project-specific changes to the lifecycle core.
+
+Current Geofu BE slice:
+
+- [x] active checkout and documented server workflow assessed read-only;
+- [x] existing Go tests and package-artifact validator pass;
+- [x] isolated `geofu-be` configuration uses only generic service, health,
+  ownership, logs, journal, and read-only MCP contracts;
+- [x] typed contract test rejects accidental AkuBridge coupling;
+- [x] the existing GoLand-owned listener was released through its own Stop
+  control before Supervisor claimed port 8765;
+- [x] supervised start reaches `running / healthy` and serves `catalog.json`;
+- [x] the owned PID and bounded logs are observed;
+- [x] read-only MCP lists and inspects `geofu-be`;
+- [x] a stable built executable receives Ctrl+Break and completes bounded HTTP
+  shutdown without the forced Job Object fallback;
+- [x] stop leaves no listener or owned PID; and
+- [x] stop/restart API responses and journal records expose the same portable
+  `gracefulSignalSent`, `forced`, and owned-PID shutdown evidence; and
+- [x] live validation leaves no unexpected tracked or runtime process changes.
+
+The proof also fixed a generic client defect: lifecycle responses now use a
+service-derived timeout while ordinary control-plane requests retain the short
+five-second I/O timeout. A `go run` trial proved descendant cleanup but required
+forced fallback, so the durable profile explicitly separates build from run.
+
+The detailed commands and evidence requirements are in
+[Geofu BE portability proof](geofu-be-portability.md).
 
 ### Phase 9 - Linux and macOS platform adapters
 

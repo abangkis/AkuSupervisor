@@ -193,10 +193,17 @@ latest development build should become normal, use this order:
 
 Promotion is performed before stopping the watcher because its AkuBridge
 release validation needs the supervised Sidecar and extension bridge alive.
-The promotion script first checks that the configured `akusidecar` service is
-both running and healthy. It does not start the service implicitly; when it is
-stopped, the script prints the exact supervised start command and leaves stable
-unchanged.
+Before spending that release gate, the promotion script acquires exclusive
+access to the stable executable. If a normal Supervisor or long-lived
+`mcp-proxy` is using `target\aku-supervisor.exe`, promotion fails immediately,
+prints candidate PIDs, and does not invoke AkuBridge. Keep the watcher and its
+supervised AkuSidecar running; recycle only the process using the stable path,
+then rerun promotion. The lock is checked again immediately before copy.
+
+After the lock preflight, the script checks that the configured `akusidecar`
+service is both running and healthy. It does not start the service implicitly;
+when it is stopped, the script prints the exact supervised start command and
+leaves stable unchanged.
 
 The script runs `target\dev\aku-supervisor.exe bridge validate` with a fresh
 request ID before copying anything. Validation emits one JSON document and
@@ -378,6 +385,13 @@ attempts at most one recovery restart after a nonzero exit. A second exit inside
 the 60-second stability window stays `failed`; an explicit stop always wins a
 race with recovery.
 
+Successful stop and restart responses include a platform-neutral `shutdown`
+object. It exposes `ownedPidsBefore`, `ownedPidsAfter`,
+`gracefulSignalSent`, an optional `gracefulSignalError`, and `forced`. The same
+object is persisted on the lifecycle journal record, so operators and MCP
+clients can distinguish cooperative shutdown from the bounded forced fallback
+without inferring it from elapsed time or service logs.
+
 ## Project documents
 
 - [Product specification](docs/generic-local-development-supervisor-spec.md)
@@ -386,3 +400,4 @@ race with recovery.
 - [Platform portability boundary](docs/platform-portability.md)
 - [MCP integration notes](docs/mcp-integration-notes.md)
 - [AkuBridge cooperative reload](docs/aku-bridge-reload.md)
+- [Geofu BE portability proof](docs/geofu-be-portability.md)

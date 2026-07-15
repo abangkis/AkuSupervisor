@@ -21,9 +21,62 @@ function Stop-Promotion {
     exit 1
 }
 
+function Get-StableExecutableUsers {
+    if (-not (Test-Path $stableExecutable -PathType Leaf)) {
+        return @()
+    }
+
+    $stableFullPath = [System.IO.Path]::GetFullPath($stableExecutable)
+    return @(Get-Process -Name 'aku-supervisor' -ErrorAction SilentlyContinue | ForEach-Object {
+        try {
+            if ([System.StringComparer]::OrdinalIgnoreCase.Equals($_.Path, $stableFullPath)) {
+                [pscustomobject]@{
+                    Id = $_.Id
+                    Path = $_.Path
+                }
+            }
+        } catch {
+            # A process may exit between enumeration and path inspection.
+        }
+    })
+}
+
+function Assert-StableExecutableUnlocked {
+    param([Parameter(Mandatory)] [string] $Stage)
+
+    if (-not (Test-Path $stableExecutable -PathType Leaf)) {
+        return
+    }
+
+    $handle = $null
+    try {
+        $handle = [System.IO.File]::Open(
+            $stableExecutable,
+            [System.IO.FileMode]::Open,
+            [System.IO.FileAccess]::ReadWrite,
+            [System.IO.FileShare]::None
+        )
+    } catch {
+        $users = @(Get-StableExecutableUsers)
+        Write-Host "[release] Stable executable is locked $Stage." -ForegroundColor Yellow
+        foreach ($user in $users) {
+            Write-Host "[release] Lock owner candidate: PID $($user.Id) $($user.Path)" -ForegroundColor Yellow
+        }
+        Write-Host '[release] Keep the development watcher and supervised AkuSidecar running.' -ForegroundColor Yellow
+        Write-Host '[release] Stop or recycle only the process using target\aku-supervisor.exe, then rerun promotion.' -ForegroundColor Yellow
+        Write-Host '[release] A long-lived mcp-proxy using the stable executable must be recycled; the watcher uses target\dev and should not be stopped.' -ForegroundColor Yellow
+        Stop-Promotion -Message 'Stable executable is in use; bridge validation and promotion were not allowed to continue.'
+    } finally {
+        if ($null -ne $handle) {
+            $handle.Dispose()
+        }
+    }
+}
+
 if (-not (Test-Path $devExecutable -PathType Leaf)) {
     Stop-Promotion -Message "Development executable not found: $devExecutable; stable was not changed."
 }
+Assert-StableExecutableUnlocked -Stage 'before release validation'
 if (-not $RequestId) {
     $stamp = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ')
     $RequestId = "bridge-release-$stamp-$PID"
@@ -101,6 +154,7 @@ if ($validationExitCode -ne 0 -or $validation.validation.status -ne 'passed') {
     Stop-Promotion -Message "bridge validate failed ($failure) with exit code $validationExitCode; stable was not changed."
 }
 
+Assert-StableExecutableUnlocked -Stage 'after release validation'
 Copy-Item -LiteralPath $devExecutable -Destination $stableExecutable -Force
 Write-Host "[release] Promoted validated build to: $stableExecutable" -ForegroundColor Green
 Write-Output $validationJson

@@ -509,13 +509,16 @@ fn route_mutation(
     };
 
     let response = match control.mutate(action, service_id, mutation.actor.domain_actor(), reason) {
-        Ok(outcome) => json_response(
-            200,
-            &json!({
+        Ok(result) => {
+            let mut body = json!({
                 "serviceId": service_id,
-                "outcome": outcome
-            }),
-        ),
+                "outcome": result.outcome
+            });
+            if let Some(shutdown) = result.shutdown {
+                body["shutdown"] = json!(shutdown);
+            }
+            json_response(200, &body)
+        }
         Err(error) => match error.kind() {
             ControlErrorKind::ServiceNotFound => {
                 error_response(404, "service_not_found", error.message())
@@ -910,6 +913,26 @@ pub fn client_request(
     target: &str,
     body: Option<Value>,
 ) -> Result<Value, ControlClientError> {
+    client_request_with_response_timeout(address, token, method, target, body, IO_TIMEOUT)
+}
+
+/// Sends one bounded request while allowing a caller-defined response timeout.
+///
+/// Connection establishment and request writes retain the short control-plane
+/// timeout. Only the response read may use the longer lifecycle-operation
+/// budget derived from a service profile.
+///
+/// # Errors
+///
+/// Returns connection, protocol, serialization, or non-success response errors.
+pub fn client_request_with_response_timeout(
+    address: SocketAddr,
+    token: &RuntimeToken,
+    method: &str,
+    target: &str,
+    body: Option<Value>,
+    response_timeout: Duration,
+) -> Result<Value, ControlClientError> {
     let body = body
         .map(|value| serde_json::to_vec(&value))
         .transpose()
@@ -917,7 +940,7 @@ pub fn client_request(
         .unwrap_or_default();
     let mut stream =
         TcpStream::connect_timeout(&address, IO_TIMEOUT).map_err(ControlClientError::Connect)?;
-    stream.set_read_timeout(Some(IO_TIMEOUT)).ok();
+    stream.set_read_timeout(Some(response_timeout)).ok();
     stream.set_write_timeout(Some(IO_TIMEOUT)).ok();
     write!(
         stream,
@@ -1115,8 +1138,8 @@ mod tests {
     use std::sync::Mutex;
 
     use crate::application::{
-        ControlError, ControlMutationOutcome, CooperativeActionError, CooperativeActionOutcome,
-        CooperativeActionStatus, ServiceSnapshot,
+        ControlError, ControlMutationOutcome, ControlMutationResult, CooperativeActionError,
+        CooperativeActionOutcome, CooperativeActionStatus, ServiceSnapshot,
     };
 
     use super::*;
@@ -1153,9 +1176,12 @@ mod tests {
             _service_id: &str,
             _actor: Actor,
             _reason: Reason,
-        ) -> Result<ControlMutationOutcome, ControlError> {
+        ) -> Result<ControlMutationResult, ControlError> {
             *self.mutations.lock().expect("mutation lock") += 1;
-            Ok(ControlMutationOutcome::Started)
+            Ok(ControlMutationResult::new(
+                ControlMutationOutcome::Started,
+                None,
+            ))
         }
     }
 

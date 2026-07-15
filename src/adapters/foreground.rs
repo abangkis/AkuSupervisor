@@ -359,27 +359,37 @@ fn handle_line(control: &dyn SupervisorControl, line: &str) -> bool {
         Ok(InteractiveCommand::Status) => print_status(control),
         Ok(InteractiveCommand::Start { service_id, reason }) => {
             match control.mutate(ControlAction::Start, &service_id, Actor::UserCli, reason) {
-                Ok(ControlMutationOutcome::Started) => println!("started {service_id}"),
-                Ok(ControlMutationOutcome::AlreadyRunning) => {
-                    println!("already running: {service_id}");
-                }
-                Ok(outcome) => println!("start completed for {service_id}: {outcome:?}"),
+                Ok(result) => match result.outcome {
+                    ControlMutationOutcome::Started => println!("started {service_id}"),
+                    ControlMutationOutcome::AlreadyRunning => {
+                        println!("already running: {service_id}");
+                    }
+                    outcome => println!("start completed for {service_id}: {outcome:?}"),
+                },
                 Err(error) => eprintln!("start failed for {service_id}: {error}"),
             }
         }
         Ok(InteractiveCommand::Stop { service_id, reason }) => {
             match control.mutate(ControlAction::Stop, &service_id, Actor::UserCli, reason) {
-                Ok(ControlMutationOutcome::Stopped) => println!("stopped {service_id}"),
-                Ok(ControlMutationOutcome::AlreadyStopped) => {
-                    println!("already stopped: {service_id}");
+                Ok(result) => {
+                    match result.outcome {
+                        ControlMutationOutcome::Stopped => println!("stopped {service_id}"),
+                        ControlMutationOutcome::AlreadyStopped => {
+                            println!("already stopped: {service_id}");
+                        }
+                        outcome => println!("stop completed for {service_id}: {outcome:?}"),
+                    }
+                    print_shutdown_report(result.shutdown.as_ref());
                 }
-                Ok(outcome) => println!("stop completed for {service_id}: {outcome:?}"),
                 Err(error) => eprintln!("stop failed for {service_id}: {error}"),
             }
         }
         Ok(InteractiveCommand::Restart { service_id, reason }) => {
             match control.mutate(ControlAction::Restart, &service_id, Actor::UserCli, reason) {
-                Ok(outcome) => println!("restart completed for {service_id}: {outcome:?}"),
+                Ok(result) => {
+                    println!("restart completed for {service_id}: {:?}", result.outcome);
+                    print_shutdown_report(result.shutdown.as_ref());
+                }
                 Err(error) => eprintln!("restart failed for {service_id}: {error}"),
             }
         }
@@ -388,6 +398,18 @@ fn handle_line(control: &dyn SupervisorControl, line: &str) -> bool {
         Err(error) => eprintln!("error: {error}"),
     }
     false
+}
+
+fn print_shutdown_report(report: Option<&crate::application::TreeStopReport>) {
+    if let Some(report) = report {
+        println!(
+            "shutdown: gracefulSignalSent={}, forced={}, ownedPidsAfter={:?}",
+            report.graceful_signal_sent, report.forced, report.owned_pids_after
+        );
+        if let Some(error) = report.graceful_signal_error.as_deref() {
+            println!("shutdown signal detail: {error}");
+        }
+    }
 }
 
 fn print_status(control: &dyn SupervisorControl) {

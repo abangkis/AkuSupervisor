@@ -8,8 +8,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::application::{
-    ControlAction, ControlError, ControlErrorKind, ControlMutationOutcome, ProcessExitEvent,
-    ServiceSnapshot, SupervisorControl,
+    ControlAction, ControlError, ControlErrorKind, ControlMutationOutcome, ControlMutationResult,
+    ProcessExitEvent, ServiceSnapshot, SupervisorControl, TreeStopReport,
 };
 use crate::domain::{Actor, LifecycleState, Reason};
 
@@ -73,6 +73,8 @@ pub struct JournalRecord {
     pub exit_code: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub automatic_restart_planned: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shutdown: Option<TreeStopReport>,
     pub config_fingerprint: String,
 }
 
@@ -305,6 +307,7 @@ impl AuditedControl {
                 error_category: Some(ErrorCategory::ProcessExited),
                 exit_code: event.exit_code,
                 automatic_restart_planned: Some(event.automatic_restart_planned),
+                shutdown: None,
                 config_fingerprint: self.config_fingerprint.clone(),
             })
             .map(|_| ())
@@ -336,7 +339,7 @@ impl SupervisorControl for AuditedControl {
         service_id: &str,
         actor: Actor,
         reason: Reason,
-    ) -> Result<ControlMutationOutcome, ControlError> {
+    ) -> Result<ControlMutationResult, ControlError> {
         let before = self
             .inner
             .snapshots()?
@@ -348,7 +351,7 @@ impl SupervisorControl for AuditedControl {
                 .into_iter()
                 .find(|service| service.id == service_id)
         });
-        let (result, error_category) = match &outcome {
+        let (result, error_category) = match outcome.as_ref().map(|result| result.outcome) {
             Ok(ControlMutationOutcome::AlreadyRunning) => {
                 (JournalResult::Success, Some(ErrorCategory::AlreadyRunning))
             }
@@ -396,6 +399,10 @@ impl SupervisorControl for AuditedControl {
             error_category,
             exit_code: None,
             automatic_restart_planned: None,
+            shutdown: outcome
+                .as_ref()
+                .ok()
+                .and_then(|result| result.shutdown.clone()),
             config_fingerprint: self.config_fingerprint.clone(),
         };
         self.journal.append(record).map_err(|error| {
@@ -502,6 +509,7 @@ impl std::error::Error for FileJournalError {}
 
 #[cfg(test)]
 mod tests {
+    use crate::application::TreeStopReport;
     use crate::domain::{Actor, LifecycleState, Reason};
 
     use super::{ErrorCategory, FileJournal, JournalAction, JournalRecord, JournalResult};
@@ -523,6 +531,7 @@ mod tests {
             error_category: None,
             exit_code: None,
             automatic_restart_planned: None,
+            shutdown: None,
             config_fingerprint: "sha256:abc".to_owned(),
         }
     }
@@ -579,6 +588,27 @@ mod tests {
             .expect("legacy-shaped record");
         assert!(!legacy.contains("exitCode"));
         assert!(!legacy.contains("automaticRestartPlanned"));
+    }
+
+    #[test]
+    fn shutdown_evidence_is_explicit_and_backward_compatible() {
+        let mut stopped = record("service stopped by operator");
+        stopped.action = JournalAction::Stop;
+        stopped.shutdown = Some(TreeStopReport {
+            owned_pids_before: vec![100, 101],
+            owned_pids_after: Vec::new(),
+            graceful_signal_sent: true,
+            graceful_signal_error: None,
+            forced: false,
+        });
+        let line = stopped.to_json_line(&[]).expect("serialize stop record");
+
+        assert!(line.contains("\"gracefulSignalSent\":true"));
+        assert!(line.contains("\"forced\":false"));
+        let legacy = record("legacy lifecycle event")
+            .to_json_line(&[])
+            .expect("legacy-shaped record");
+        assert!(!legacy.contains("\"shutdown\""));
     }
 
     #[test]

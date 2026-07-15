@@ -16,7 +16,8 @@ pub use bridge_validation::{
     BridgeValidationCheck, BridgeValidationReport, validate_bridge_release,
 };
 pub use control_api::{
-    ControlAction, ControlError, ControlErrorKind, ControlMutationOutcome, SupervisorControl,
+    ControlAction, ControlError, ControlErrorKind, ControlMutationOutcome, ControlMutationResult,
+    SupervisorControl,
 };
 pub use cooperative_actions::{
     CooperativeActionControl, CooperativeActionError, CooperativeActionOutcome,
@@ -33,7 +34,8 @@ pub use platform_ports::{
 };
 pub use service_registry::{
     BackendOperationError, LastAction, ProcessExitEvent, RegistryBuildError, RegistryError,
-    ServiceRefresh, ServiceRegistration, ServiceRegistry, ServiceRestartPolicy, ServiceSnapshot,
+    ServiceRefresh, ServiceRegistration, ServiceRegistry, ServiceRestartPolicy,
+    ServiceRestartResult, ServiceSnapshot, ServiceStopResult,
 };
 pub use service_runtime::{
     RestartOutcome, ServiceRuntime, ServiceRuntimeError, StartOutcome, StopOutcome,

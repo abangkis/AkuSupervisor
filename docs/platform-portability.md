@@ -86,6 +86,7 @@ not considered a portable guarantee.
 | Exit observation | process handle / Job query | `pidfd` or wait primitives | `kqueue` / wait primitives |
 | Port diagnostics | IP Helper TCP tables | netlink or `/proc` adapter | `sysctl` or `libproc` adapter |
 | Supervisor shutdown | console handler | POSIX signal adapter | POSIX signal adapter |
+| Per-service shutdown evidence | `TreeStopReport` from Job Object adapter | Same shared report from process-group/cgroup adapter | Same shared report from process-group adapter |
 | Secure token entropy | CNG `BCryptGenRandom` | `getrandom(2)` or equivalent OS API | `SecRandomCopyBytes` or equivalent OS API |
 | Token-file permissions | protected current-user-only DACL | mode `0600` (future) | mode `0600` (future) |
 | HTTP control/client | shared `std::net` adapter | same shared adapter | same shared adapter |
