@@ -23,28 +23,27 @@
     "akusidecar": {
       "label": "AkuSidecar",
       "cwd": "C:\\WorkspaceCodex\\AkuWorkspace\\AkuSidecar",
-      "command": "C:\\nvm4w\\nodejs\\npm.cmd",
-      "args": [
-        "run",
-        "dev"
-      ],
+      "command": "C:\\WorkspaceCodex\\AkuWorkspace\\AkuSidecar\\runtime\\dev\\aku-watch.exe",
+      "args": [],
       "environment": {},
       "health": {
         "type": "http-json",
         "url": "http://127.0.0.1:47821/api/health",
         "timeoutMs": 5000,
-        "startupDeadlineMs": 20000,
+        "startupDeadlineMs": 60000,
         "expect": {
           "status": "ok",
-          "bridgeContractVersion": "aku-browser.bridge.v1",
-          "provider": "codex-sdk"
+          "version": "1.0.0-dev.1",
+          "runtime": "go",
+          "bridgeContractVersion": "aku-browser.bridge.v2",
+          "provider": "codex-app-server"
         }
       },
       "ports": [
         47821
       ],
       "restartPolicy": "manual",
-      "shutdownGraceMs": 3000
+      "shutdownGraceMs": 5000
     },
     "geofu-be": {
       "label": "Geofu Backend",

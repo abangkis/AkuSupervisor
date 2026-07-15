@@ -539,17 +539,19 @@ executing them or treating their success as local service health.
 
 ### 18.2 Windows safety
 
-- Restarting AkuSidecar removes the old npm/watch/server tree before starting the new tree.
+- Restarting AkuSidecar removes the old Go watcher/server/Codex tree before starting the new tree.
 - An unrelated process occupying port 47821 is reported and never killed.
-- An unrelated Node process remains untouched during every test.
+- An unrelated process remains untouched during every test.
 - Ctrl+C on the supervisor cleanly stops its owned children.
 - A stale recorded PID that has been reused by another process is not killed without matching current ownership evidence.
 
 ### 18.3 AkuSidecar
 
-- `/api/health` passes with the expected version and `codex-sdk` provider.
-- A normal hard restart preserves the existing SQLite database.
-- AkuSidecar can perform one real reasoning invocation without immediate `spawn EPERM`.
+- `/api/health` passes with Go `1.0.0-dev.1`, Bridge Contract v2, and the
+  `codex-app-server` provider.
+- A normal restart preserves the current fresh-schema SQLite database.
+- AkuSidecar can perform one real native Codex invocation and record structured
+  output plus token telemetry.
 - Lifecycle status remains readable while AkuSidecar itself is restarting.
 
 ### 18.4 Portability

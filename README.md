@@ -412,8 +412,9 @@ distinct GeoLibre modes behind one control API, runtime token, and
 read-only MCP boundary. All services remain `manual`; registration does not
 start any Geofu-family service implicitly. `geolibre` is the normal unlocked
 development mode; `geolibre-locked` is the explicit bundled-plugin QA mode.
-AkuSidecar keeps its persisted dashboard/SQLite configuration. Copy the profile
-to the default user location for argument-free startup:
+AkuSidecar is the Go `1.0.0-dev.1` fresh boundary: the profile starts its Go
+watcher, requires Bridge v2 plus `codex-app-server`, and uses the new SQLite schema.
+Copy the profile to the default user location for argument-free startup:
 
 ```powershell
 New-Item -ItemType Directory -Force "$env:LOCALAPPDATA\AkuSupervisor"
@@ -421,10 +422,9 @@ Copy-Item .\config\akuworkspace.services.json "$env:LOCALAPPDATA\AkuSupervisor\s
 ```
 
 Keep the service profile's `environment` map empty for normal AkuBrowser use.
-Provider, models, efforts, planning policy, timeout, sources, and bounded engine
-settings belong in AkuBrowser Settings. AkuSidecar environment overrides remain
-legacy/recovery compatibility and are not the recommended install or daily-run
-path.
+Provider, models, efforts, timeout, sources, and bounded engine settings belong
+in the strict Sidecar configuration and AkuBrowser Settings surfaces.
+AkuSidecar no longer accepts legacy environment aliases.
 
 The profile's health contract is enforced at runtime. Start and restart wait up
 to `startupDeadlineMs`; afterward a one-second monitor keeps `processReady`,

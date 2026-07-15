@@ -58,6 +58,44 @@ fn checked_in_akuworkspace_profile_matches_the_typed_contract() {
     assert_eq!(config.control.port, 47_820);
     assert_eq!(config.services.len(), 5);
 
+    let sidecar = config
+        .services
+        .get("akusidecar")
+        .expect("AkuSidecar service");
+    assert_eq!(
+        sidecar.command,
+        PathBuf::from(r"C:\WorkspaceCodex\AkuWorkspace\AkuSidecar\runtime\dev\aku-watch.exe")
+    );
+    assert!(sidecar.args.is_empty());
+    assert_eq!(sidecar.ports, vec![47_821]);
+    assert_eq!(sidecar.restart_policy, RestartPolicy::Manual);
+    assert_eq!(sidecar.shutdown_grace_ms, 5_000);
+    match &sidecar.health {
+        HealthCheck::HttpJson {
+            url,
+            startup_deadline_ms,
+            expect,
+            ..
+        } => {
+            assert_eq!(url, "http://127.0.0.1:47821/api/health");
+            assert_eq!(*startup_deadline_ms, 60_000);
+            assert_eq!(
+                expect.get("version"),
+                Some(&serde_json::json!("1.0.0-dev.1"))
+            );
+            assert_eq!(expect.get("runtime"), Some(&serde_json::json!("go")));
+            assert_eq!(
+                expect.get("bridgeContractVersion"),
+                Some(&serde_json::json!("aku-browser.bridge.v2"))
+            );
+            assert_eq!(
+                expect.get("provider"),
+                Some(&serde_json::json!("codex-app-server"))
+            );
+        }
+        other => panic!("expected AkuSidecar HTTP JSON health, got {other:?}"),
+    }
+
     let service = config.services.get("geofu-be").expect("Geofu BE service");
     assert_eq!(
         service.cwd,
