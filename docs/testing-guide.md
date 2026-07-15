@@ -47,6 +47,10 @@ For normal daily use, place the file at:
 %LOCALAPPDATA%\AkuSupervisor\services.json
 ```
 
+The [configuration guide](configuration-guide.md) contains the complete field
+contract plus examples for immutable programs, HTTP health, cooperative direct
+executables, and command wrappers.
+
 Then startup requires no application arguments:
 
 ```powershell

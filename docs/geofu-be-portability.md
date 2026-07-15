@@ -15,6 +15,12 @@ The proof does not add GeoLibre, the Geofu frontend, pipeline execution,
 dependency graphs, deployment orchestration, MCP mutations, or another
 operating-system adapter.
 
+Changing Geofu BE was not a prerequisite for AkuSupervisor ownership. The
+initial unmodified `go run` trial was started, health-checked, and completely
+removed through the bounded Job Object fallback. Geofu's signal handler was
+added only to validate the stronger cooperative-shutdown path and avoid a
+forced exit for a server that can safely drain HTTP work.
+
 ## Profile
 
 The checked-in profile is `config/geofu-be.services.json`.

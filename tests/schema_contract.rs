@@ -92,6 +92,24 @@ fn checked_in_geofu_be_profile_uses_only_generic_service_contracts() {
 }
 
 #[test]
+fn immutable_windows_example_requires_no_cooperative_target_contract() {
+    let config = SupervisorConfig::parse_json(include_str!(
+        "../config/examples/immutable-windows.services.json"
+    ))
+    .expect("checked-in immutable-program example must parse");
+
+    assert!(config.cooperative_actions.aku_bridge_reload.is_none());
+    assert!(!config.control.mcp.enabled);
+    let service = config
+        .services
+        .get("legacy-api")
+        .expect("immutable example service");
+    assert!(matches!(service.health, HealthCheck::Process));
+    assert_eq!(service.restart_policy, RestartPolicy::Manual);
+    assert_eq!(service.shutdown_grace_ms, 5_000);
+}
+
+#[test]
 fn typed_configuration_serializes_with_contract_field_names() {
     let config = SupervisorConfig {
         version: CONFIG_VERSION,

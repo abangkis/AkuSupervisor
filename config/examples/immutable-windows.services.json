@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "control": {
+    "host": "127.0.0.1",
+    "port": 47900,
+    "tokenFile": ".runtime/immutable-example/control-token",
+    "mcp": {
+      "enabled": false,
+      "allowedOrigins": []
+    }
+  },
+  "services": {
+    "legacy-api": {
+      "label": "Immutable Legacy API",
+      "cwd": "C:\\Tools\\LegacyApi",
+      "command": "C:\\Tools\\LegacyApi\\legacy-api.exe",
+      "args": ["--port", "8090"],
+      "environment": {},
+      "health": {
+        "type": "process"
+      },
+      "ports": [8090],
+      "restartPolicy": "manual",
+      "shutdownGraceMs": 5000
+    }
+  }
+}

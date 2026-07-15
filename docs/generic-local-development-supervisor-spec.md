@@ -160,52 +160,31 @@ Windows MVP safety requirements.
 
 ## 8. Configuration contract
 
-### 8.1 Example
+### 8.1 Minimal immutable-program example
 
 ```json
 {
   "version": 1,
   "control": {
     "host": "127.0.0.1",
-    "port": 47820,
-    "tokenFile": ".runtime/control-token"
+    "port": 47900,
+    "tokenFile": ".runtime/immutable-example/control-token",
+    "mcp": {
+      "enabled": false,
+      "allowedOrigins": []
+    }
   },
   "services": {
-    "akusidecar": {
-      "label": "AkuSidecar",
-      "cwd": "C:\\WorkspaceCodex\\AkuWorkspace\\AkuSidecar",
-      "command": "C:\\nvm4w\\nodejs\\npm.cmd",
-      "args": ["run", "dev"],
+    "legacy-api": {
+      "label": "Immutable Legacy API",
+      "cwd": "C:\\Tools\\LegacyApi",
+      "command": "C:\\Tools\\LegacyApi\\legacy-api.exe",
+      "args": ["--port", "8090"],
       "environment": {},
       "health": {
-        "type": "http-json",
-        "url": "http://127.0.0.1:47821/api/health",
-        "timeoutMs": 5000,
-        "startupDeadlineMs": 15000,
-        "expect": {
-          "status": "ok",
-          "version": "0.5.15",
-          "provider": "codex-sdk"
-        }
+        "type": "process"
       },
-      "ports": [47821],
-      "restartPolicy": "manual",
-      "shutdownGraceMs": 3000
-    },
-    "geofu-api": {
-      "label": "Geofu API",
-      "cwd": "C:\\WorkspaceCodex\\GeofuWorkspace\\Geofu_be",
-      "command": "powershell.exe",
-      "args": ["-NoProfile", "-File", "make.ps1", "serve"],
-      "environment": {},
-      "health": {
-        "type": "http-status",
-        "url": "http://127.0.0.1:8080/health",
-        "expectedStatus": 200,
-        "timeoutMs": 5000,
-        "startupDeadlineMs": 20000
-      },
-      "ports": [8080],
+      "ports": [8090],
       "restartPolicy": "manual",
       "shutdownGraceMs": 5000
     }
@@ -213,7 +192,11 @@ Windows MVP safety requirements.
 }
 ```
 
-The Geofu command and health endpoint above are illustrative and must be replaced with the actual selected service during implementation.
+This example intentionally assumes that the target cannot be modified. Source
+changes are not required for process ownership, start, health observation, or
+bounded cleanup. See the [configuration guide](configuration-guide.md) for
+HTTP health variants, wrapper caveats, field descriptions, and actual
+AkuWorkspace/Geofu profiles.
 
 ### 8.2 Required validation
 
@@ -285,6 +268,17 @@ If a port is occupied by an unowned process, startup fails with a diagnostic con
 5. Confirm the PIDs are gone.
 6. Confirm declared ports are released or report the remaining external owner.
 7. Mark the final state and journal the outcome.
+
+The target program is not required to implement an AkuSupervisor-specific
+shutdown protocol. If it handles the platform signal, the API and journal show
+`forced: false`. If it does not, bounded owned-tree cleanup shows
+`forced: true`. This distinction is operational evidence, not a different
+ownership guarantee.
+
+Language-specific optional integrations are maintained separately in
+[Cooperative shutdown recipes](cooperative-shutdown-recipes.md). A recipe must
+pass application-level and live Supervisor validation before it is marked
+maintained.
 
 The implementation must test npm's Windows process chain (`npm.cmd -> cmd.exe -> node --watch -> node server`) because stopping only the leaf server allows the watcher to recreate it.
 
@@ -487,7 +481,11 @@ After AkuSidecar passes, add exactly one Geofu service profile. Choose a service
 - a deterministic port or process check; and
 - no dependency on another supervisor-managed service for the first proof.
 
-Passing this proof means no source code changes are required in the supervisor; only configuration and, if necessary, a new generic health-check type may be added.
+Passing this proof means no Geofu-specific source code is required in the
+supervisor; only configuration and, if necessary, a new generic health-check
+type may be added. The managed Geofu program does not need source changes for
+basic supervision. Optional signal handling may be added to demonstrate a
+cooperative shutdown instead of the bounded forced fallback.
 
 Multi-service Geofu orchestration and dependency ordering remain deferred.
 
@@ -519,7 +517,10 @@ Multi-service Geofu orchestration and dependency ordering remain deferred.
 
 ### 18.4 Portability
 
-- One Geofu service can be managed through configuration only.
+- One unchanged executable can be managed through configuration with bounded
+  ownership and forced cleanup available.
+- A cooperative target additionally reports a non-forced shutdown, without
+  creating a source-code dependency on AkuSupervisor.
 - No AkuBrowser, AkuSidecar, or Geofu-specific import exists in the supervisor core.
 
 ## 19. Test strategy

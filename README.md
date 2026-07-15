@@ -75,6 +75,9 @@ AkuSupervisor/
     testing-guide.md
   config/
     akuworkspace.services.json
+    geofu-be.services.json
+    examples/
+      immutable-windows.services.json
   examples/
     phase2_process_tree_demo.rs
   scripts/
@@ -114,6 +117,12 @@ cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets --all-features
 ```
+
+For configuration fields and copyable examples—including programs whose
+codebase cannot be changed—see the
+[configuration guide](docs/configuration-guide.md). Source integration is not
+mandatory: an uncooperative program is stopped through the bounded owned-tree
+fallback and reports `forced: true`.
 
 Run the complete verification suite through the convenience script:
 
@@ -395,6 +404,8 @@ without inferring it from elapsed time or service logs.
 ## Project documents
 
 - [Product specification](docs/generic-local-development-supervisor-spec.md)
+- [Configuration guide](docs/configuration-guide.md)
+- [Cooperative shutdown recipes](docs/cooperative-shutdown-recipes.md)
 - [Implementation roadmap](docs/implementation-roadmap.md)
 - [Testing guide](docs/testing-guide.md)
 - [Platform portability boundary](docs/platform-portability.md)

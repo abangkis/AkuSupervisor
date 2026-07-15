@@ -549,6 +549,21 @@ The proof also fixed a generic client defect: lifecycle responses now use a
 service-derived timeout while ordinary control-plane requests retain the short
 five-second I/O timeout. A `go run` trial proved descendant cleanup but required
 forced fallback, so the durable profile explicitly separates build from run.
+The Geofu signal-handler change validates the optional cooperative path; it is
+not a prerequisite for supervising an immutable executable. Configuration-only
+ownership remains valid when the resulting shutdown evidence reports
+`forced: true`.
+
+Application integration recipes:
+
+- [x] Go `net/http` graceful shutdown is documented, application-tested, and
+  live-validated on Windows; Linux amd64 and macOS arm64 are compile-checked;
+- [ ] certify a reusable Node.js recipe independently of AkuSidecar ownership;
+- [ ] certify a reusable Rust managed-application recipe; and
+- [ ] certify Kotlin/JVM shutdown-hook and Windows console behavior.
+
+Recipe maintenance and evidence rules are defined in
+[Cooperative shutdown recipes](cooperative-shutdown-recipes.md).
 
 The detailed commands and evidence requirements are in
 [Geofu BE portability proof](geofu-be-portability.md).
