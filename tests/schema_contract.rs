@@ -65,9 +65,16 @@ fn checked_in_akuworkspace_profile_matches_the_typed_contract() {
         .expect("AkuSidecar service");
     assert_eq!(
         sidecar.command,
-        PathBuf::from(r"C:\WorkspaceCodex\AkuWorkspace\AkuSidecar\runtime\dev\aku-watch.exe")
+        PathBuf::from(r"C:\WorkspaceCodex\AkuWorkspace\AkuSidecar\runtime\dev\aku-sidecar.exe")
     );
-    assert!(sidecar.args.is_empty());
+    assert_eq!(
+        sidecar.args,
+        [
+            "--config",
+            r"C:\WorkspaceCodex\AkuWorkspace\AkuSidecar\config\sidecar.json",
+            "--dev"
+        ]
+    );
     assert_eq!(sidecar.ports, vec![47_821]);
     assert_eq!(sidecar.restart_policy, RestartPolicy::Manual);
     assert_eq!(sidecar.shutdown_grace_ms, 5_000);

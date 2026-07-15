@@ -23,8 +23,12 @@
     "akusidecar": {
       "label": "AkuSidecar",
       "cwd": "C:\\WorkspaceCodex\\AkuWorkspace\\AkuSidecar",
-      "command": "C:\\WorkspaceCodex\\AkuWorkspace\\AkuSidecar\\runtime\\dev\\aku-watch.exe",
-      "args": [],
+      "command": "C:\\WorkspaceCodex\\AkuWorkspace\\AkuSidecar\\runtime\\dev\\aku-sidecar.exe",
+      "args": [
+        "--config",
+        "C:\\WorkspaceCodex\\AkuWorkspace\\AkuSidecar\\config\\sidecar.json",
+        "--dev"
+      ],
       "environment": {},
       "health": {
         "type": "http-json",
