@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+use crate::adapters::config::ConsoleEvents;
 use crate::application::{
     ControlAction, ControlError, ControlErrorKind, ControlMutationOutcome, ControlMutationResult,
     ProcessExitEvent, ServiceSnapshot, SupervisorControl, TreeStopReport,
@@ -254,6 +255,8 @@ pub struct AuditedControl {
     journal: Arc<FileJournal>,
     supervisor_instance_id: String,
     config_fingerprint: String,
+    console_events: Option<ConsoleEvents>,
+    event_publication: Mutex<()>,
 }
 
 impl AuditedControl {
@@ -268,6 +271,30 @@ impl AuditedControl {
             journal,
             supervisor_instance_id: format!("{}-{}", std::process::id(), unix_milliseconds()),
             config_fingerprint: config_fingerprint.into(),
+            console_events: None,
+            event_publication: Mutex::new(()),
+        }
+    }
+
+    /// Mirrors persisted canonical lifecycle records to the visible foreground
+    /// console at the configured detail level.
+    #[must_use]
+    pub const fn with_console_events(mut self, console_events: ConsoleEvents) -> Self {
+        self.console_events = Some(console_events);
+        self
+    }
+
+    fn publish_console_event(&self, record: &JournalRecord) {
+        let Some(mode) = self.console_events else {
+            return;
+        };
+        let Some(line) = format_console_event(record, mode) else {
+            return;
+        };
+        if record.result == JournalResult::Failure {
+            eprintln!("{line}");
+        } else {
+            println!("{line}");
         }
     }
 
@@ -290,7 +317,12 @@ impl AuditedControl {
         let reason = Reason::new(format!("owned process tree exited {exit}; {recovery}")).map_err(
             |error| ControlError::internal(format!("invalid process-exit reason: {error}")),
         )?;
-        self.journal
+        let _publication = self
+            .event_publication
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let record = self
+            .journal
             .append(JournalRecord {
                 sequence: 0,
                 timestamp: format!("unix-ms:{}", unix_milliseconds()),
@@ -310,10 +342,11 @@ impl AuditedControl {
                 shutdown: None,
                 config_fingerprint: self.config_fingerprint.clone(),
             })
-            .map(|_| ())
             .map_err(|error| {
                 ControlError::internal(format!("failed to persist process-exit journal: {error}"))
-            })
+            })?;
+        self.publish_console_event(&record);
+        Ok(())
     }
 }
 
@@ -405,9 +438,14 @@ impl SupervisorControl for AuditedControl {
                 .and_then(|result| result.shutdown.clone()),
             config_fingerprint: self.config_fingerprint.clone(),
         };
-        self.journal.append(record).map_err(|error| {
+        let _publication = self
+            .event_publication
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let record = self.journal.append(record).map_err(|error| {
             ControlError::internal(format!("failed to persist lifecycle journal: {error}"))
         })?;
+        self.publish_console_event(&record);
         outcome
     }
 }
@@ -417,6 +455,141 @@ fn lifecycle_action(action: ControlAction) -> JournalAction {
         ControlAction::Start => JournalAction::Start,
         ControlAction::Stop => JournalAction::Stop,
         ControlAction::Restart => JournalAction::Restart,
+    }
+}
+
+fn format_console_event(record: &JournalRecord, mode: ConsoleEvents) -> Option<String> {
+    if mode == ConsoleEvents::Off && record.result == JournalResult::Success {
+        return None;
+    }
+
+    let action = journal_action_label(record.action);
+    let actor = actor_label(record.actor);
+    let previous = lifecycle_state_label(record.previous_state);
+    let resulting = lifecycle_state_label(record.resulting_state);
+    let outcome = event_outcome_label(record);
+
+    if mode != ConsoleEvents::Verbose {
+        return Some(format!(
+            "[event #{}] {} {action}: {previous} -> {resulting} ({actor}, {outcome})",
+            record.sequence, record.service_id
+        ));
+    }
+
+    let mut details = vec![
+        format!("service={}", record.service_id),
+        format!("action={action}"),
+        format!("actor={actor}"),
+        format!("state={previous}->{resulting}"),
+        format!("result={}", journal_result_label(record.result)),
+        format!("reason={:?}", record.reason.as_str()),
+        format!(
+            "pids={}->{}",
+            record.owned_pids_before.len(),
+            record.owned_pids_after.len()
+        ),
+    ];
+    if let Some(category) = record.error_category {
+        details.push(format!("category={}", error_category_label(category)));
+    }
+    if let Some(shutdown) = &record.shutdown {
+        details.push(format!(
+            "shutdown={}",
+            if shutdown.forced {
+                "forced"
+            } else if shutdown.graceful_signal_sent && shutdown.graceful_signal_error.is_none() {
+                "graceful"
+            } else {
+                "completed"
+            }
+        ));
+    }
+    if let Some(exit_code) = record.exit_code {
+        details.push(format!("exitCode={exit_code}"));
+    }
+    Some(format!(
+        "[event #{}] {}",
+        record.sequence,
+        details.join(" ")
+    ))
+}
+
+fn event_outcome_label(record: &JournalRecord) -> &'static str {
+    if record.result == JournalResult::Failure {
+        return record
+            .error_category
+            .map_or("failure", error_category_label);
+    }
+    if matches!(
+        record.error_category,
+        Some(ErrorCategory::AlreadyRunning | ErrorCategory::AlreadyStopped)
+    ) {
+        return record
+            .error_category
+            .map_or("success", error_category_label);
+    }
+    match &record.shutdown {
+        Some(shutdown) if shutdown.forced => "forced",
+        Some(shutdown)
+            if shutdown.graceful_signal_sent && shutdown.graceful_signal_error.is_none() =>
+        {
+            "graceful"
+        }
+        _ => "success",
+    }
+}
+
+const fn journal_action_label(action: JournalAction) -> &'static str {
+    match action {
+        JournalAction::Start => "start",
+        JournalAction::Stop => "stop",
+        JournalAction::Restart => "restart",
+        JournalAction::ProcessExit => "process_exit",
+    }
+}
+
+const fn journal_result_label(result: JournalResult) -> &'static str {
+    match result {
+        JournalResult::Success => "success",
+        JournalResult::Failure => "failure",
+    }
+}
+
+const fn actor_label(actor: Actor) -> &'static str {
+    match actor {
+        Actor::UserCli => "user/cli",
+        Actor::UserUi => "user/ui",
+        Actor::Agent => "agent/generic",
+        Actor::Codex => "agent/codex",
+        Actor::Recovery => "recovery/supervisor",
+    }
+}
+
+const fn lifecycle_state_label(state: LifecycleState) -> &'static str {
+    match state {
+        LifecycleState::Stopped => "stopped",
+        LifecycleState::Starting => "starting",
+        LifecycleState::Running => "running",
+        LifecycleState::Stopping => "stopping",
+        LifecycleState::Unhealthy => "unhealthy",
+        LifecycleState::Failed => "failed",
+    }
+}
+
+const fn error_category_label(category: ErrorCategory) -> &'static str {
+    match category {
+        ErrorCategory::ConfigInvalid => "config_invalid",
+        ErrorCategory::AlreadyRunning => "already_running",
+        ErrorCategory::AlreadyStopped => "already_stopped",
+        ErrorCategory::PortConflictExternal => "port_conflict_external",
+        ErrorCategory::SpawnFailed => "spawn_failed",
+        ErrorCategory::StartupTimeout => "startup_timeout",
+        ErrorCategory::HealthFailed => "health_failed",
+        ErrorCategory::ShutdownTimeout => "shutdown_timeout",
+        ErrorCategory::OwnershipLost => "ownership_lost",
+        ErrorCategory::ProcessExited => "process_exited",
+        ErrorCategory::Unauthorized => "unauthorized",
+        ErrorCategory::SupervisorInternalError => "supervisor_internal_error",
     }
 }
 
@@ -509,10 +682,14 @@ impl std::error::Error for FileJournalError {}
 
 #[cfg(test)]
 mod tests {
+    use crate::adapters::config::ConsoleEvents;
     use crate::application::TreeStopReport;
     use crate::domain::{Actor, LifecycleState, Reason};
 
-    use super::{ErrorCategory, FileJournal, JournalAction, JournalRecord, JournalResult};
+    use super::{
+        ErrorCategory, FileJournal, JournalAction, JournalRecord, JournalResult,
+        format_console_event,
+    };
 
     fn record(reason: &str) -> JournalRecord {
         JournalRecord {
@@ -545,6 +722,61 @@ mod tests {
         assert_eq!(first, second);
         assert!(first.ends_with('\n'));
         assert_eq!(first.lines().count(), 1);
+    }
+
+    #[test]
+    fn lifecycle_console_event_is_concise_and_sequence_backed() {
+        let record = record("backend source changed");
+
+        assert_eq!(
+            format_console_event(&record, ConsoleEvents::Lifecycle).as_deref(),
+            Some("[event #7] akusidecar restart: running -> running (agent/generic, success)")
+        );
+        assert_eq!(format_console_event(&record, ConsoleEvents::Off), None);
+    }
+
+    #[test]
+    fn verbose_console_event_keeps_auditable_details_bounded() {
+        let mut stopped = record("operator requested\nshutdown");
+        stopped.action = JournalAction::Stop;
+        stopped.actor = Actor::UserCli;
+        stopped.resulting_state = LifecycleState::Stopped;
+        stopped.owned_pids_after.clear();
+        stopped.shutdown = Some(TreeStopReport {
+            owned_pids_before: vec![100, 101],
+            owned_pids_after: Vec::new(),
+            graceful_signal_sent: true,
+            graceful_signal_error: None,
+            forced: false,
+        });
+
+        let lifecycle = format_console_event(&stopped, ConsoleEvents::Lifecycle)
+            .expect("lifecycle console event");
+        assert_eq!(
+            lifecycle,
+            "[event #7] akusidecar stop: running -> stopped (user/cli, graceful)"
+        );
+
+        let verbose =
+            format_console_event(&stopped, ConsoleEvents::Verbose).expect("verbose console event");
+        assert!(verbose.contains("actor=user/cli"));
+        assert!(verbose.contains(r#"reason="operator requested\nshutdown""#));
+        assert!(verbose.contains("pids=2->0"));
+        assert!(verbose.contains("shutdown=graceful"));
+        assert_eq!(verbose.lines().count(), 1);
+    }
+
+    #[test]
+    fn off_console_mode_still_surfaces_failures() {
+        let mut failed = record("spawn failed");
+        failed.result = JournalResult::Failure;
+        failed.resulting_state = LifecycleState::Failed;
+        failed.error_category = Some(ErrorCategory::SpawnFailed);
+
+        assert_eq!(
+            format_console_event(&failed, ConsoleEvents::Off).as_deref(),
+            Some("[event #7] akusidecar restart: running -> failed (agent/generic, spawn_failed)")
+        );
     }
 
     #[test]

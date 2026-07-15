@@ -110,8 +110,8 @@ fn foreground_cli_runs_registered_lifecycle_and_cleans_up() {
     assert!(stdout.contains("started fixture"));
     assert!(stdout.contains("restart completed for fixture: Restarted"));
     assert!(stdout.contains("stopped fixture"));
+    assert_console_events(&stdout, &stderr);
     assert!(stdout.contains("Owned service cleanup complete."));
-    assert!(stderr.is_empty(), "unexpected supervisor error: {stderr}");
     let runtime = config_directory.join(".runtime");
     let journal = fs::read_to_string(runtime.join("supervisor.jsonl"))
         .expect("read persisted lifecycle journal");
@@ -126,6 +126,15 @@ fn foreground_cli_runs_registered_lifecycle_and_cleans_up() {
         fs::read_to_string(runtime.join("services/fixture.stderr.log"))
             .expect("read captured stderr")
             .contains("process fixture stderr ready")
+    );
+}
+
+fn assert_console_events(stdout: &str, stderr: &str) {
+    assert!(stdout.contains("[event #1] fixture start: stopped -> running (agent/codex, success)"));
+    assert_eq!(
+        stderr.lines().collect::<Vec<_>>(),
+        ["[event #3] fixture start: stopped -> stopped (agent/codex, unauthorized)"],
+        "stderr may contain only the expected canonical authorization failure event"
     );
 }
 

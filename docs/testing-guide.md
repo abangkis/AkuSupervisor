@@ -220,6 +220,13 @@ Repeating the last command with the same ID and body must replay its original
 response without creating another lifecycle event. Reusing that ID with a
 different reason must fail with HTTP `409`.
 
+With `observability.consoleEvents` set to its default `lifecycle`, the visible
+Supervisor/watcher terminal must also receive exactly one concise line for the
+new canonical event. The line includes the same journal sequence, service,
+action, state transition, actor, and result. Set the value to `verbose` to add
+reason, PID counts, error category, exit code, and shutdown evidence, or `off`
+to keep successful events journal-only. Failures remain visible in every mode.
+
 A successful stop or restart that replaced an owned tree must include
 `response.shutdown` in `--json` output. Confirm that `ownedPidsAfter` is empty
 and inspect `gracefulSignalSent` plus `forced`; the matching `events` record

@@ -18,10 +18,43 @@ pub const CONFIG_VERSION: u32 = 1;
 pub struct SupervisorConfig {
     pub version: u32,
     pub control: ControlConfig,
+    #[serde(default)]
+    pub observability: ObservabilityConfig,
     #[serde(default, rename = "cooperativeActions")]
     pub cooperative_actions: CooperativeActionsConfig,
     #[serde(deserialize_with = "deserialize_services")]
     pub services: BTreeMap<String, ServiceConfig>,
+}
+
+/// Supervisor-owned event visibility. Durable lifecycle journaling remains
+/// mandatory regardless of this console presentation setting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ObservabilityConfig {
+    #[serde(default)]
+    pub console_events: ConsoleEvents,
+}
+
+/// Amount of canonical lifecycle-event detail mirrored to the foreground
+/// console after the audit record has been persisted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ConsoleEvents {
+    Off,
+    #[default]
+    Lifecycle,
+    Verbose,
+}
+
+impl ConsoleEvents {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Lifecycle => "lifecycle",
+            Self::Verbose => "verbose",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -633,8 +666,9 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        CONFIG_VERSION, ConfigError, ControlConfig, CooperativeActionsConfig, HealthCheck,
-        McpConfig, RestartPolicy, ServiceConfig, SupervisorConfig,
+        CONFIG_VERSION, ConfigError, ConsoleEvents, ControlConfig, CooperativeActionsConfig,
+        HealthCheck, McpConfig, ObservabilityConfig, RestartPolicy, ServiceConfig,
+        SupervisorConfig,
     };
 
     static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(1);
@@ -682,6 +716,7 @@ mod tests {
                 token_file: PathBuf::from(".runtime/control-token"),
                 mcp: McpConfig::default(),
             },
+            observability: ObservabilityConfig::default(),
             cooperative_actions: CooperativeActionsConfig::default(),
             services: BTreeMap::from([("fixture".to_owned(), service)]),
         };
@@ -692,6 +727,28 @@ mod tests {
     fn valid_local_configuration_passes() {
         let (_directory, config) = valid_config();
         assert_eq!(config.validate(), Ok(()));
+        assert_eq!(
+            config.observability.console_events,
+            ConsoleEvents::Lifecycle
+        );
+    }
+
+    #[test]
+    fn omitted_observability_defaults_to_lifecycle_console_events() {
+        let (_directory, config) = valid_config();
+        let mut value = serde_json::to_value(config).expect("serialize fixture configuration");
+        value
+            .as_object_mut()
+            .expect("configuration object")
+            .remove("observability");
+
+        let parsed = SupervisorConfig::parse_json(&value.to_string())
+            .expect("legacy configuration without observability must parse");
+
+        assert_eq!(
+            parsed.observability.console_events,
+            ConsoleEvents::Lifecycle
+        );
     }
 
     #[test]

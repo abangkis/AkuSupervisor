@@ -12,6 +12,9 @@
     "control": {
       "$ref": "#/$defs/control"
     },
+    "observability": {
+      "$ref": "#/$defs/observability"
+    },
     "cooperativeActions": {
       "$ref": "#/$defs/cooperativeActions"
     },
@@ -27,6 +30,20 @@
     }
   },
   "$defs": {
+    "observability": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "consoleEvents": {
+          "type": "string",
+          "enum": ["off", "lifecycle", "verbose"],
+          "default": "lifecycle"
+        }
+      },
+      "default": {
+        "consoleEvents": "lifecycle"
+      }
+    },
     "cooperativeActions": {
       "type": "object",
       "additionalProperties": false,

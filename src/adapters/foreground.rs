@@ -86,11 +86,10 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
     let development_shutdown =
         DevelopmentShutdown::from_environment().map_err(ForegroundError::DevelopmentShutdown)?;
     let registry_control: Arc<dyn SupervisorControl> = registry.clone();
-    let audited = Arc::new(AuditedControl::new(
-        registry_control,
-        Arc::clone(&journal),
-        fingerprint.clone(),
-    ));
+    let audited = Arc::new(
+        AuditedControl::new(registry_control, Arc::clone(&journal), fingerprint.clone())
+            .with_console_events(config.observability.console_events),
+    );
     let control: Arc<dyn SupervisorControl> = audited.clone();
     let logs = Arc::new(ServiceLogStore::new(
         &runtime_services_directory,
@@ -298,6 +297,10 @@ fn print_startup(
     }
     println!("Control token: {}", token_path.display());
     println!("Lifecycle journal: {}", journal_path.display());
+    println!(
+        "Console lifecycle events: {}",
+        config.observability.console_events.as_str()
+    );
     if config.cooperative_actions.aku_bridge_reload.is_some() {
         println!(
             "Cooperative action audit: {}",

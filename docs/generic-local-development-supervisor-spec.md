@@ -426,6 +426,13 @@ Every lifecycle event contains:
 - result and structured error category; and
 - configuration fingerprint.
 
+The durable journal is mandatory. An optional platform-neutral observability
+setting controls whether the finalized canonical record is also mirrored to
+the foreground console as `off`, concise `lifecycle` (default), or `verbose`.
+Even `off` does not suppress failures from stderr. Console publication happens
+only after persistence succeeds, and managed-service stdout/stderr remains a
+separate log stream.
+
 Minimum error categories:
 
 - `config_invalid`;

@@ -31,6 +31,9 @@ The copyable template is
       "allowedOrigins": []
     }
   },
+  "observability": {
+    "consoleEvents": "lifecycle"
+  },
   "services": {
     "legacy-api": {
       "label": "Immutable Legacy API",
@@ -66,6 +69,29 @@ not accept an arbitrary shell command from a lifecycle request.
 `cooperativeActions` is not required for ordinary programs. It currently
 contains only the AkuWorkspace-specific AkuBridge reload adapter and should be
 omitted from generic profiles.
+
+## Observability fields
+
+The append-only lifecycle journal is always enabled and cannot be disabled by
+configuration. `observability.consoleEvents` controls only the canonical event
+summary mirrored to the visible Supervisor console after the corresponding
+journal record has been durably written.
+
+| Value | Console behavior |
+|---|---|
+| `off` | Successful lifecycle events remain journal-only. Failures still appear on stderr. |
+| `lifecycle` | Default. One concise line shows sequence, service, action, state transition, actor, and outcome. |
+| `verbose` | Adds reason, PID counts, error category, exit code, and graceful/forced shutdown evidence. |
+
+Example default output:
+
+```text
+[event #244] geofu-be start: stopped -> running (user/cli, success)
+[event #245] geofu-be stop: running -> stopped (user/cli, graceful)
+```
+
+This is Supervisor activity, not managed-service stdout/stderr. Service output
+continues to use the files beneath `.runtime/services` and the `logs` command.
 
 ## Service fields
 

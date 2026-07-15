@@ -197,6 +197,8 @@ Current checkpoint:
 - verified: shared HTTP, client, token, and application control code contains
   no Windows implementation import;
 - complete: persistent monotonic JSONL journal and bounded `events` retrieval;
+- complete: persisted lifecycle events can be mirrored to the visible console
+  as `off`, default `lifecycle`, or `verbose`, while failures remain visible;
 - complete: continuously rotated per-service stdout/stderr logs and bounded
   `logs` retrieval;
 - complete: protected current-user-only token-file DACL through the Windows

@@ -1,6 +1,6 @@
 use aku_supervisor::adapters::config::{
-    CONFIG_VERSION, ControlConfig, CooperativeActionsConfig, HealthCheck, McpConfig, RestartPolicy,
-    ServiceConfig, SupervisorConfig,
+    CONFIG_VERSION, ConsoleEvents, ControlConfig, CooperativeActionsConfig, HealthCheck, McpConfig,
+    ObservabilityConfig, RestartPolicy, ServiceConfig, SupervisorConfig,
 };
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -27,6 +27,12 @@ fn checked_in_schema_is_valid_json_schema_document() {
             .and_then(serde_json::Value::as_str),
         Some("#/$defs/control")
     );
+    assert_eq!(
+        schema
+            .pointer("/properties/observability/$ref")
+            .and_then(serde_json::Value::as_str),
+        Some("#/$defs/observability")
+    );
 }
 
 #[test]
@@ -36,6 +42,10 @@ fn checked_in_akuworkspace_profile_matches_the_typed_contract() {
 
     assert!(config.cooperative_actions.aku_bridge_reload.is_some());
     assert!(config.control.mcp.enabled);
+    assert_eq!(
+        config.observability.console_events,
+        ConsoleEvents::Lifecycle
+    );
     assert!(config.control.mcp.allowed_origins.is_empty());
     assert_eq!(
         config
@@ -92,6 +102,10 @@ fn immutable_windows_example_requires_no_cooperative_target_contract() {
         .get("legacy-api")
         .expect("immutable example service");
     assert!(matches!(service.health, HealthCheck::Process));
+    assert_eq!(
+        config.observability.console_events,
+        ConsoleEvents::Lifecycle
+    );
     assert_eq!(service.restart_policy, RestartPolicy::Manual);
     assert_eq!(service.shutdown_grace_ms, 5_000);
 }
@@ -105,6 +119,9 @@ fn typed_configuration_serializes_with_contract_field_names() {
             port: 47_820,
             token_file: PathBuf::from(".runtime/control-token"),
             mcp: McpConfig::default(),
+        },
+        observability: ObservabilityConfig {
+            console_events: ConsoleEvents::Verbose,
         },
         cooperative_actions: CooperativeActionsConfig::default(),
         services: BTreeMap::from([(
@@ -129,6 +146,12 @@ fn typed_configuration_serializes_with_contract_field_names() {
     };
 
     let value = serde_json::to_value(config).expect("typed configuration should serialize");
+    assert_eq!(
+        value
+            .pointer("/observability/consoleEvents")
+            .and_then(serde_json::Value::as_str),
+        Some("verbose")
+    );
     assert_eq!(
         value
             .pointer("/control/tokenFile")

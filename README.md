@@ -361,6 +361,19 @@ Each output stream rotates continuously at 5 MB and retains five generations.
 The `events` command returns at most 200 records per request; `logs` returns at
 most 1,000 lines from the active generation.
 
+The lifecycle journal is always complete. The optional root setting
+`observability.consoleEvents` controls whether its persisted records are also
+mirrored to the visible Supervisor terminal: `off`, `lifecycle` (the default),
+or `verbose`. Failures remain visible on stderr even in `off` mode. The default
+prints one bounded line such as:
+
+```text
+[event #244] geofu-be start: stopped -> running (user/cli, success)
+```
+
+See the [configuration guide](docs/configuration-guide.md) for the distinction
+between Supervisor lifecycle events and managed-service stdout/stderr logs.
+
 The checked-in canonical AkuWorkspace profile is
 [`config/akuworkspace.services.json`](config/akuworkspace.services.json). It
 registers AkuSidecar and Geofu BE behind one control API, runtime token, and

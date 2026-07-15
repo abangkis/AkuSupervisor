@@ -9,6 +9,9 @@
       "allowedOrigins": []
     }
   },
+  "observability": {
+    "consoleEvents": "lifecycle"
+  },
   "cooperativeActions": {
     "akuBridgeReload": {
       "sidecarOrigin": "http://127.0.0.1:47821",

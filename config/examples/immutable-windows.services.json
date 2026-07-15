@@ -9,6 +9,9 @@
       "allowedOrigins": []
     }
   },
+  "observability": {
+    "consoleEvents": "lifecycle"
+  },
   "services": {
     "legacy-api": {
       "label": "Immutable Legacy API",
