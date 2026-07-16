@@ -253,6 +253,13 @@ It must never kill a process solely because:
 - its command line resembles the configured command; or
 - it is named `node.exe`, `npm.exe`, `powershell.exe`, or `cmd.exe`.
 
+Managed services are non-interactive. Their stdin must not share the visible
+Supervisor console or its redirected control input: the platform adapter
+supplies an inherited null/EOF handle (`NUL` on Windows and the equivalent on
+later platforms). Stdout and stderr remain independently captured in bounded
+per-service logs. A future interactive-terminal service mode requires a
+separate lifecycle and ownership contract and is out of scope for v0.
+
 ### 10.2 Port conflict
 
 Before starting a service, the supervisor checks declared ports.

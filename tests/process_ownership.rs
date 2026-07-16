@@ -1,6 +1,7 @@
 #![cfg(all(windows, feature = "test-fixtures"))]
 #![allow(unsafe_code)]
 
+use std::fs;
 use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -55,6 +56,19 @@ fn wait_for_tree(tree: &OwnedProcessTree, minimum: usize) -> Vec<u32> {
 fn cleanup_unrelated(child: &mut Child) {
     child.kill().ok();
     child.wait().ok();
+}
+
+fn unique_test_directory(label: &str) -> std::path::PathBuf {
+    let directory = std::env::temp_dir().join(format!(
+        "aku-supervisor-{label}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock after epoch")
+            .as_nanos()
+    ));
+    fs::create_dir_all(&directory).expect("test directory should be created");
+    directory
 }
 
 struct WaitHandle(HANDLE);
@@ -135,4 +149,64 @@ fn dropping_owner_closes_job_and_terminates_tree() {
     drop(tree);
 
     root.wait_for_exit();
+}
+
+#[test]
+fn native_launch_preserves_arguments_environment_logs_and_noninteractive_stdin() {
+    let directory = unique_test_directory("native-launch");
+    let evidence = directory.join("launch evidence.json");
+    let stdout = directory.join("service.stdout.log");
+    let stderr = directory.join("service.stderr.log");
+    let expected_arguments = [
+        "plain",
+        "two words",
+        "embedded\"quote",
+        r"trailing slash\",
+        "",
+    ];
+    let mut arguments = vec![
+        "--capture-launch".to_owned(),
+        evidence.to_string_lossy().into_owned(),
+    ];
+    arguments.extend(expected_arguments.map(str::to_owned));
+    let launch = LaunchSpec::new(
+        fixture(),
+        arguments,
+        std::env::current_dir().expect("current test directory"),
+        [("AKU_SUPERVISOR_FIXTURE_ENV", "forwarded value")],
+    )
+    .with_log_files(&stdout, &stderr);
+    let mut tree = WindowsProcessSpawner
+        .spawn(&launch)
+        .expect("native launch should start");
+
+    let deadline = Instant::now() + STARTUP_TIMEOUT;
+    while !evidence.exists() {
+        assert!(Instant::now() < deadline, "launch evidence was not written");
+        thread::sleep(Duration::from_millis(20));
+    }
+    let deadline = Instant::now() + STARTUP_TIMEOUT;
+    while tree
+        .try_wait()
+        .expect("process status should be readable")
+        .is_none()
+    {
+        assert!(Instant::now() < deadline, "fixture did not exit naturally");
+        thread::sleep(Duration::from_millis(20));
+    }
+
+    let payload: serde_json::Value =
+        serde_json::from_slice(&fs::read(&evidence).expect("launch evidence should be readable"))
+            .expect("launch evidence should be JSON");
+    assert_eq!(payload["args"], serde_json::json!(expected_arguments));
+    assert_eq!(payload["environment"], "forwarded value");
+    assert_eq!(payload["stdinBytes"], 0);
+    assert!(
+        fs::read_to_string(&stdout)
+            .expect("stdout log should be readable")
+            .contains("launch captured")
+    );
+    assert!(tree.owned_pids().expect("final ownership query").is_empty());
+
+    fs::remove_dir_all(directory).expect("test directory should be removed");
 }

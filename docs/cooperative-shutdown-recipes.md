@@ -14,12 +14,18 @@ Language support and recipe validation are separate:
   reported `gracefulSignalSent: true`, `forced: false`, and
   `ownedPidsAfter: []`.
 
+Runtime-specific fixtures and native compatibility reports belong to the
+separate sibling project `AkuSupervisorConformance`. It consumes an explicitly
+supplied AkuSupervisor executable and is not a submodule, build dependency, or
+`promote-stable.ps1` gate. Normal AkuSupervisor users do not need to clone it or
+install the runtimes represented by its fixtures.
+
 ## Validation matrix
 
 | Language/runtime | Direct executable supervision | Maintained cooperative recipe | Validation status |
 |---|---|---|---|
 | Go | Supported by the generic command contract | Yes, below | Windows live-validated; Linux amd64 and macOS arm64 compile-checked |
-| Node.js | Supported, including registered `.cmd` launchers | Candidate contract finalized below | Geofu npm/Rollup process-exit evidence exists on Windows; application-owned fixture and native cleanup evidence remain |
+| Node.js | Supported, including registered `.cmd` launchers | Yes for the current Windows adapter, below | Independent fixture, deterministic test, and Windows native gate pass in AkuSupervisorConformance with application-observed `SIGBREAK`, complete cleanup events, no forced fallback, and an empty owned tree |
 | Rust | Supported by the generic command contract | Planned | AkuSupervisor itself uses Rust, but a reusable managed-application recipe is not yet certified |
 | Kotlin/JVM | Supported when launched as an owned Java process | Planned | Signal/JVM shutdown-hook behavior still requires native live validation |
 | Other executables | Supported when the process remains inside the native ownership boundary | Not yet maintained | Use the immutable-program contract and expect forced fallback when the target does not cooperate |
@@ -345,6 +351,12 @@ That deterministic test validates application behavior. A separate native
 AkuSupervisor integration gate must still deliver Ctrl+Break on Windows and
 SIGTERM on every later POSIX adapter.
 
+The dependency-free reference implementation now lives in the separate
+`AkuSupervisorConformance/fixtures/node-application-owned` project. Its
+deterministic test passes without `npm install`. The Windows runner accepts an
+explicit AkuSupervisor binary path, creates an isolated configuration, and
+produces a versioned JSON report without touching the user's normal profile.
+
 ## Current Node.js evidence and AI4U frontend applicability
 
 The sibling Geofu plugin server at
@@ -385,6 +397,20 @@ candidate recipe, but that adds a repository-specific maintenance layer and is
 not recommended unless application-level drain evidence becomes materially
 valuable. No shutdown handler should be added to `ai4u_fe/src` for this purpose.
 
+The independent Windows native gate now passes. AkuSupervisor retains the
+primary thread handle returned by `CreateProcessW`, assigns the suspended
+process to its Job Object, and removes exactly its own suspend count through
+that handle. It does not enumerate or resume an antivirus/EDR-owned thread.
+Supervised services also receive an inherited `NUL` stdin handle instead of
+sharing the Supervisor's interactive or redirected stdin; stdout and stderr
+remain captured by bounded log pipes.
+
+The passing application evidence includes readiness, application-observed
+`SIGBREAK`, all four required cleanup events, `forced: false`, an empty owned
+tree, listener release, and preservation of an unrelated process. The recipe
+is therefore maintained for the current Windows adapter. Linux and macOS remain
+separate future compatibility tuples rather than implied support.
+
 ## Live acceptance gate for every recipe
 
 A recipe is promoted from planned to maintained only after all of these pass:
@@ -417,3 +443,8 @@ Keep one section per language/runtime. Each section must document:
 
 Update the validation matrix only when the full live acceptance gate passes.
 Do not claim language support based solely on a code snippet.
+
+AkuSupervisorConformance owns runtime dependencies and native reports. This
+repository owns the generic contract and current compatibility summary only;
+neither core builds nor stable promotion may acquire a dependency on the
+conformance checkout.

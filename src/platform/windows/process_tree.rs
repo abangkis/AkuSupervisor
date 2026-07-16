@@ -1,19 +1,31 @@
 #![allow(unsafe_code)]
 
+use std::collections::BTreeMap;
+use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::mem::{size_of, size_of_val};
-use std::os::windows::io::AsRawHandle;
-use std::os::windows::process::CommandExt;
+use std::os::windows::ffi::OsStrExt;
+use std::os::windows::io::{AsRawHandle, FromRawHandle, RawHandle};
+use std::os::windows::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::ptr;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
-use windows_sys::Win32::System::Console::{CTRL_BREAK_EVENT, GenerateConsoleCtrlEvent};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, FILETIME, GENERIC_READ, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
+    STILL_ACTIVE, SetHandleInformation, WAIT_FAILED,
+};
+use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+use windows_sys::Win32::Storage::FileSystem::{
+    CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+};
+use windows_sys::Win32::System::Console::{
+    CTRL_BREAK_EVENT, GenerateConsoleCtrlEvent, GetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE,
+};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
 };
@@ -23,8 +35,12 @@ use windows_sys::Win32::System::JobObjects::{
     JobObjectBasicProcessIdList, JobObjectExtendedLimitInformation, QueryInformationJobObject,
     SetInformationJobObject, TerminateJobObject,
 };
+use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
-    CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED, OpenThread, ResumeThread, THREAD_SUSPEND_RESUME,
+    CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
+    GetExitCodeProcess, GetThreadTimes, INFINITE, OpenThread, PROCESS_INFORMATION, ResumeThread,
+    STARTF_USESTDHANDLES, STARTUPINFOW, THREAD_QUERY_LIMITED_INFORMATION, THREAD_SUSPEND_RESUME,
+    TerminateProcess, WaitForSingleObject,
 };
 
 use crate::application::{ManagedProcessTree, TreeStopReport};
@@ -40,9 +56,59 @@ const LOG_GENERATIONS: usize = 5;
 #[derive(Debug)]
 pub struct OwnedProcessTree {
     job: OwnedHandle,
-    child: Child,
+    child: RootProcess,
     root_pid: u32,
     log_threads: Vec<LogThread>,
+}
+
+#[derive(Debug)]
+enum RootProcess {
+    Standard(Child),
+    Native(NativeChild),
+}
+
+impl RootProcess {
+    fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+        match self {
+            Self::Standard(child) => child.try_wait(),
+            Self::Native(child) => child.try_wait(),
+        }
+    }
+
+    fn wait(&mut self) -> io::Result<ExitStatus> {
+        match self {
+            Self::Standard(child) => child.wait(),
+            Self::Native(child) => child.wait(),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct NativeChild {
+    process: OwnedHandle,
+}
+
+impl NativeChild {
+    fn try_wait(&self) -> io::Result<Option<ExitStatus>> {
+        let mut exit_code = 0;
+        if unsafe { GetExitCodeProcess(self.process.raw(), &raw mut exit_code) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if exit_code == STILL_ACTIVE as u32 {
+            Ok(None)
+        } else {
+            Ok(Some(ExitStatus::from_raw(exit_code)))
+        }
+    }
+
+    fn wait(&self) -> io::Result<ExitStatus> {
+        if unsafe { WaitForSingleObject(self.process.raw(), INFINITE) } == WAIT_FAILED {
+            return Err(io::Error::last_os_error());
+        }
+        self.try_wait()?.ok_or_else(|| {
+            io::Error::other("process remained active after its wait handle was signaled")
+        })
+    }
 }
 
 impl OwnedProcessTree {
@@ -63,6 +129,18 @@ impl OwnedProcessTree {
     }
 
     pub(crate) fn spawn_with_logs(
+        command: &mut Command,
+        stdout_path: Option<&Path>,
+        stderr_path: Option<&Path>,
+    ) -> Result<Self, ProcessTreeError> {
+        if is_batch_program(command.get_program()) {
+            Self::spawn_batch_with_logs(command, stdout_path, stderr_path)
+        } else {
+            Self::spawn_native_with_logs(command, stdout_path, stderr_path)
+        }
+    }
+
+    fn spawn_batch_with_logs(
         command: &mut Command,
         stdout_path: Option<&Path>,
         stderr_path: Option<&Path>,
@@ -141,7 +219,95 @@ impl OwnedProcessTree {
 
         Ok(Self {
             job,
-            child,
+            child: RootProcess::Standard(child),
+            root_pid,
+            log_threads,
+        })
+    }
+
+    fn spawn_native_with_logs(
+        command: &Command,
+        stdout_path: Option<&Path>,
+        stderr_path: Option<&Path>,
+    ) -> Result<Self, ProcessTreeError> {
+        let job = create_kill_on_close_job()?;
+        let stdout_writer = stdout_path
+            .map(RotatingLogWriter::open)
+            .transpose()
+            .map_err(|source| ProcessTreeError::LogSetup {
+                path: stdout_path.expect("mapped stdout path").to_owned(),
+                source,
+            })?;
+        let stderr_writer = stderr_path
+            .map(RotatingLogWriter::open)
+            .transpose()
+            .map_err(|source| ProcessTreeError::LogSetup {
+                path: stderr_path.expect("mapped stderr path").to_owned(),
+                source,
+            })?;
+
+        let mut spawned =
+            spawn_native_suspended(command, stdout_writer.is_some(), stderr_writer.is_some())?;
+        let root_pid = spawned.pid;
+
+        if unsafe { AssignProcessToJobObject(job.raw(), spawned.child.process.raw()) } == 0 {
+            let error = io::Error::last_os_error();
+            terminate_native_child(&mut spawned.child);
+            return Err(ProcessTreeError::AssignJob(error));
+        }
+
+        let log_threads = (|| {
+            let mut threads = Vec::new();
+            if let Some(writer) = stdout_writer {
+                let reader = spawned
+                    .stdout
+                    .take()
+                    .ok_or_else(|| ProcessTreeError::LogSetup {
+                        path: writer.path.clone(),
+                        source: io::Error::other("stdout pipe was not created"),
+                    })?;
+                threads.push(spawn_log_thread(reader, writer)?);
+            }
+            if let Some(writer) = stderr_writer {
+                let reader = spawned
+                    .stderr
+                    .take()
+                    .ok_or_else(|| ProcessTreeError::LogSetup {
+                        path: writer.path.clone(),
+                        source: io::Error::other("stderr pipe was not created"),
+                    })?;
+                threads.push(spawn_log_thread(reader, writer)?);
+            }
+            Ok(threads)
+        })();
+        let log_threads = match log_threads {
+            Ok(threads) => threads,
+            Err(error) => {
+                terminate_native_child(&mut spawned.child);
+                return Err(error);
+            }
+        };
+
+        // Resume exactly the suspension added by CREATE_SUSPENDED through the
+        // primary thread handle returned by CreateProcessW. Never enumerate or
+        // resume injected threads, and never drain a suspension owned by EDR.
+        let previous_suspend_count = unsafe { ResumeThread(spawned.primary_thread.raw()) };
+        if previous_suspend_count == u32::MAX || previous_suspend_count == 0 {
+            let error = if previous_suspend_count == u32::MAX {
+                io::Error::last_os_error()
+            } else {
+                io::Error::other("primary thread was not suspended")
+            };
+            terminate_native_child(&mut spawned.child);
+            for thread in log_threads {
+                thread.handle.join().ok();
+            }
+            return Err(ProcessTreeError::ResumePrimaryThread(error));
+        }
+
+        Ok(Self {
+            job,
+            child: RootProcess::Native(spawned.child),
             root_pid,
             log_threads,
         })
@@ -260,6 +426,281 @@ impl OwnedProcessTree {
             }
         }
         Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct NativeSpawn {
+    child: NativeChild,
+    primary_thread: OwnedHandle,
+    pid: u32,
+    stdout: Option<File>,
+    stderr: Option<File>,
+}
+
+#[derive(Debug)]
+struct PreparedPipe {
+    read: OwnedHandle,
+    write: OwnedHandle,
+}
+
+fn spawn_native_suspended(
+    command: &Command,
+    capture_stdout: bool,
+    capture_stderr: bool,
+) -> Result<NativeSpawn, ProcessTreeError> {
+    let stdout_pipe = capture_stdout.then(create_inheritable_pipe).transpose()?;
+    let stderr_pipe = capture_stderr.then(create_inheritable_pipe).transpose()?;
+
+    let application = wide_null(command.get_program()).map_err(ProcessTreeError::Spawn)?;
+    let mut command_line = build_command_line(command).map_err(ProcessTreeError::Spawn)?;
+    let current_directory = command
+        .get_current_dir()
+        .map(|directory| wide_null(directory.as_os_str()))
+        .transpose()
+        .map_err(ProcessTreeError::Spawn)?;
+    let environment = build_environment_block(command).map_err(ProcessTreeError::Spawn)?;
+
+    let mut startup = STARTUPINFOW {
+        cb: u32::try_from(size_of::<STARTUPINFOW>()).expect("STARTUPINFOW size fits u32"),
+        ..STARTUPINFOW::default()
+    };
+    let inherit_handles = stdout_pipe.is_some() || stderr_pipe.is_some();
+    let inherited_stdin = inherit_handles.then(open_inheritable_null).transpose()?;
+    if inherit_handles {
+        startup.dwFlags = STARTF_USESTDHANDLES;
+        startup.hStdInput = inherited_stdin
+            .as_ref()
+            .expect("inheritable stdin was prepared")
+            .raw();
+        startup.hStdOutput = stdout_pipe.as_ref().map_or_else(
+            || unsafe { GetStdHandle(STD_OUTPUT_HANDLE) },
+            |pipe| pipe.write.raw(),
+        );
+        startup.hStdError = stderr_pipe.as_ref().map_or_else(
+            || unsafe { GetStdHandle(STD_ERROR_HANDLE) },
+            |pipe| pipe.write.raw(),
+        );
+    }
+
+    let mut process_information = PROCESS_INFORMATION::default();
+    let created = unsafe {
+        CreateProcessW(
+            application.as_ptr(),
+            command_line.as_mut_ptr(),
+            ptr::null(),
+            ptr::null(),
+            i32::from(inherit_handles),
+            CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP | CREATE_UNICODE_ENVIRONMENT,
+            environment
+                .as_ref()
+                .map_or(ptr::null(), |block| block.as_ptr().cast()),
+            current_directory.as_ref().map_or(ptr::null(), Vec::as_ptr),
+            &raw const startup,
+            &raw mut process_information,
+        )
+    };
+    if created == 0 {
+        return Err(ProcessTreeError::Spawn(io::Error::last_os_error()));
+    }
+
+    let process =
+        OwnedHandle::from_nullable(process_information.hProcess, ProcessTreeError::Spawn)?;
+    let primary_thread =
+        OwnedHandle::from_nullable(process_information.hThread, ProcessTreeError::Spawn)?;
+
+    // The child owns the write ends after CreateProcessW. Closing the parent
+    // copies ensures each log reader reaches EOF when the child tree exits.
+    let stdout = stdout_pipe.map(|pipe| {
+        drop(pipe.write);
+        unsafe { File::from_raw_handle(pipe.read.into_raw_handle()) }
+    });
+    let stderr = stderr_pipe.map(|pipe| {
+        drop(pipe.write);
+        unsafe { File::from_raw_handle(pipe.read.into_raw_handle()) }
+    });
+
+    Ok(NativeSpawn {
+        child: NativeChild { process },
+        primary_thread,
+        pid: process_information.dwProcessId,
+        stdout,
+        stderr,
+    })
+}
+
+fn create_inheritable_pipe() -> Result<PreparedPipe, ProcessTreeError> {
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: u32::try_from(size_of::<SECURITY_ATTRIBUTES>())
+            .expect("SECURITY_ATTRIBUTES size fits u32"),
+        lpSecurityDescriptor: ptr::null_mut(),
+        bInheritHandle: 1,
+    };
+    let mut read = ptr::null_mut();
+    let mut write = ptr::null_mut();
+    if unsafe { CreatePipe(&raw mut read, &raw mut write, &raw const attributes, 0) } == 0 {
+        return Err(ProcessTreeError::StdioPipe(io::Error::last_os_error()));
+    }
+    let read = OwnedHandle::from_nullable(read, ProcessTreeError::StdioPipe)?;
+    let write = OwnedHandle::from_nullable(write, ProcessTreeError::StdioPipe)?;
+    if unsafe { SetHandleInformation(read.raw(), HANDLE_FLAG_INHERIT, 0) } == 0 {
+        return Err(ProcessTreeError::StdioPipe(io::Error::last_os_error()));
+    }
+    Ok(PreparedPipe { read, write })
+}
+
+fn open_inheritable_null() -> Result<OwnedHandle, ProcessTreeError> {
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: u32::try_from(size_of::<SECURITY_ATTRIBUTES>())
+            .expect("SECURITY_ATTRIBUTES size fits u32"),
+        lpSecurityDescriptor: ptr::null_mut(),
+        bInheritHandle: 1,
+    };
+    let null_device = wide_null(OsStr::new("NUL")).expect("NUL contains no embedded NUL");
+    let handle = unsafe {
+        CreateFileW(
+            null_device.as_ptr(),
+            GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            &raw const attributes,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        Err(ProcessTreeError::StdioPipe(io::Error::last_os_error()))
+    } else {
+        OwnedHandle::from_nullable(handle, ProcessTreeError::StdioPipe)
+    }
+}
+
+fn build_command_line(command: &Command) -> io::Result<Vec<u16>> {
+    let mut line = Vec::new();
+    append_windows_argument(&mut line, command.get_program())?;
+    for argument in command.get_args() {
+        line.push(u16::from(b' '));
+        append_windows_argument(&mut line, argument)?;
+    }
+    line.push(0);
+    Ok(line)
+}
+
+fn append_windows_argument(line: &mut Vec<u16>, argument: &OsStr) -> io::Result<()> {
+    let wide = argument.encode_wide().collect::<Vec<_>>();
+    if wide.contains(&0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "process argument contains NUL",
+        ));
+    }
+    let quote = wide.is_empty()
+        || wide.iter().any(|value| {
+            *value == u16::from(b' ') || *value == u16::from(b'\t') || *value == u16::from(b'"')
+        });
+    if !quote {
+        line.extend(wide);
+        return Ok(());
+    }
+
+    line.push(u16::from(b'"'));
+    let mut backslashes = 0;
+    for value in wide {
+        if value == u16::from(b'\\') {
+            backslashes += 1;
+            continue;
+        }
+        if value == u16::from(b'"') {
+            line.extend(std::iter::repeat_n(u16::from(b'\\'), backslashes * 2 + 1));
+        } else {
+            line.extend(std::iter::repeat_n(u16::from(b'\\'), backslashes));
+        }
+        backslashes = 0;
+        line.push(value);
+    }
+    line.extend(std::iter::repeat_n(u16::from(b'\\'), backslashes * 2));
+    line.push(u16::from(b'"'));
+    Ok(())
+}
+
+fn build_environment_block(command: &Command) -> io::Result<Option<Vec<u16>>> {
+    let overrides = command
+        .get_envs()
+        .map(|(key, value)| (key.to_owned(), value.map(OsStr::to_owned)))
+        .collect::<Vec<_>>();
+    if overrides.is_empty() {
+        return Ok(None);
+    }
+
+    let mut environment = BTreeMap::<String, (OsString, OsString)>::new();
+    for (key, value) in std::env::vars_os() {
+        environment.insert(environment_key(&key), (key, value));
+    }
+    for (key, value) in overrides {
+        let normalized = environment_key(&key);
+        if let Some(value) = value {
+            environment.insert(normalized, (key, value));
+        } else {
+            environment.remove(&normalized);
+        }
+    }
+
+    let mut block = Vec::new();
+    for (_, (key, value)) in environment {
+        let key = wide_without_nul(&key, "environment key")?;
+        if key.is_empty() || key.contains(&u16::from(b'=')) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "environment key is empty or contains '='",
+            ));
+        }
+        block.extend(key);
+        block.push(u16::from(b'='));
+        block.extend(wide_without_nul(&value, "environment value")?);
+        block.push(0);
+    }
+    block.push(0);
+    if block.len() == 1 {
+        block.push(0);
+    }
+    Ok(Some(block))
+}
+
+fn environment_key(key: &OsStr) -> String {
+    key.to_string_lossy().to_uppercase()
+}
+
+fn wide_null(value: &OsStr) -> io::Result<Vec<u16>> {
+    let mut wide = wide_without_nul(value, "Windows string")?;
+    wide.push(0);
+    Ok(wide)
+}
+
+fn wide_without_nul(value: &OsStr, label: &str) -> io::Result<Vec<u16>> {
+    let wide = value.encode_wide().collect::<Vec<_>>();
+    if wide.contains(&0) {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{label} contains NUL"),
+        ))
+    } else {
+        Ok(wide)
+    }
+}
+
+fn is_batch_program(program: &OsStr) -> bool {
+    Path::new(program)
+        .extension()
+        .and_then(OsStr::to_str)
+        .is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("bat") || extension.eq_ignore_ascii_case("cmd")
+        })
+}
+
+fn terminate_native_child(child: &mut NativeChild) {
+    unsafe {
+        TerminateProcess(child.process.raw(), FORCE_EXIT_CODE);
+        WaitForSingleObject(child.process.raw(), INFINITE);
     }
 }
 
@@ -415,6 +856,7 @@ pub enum ProcessTreeError {
     CreateJob(io::Error),
     ConfigureJob(io::Error),
     Spawn(io::Error),
+    StdioPipe(io::Error),
     LogSetup { path: PathBuf, source: io::Error },
     LogPump { path: PathBuf, source: io::Error },
     LogThreadPanicked { path: PathBuf },
@@ -422,6 +864,7 @@ pub enum ProcessTreeError {
     ThreadSnapshot(io::Error),
     PrimaryThreadNotFound { pid: u32 },
     OpenPrimaryThread(io::Error),
+    QueryPrimaryThreadTime(io::Error),
     ResumePrimaryThread(io::Error),
     QueryJob(io::Error),
     TooManyOwnedProcesses { assigned: usize, capacity: usize },
@@ -437,6 +880,12 @@ impl fmt::Display for ProcessTreeError {
             Self::CreateJob(error) => write!(formatter, "create Job Object failed: {error}"),
             Self::ConfigureJob(error) => write!(formatter, "configure Job Object failed: {error}"),
             Self::Spawn(error) => write!(formatter, "spawn suspended process failed: {error}"),
+            Self::StdioPipe(error) => {
+                write!(
+                    formatter,
+                    "create inherited service log pipe failed: {error}"
+                )
+            }
             Self::LogSetup { path, source } => {
                 write!(
                     formatter,
@@ -467,6 +916,12 @@ impl fmt::Display for ProcessTreeError {
             }
             Self::OpenPrimaryThread(error) => {
                 write!(formatter, "open primary thread failed: {error}")
+            }
+            Self::QueryPrimaryThreadTime(error) => {
+                write!(
+                    formatter,
+                    "query primary thread creation time failed: {error}"
+                )
             }
             Self::ResumePrimaryThread(error) => {
                 write!(formatter, "resume primary thread failed: {error}")
@@ -517,6 +972,12 @@ impl OwnedHandle {
     const fn raw(&self) -> HANDLE {
         self.0 as HANDLE
     }
+
+    fn into_raw_handle(self) -> RawHandle {
+        let handle = self.raw().cast();
+        std::mem::forget(self);
+        handle
+    }
 }
 
 impl Drop for OwnedHandle {
@@ -548,6 +1009,13 @@ fn create_kill_on_close_job() -> Result<OwnedHandle, ProcessTreeError> {
     Ok(job)
 }
 
+#[derive(Debug)]
+struct ThreadCandidate {
+    thread_id: u32,
+    creation_time: u64,
+    handle: OwnedHandle,
+}
+
 fn resume_process_thread(pid: u32) -> Result<(), ProcessTreeError> {
     let snapshot =
         OwnedHandle::from_snapshot(unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) })?;
@@ -559,24 +1027,89 @@ fn resume_process_thread(pid: u32) -> Result<(), ProcessTreeError> {
         return Err(ProcessTreeError::ThreadSnapshot(io::Error::last_os_error()));
     }
 
+    let mut candidates = Vec::new();
+    let mut inspection_error = None;
     loop {
         if entry.th32OwnerProcessID == pid {
-            let thread = OwnedHandle::from_nullable(
-                unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) },
+            let access = THREAD_SUSPEND_RESUME | THREAD_QUERY_LIMITED_INFORMATION;
+            match OwnedHandle::from_nullable(
+                unsafe { OpenThread(access, 0, entry.th32ThreadID) },
                 ProcessTreeError::OpenPrimaryThread,
-            )?;
-            if unsafe { ResumeThread(thread.raw()) } == u32::MAX {
-                return Err(ProcessTreeError::ResumePrimaryThread(
-                    io::Error::last_os_error(),
-                ));
+            ) {
+                Ok(handle) => match thread_creation_time(handle.raw()) {
+                    Ok(creation_time) => candidates.push(ThreadCandidate {
+                        thread_id: entry.th32ThreadID,
+                        creation_time,
+                        handle,
+                    }),
+                    Err(error) => {
+                        inspection_error = Some(ProcessTreeError::QueryPrimaryThreadTime(error));
+                    }
+                },
+                Err(error) => inspection_error = Some(error),
             }
-            return Ok(());
         }
         if unsafe { Thread32Next(snapshot.raw(), &raw mut entry) } == 0 {
             break;
         }
     }
-    Err(ProcessTreeError::PrimaryThreadNotFound { pid })
+
+    if candidates.is_empty() {
+        return Err(inspection_error.unwrap_or(ProcessTreeError::PrimaryThreadNotFound { pid }));
+    }
+
+    // CREATE_SUSPENDED applies to the primary thread. Security software can
+    // inject an additional thread before this snapshot and Toolhelp does not
+    // guarantee enumeration order, so inspect oldest threads first and never
+    // treat a zero previous suspend count as a successful resume.
+    candidates.sort_by_key(|candidate| (candidate.creation_time, candidate.thread_id));
+    let resumed = resume_first_suspended_candidate(&mut candidates, |candidate| {
+        let previous = unsafe { ResumeThread(candidate.handle.raw()) };
+        if previous == u32::MAX {
+            Err(ProcessTreeError::ResumePrimaryThread(
+                io::Error::last_os_error(),
+            ))
+        } else {
+            Ok(previous)
+        }
+    })?;
+    if resumed {
+        Ok(())
+    } else {
+        Err(ProcessTreeError::PrimaryThreadNotFound { pid })
+    }
+}
+
+fn thread_creation_time(thread: HANDLE) -> Result<u64, io::Error> {
+    let mut creation = FILETIME::default();
+    let mut exit = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    if unsafe {
+        GetThreadTimes(
+            thread,
+            &raw mut creation,
+            &raw mut exit,
+            &raw mut kernel,
+            &raw mut user,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok((u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime))
+}
+
+fn resume_first_suspended_candidate<T, E>(
+    candidates: &mut [T],
+    mut resume: impl FnMut(&mut T) -> Result<u32, E>,
+) -> Result<bool, E> {
+    for candidate in candidates {
+        if resume(candidate)? > 0 {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn query_job_pids(job: HANDLE) -> Result<Vec<u32>, ProcessTreeError> {
@@ -634,10 +1167,96 @@ fn terminate_suspended_child(child: &mut Child) {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
     use std::fs;
     use std::io::Write;
+    use std::process::Command;
 
-    use super::{MAX_LOG_BYTES, RotatingLogWriter, generation_path};
+    use super::{
+        MAX_LOG_BYTES, RotatingLogWriter, build_command_line, generation_path, is_batch_program,
+        resume_first_suspended_candidate,
+    };
+
+    fn resume_count(count: &mut u32) -> Result<u32, &'static str> {
+        if *count == u32::MAX {
+            return Err("invalid fake suspend count");
+        }
+        let previous = *count;
+        *count = count.saturating_sub(1);
+        Ok(previous)
+    }
+
+    #[test]
+    fn resume_skips_injected_thread_that_was_not_suspended() {
+        let mut suspend_counts = [0, 1];
+
+        assert!(
+            resume_first_suspended_candidate(&mut suspend_counts, resume_count)
+                .expect("infallible fake resume")
+        );
+        assert_eq!(suspend_counts, [0, 0]);
+    }
+
+    #[test]
+    fn resume_leaves_injected_suspensions_owned_by_other_software() {
+        let mut suspend_counts = [1, 1, 0];
+
+        assert!(
+            resume_first_suspended_candidate(&mut suspend_counts, resume_count)
+                .expect("infallible fake resume")
+        );
+        assert_eq!(suspend_counts, [0, 1, 0]);
+    }
+
+    #[test]
+    fn resume_removes_only_the_supervisor_owned_suspend_count() {
+        let mut suspend_counts = [3];
+
+        assert!(
+            resume_first_suspended_candidate(&mut suspend_counts, resume_count)
+                .expect("infallible fake resume")
+        );
+        assert_eq!(suspend_counts, [2]);
+    }
+
+    #[test]
+    fn resume_rejects_candidates_that_are_all_running() {
+        let mut suspend_counts = [0, 0];
+
+        assert!(
+            !resume_first_suspended_candidate(&mut suspend_counts, resume_count)
+                .expect("infallible fake resume")
+        );
+    }
+
+    #[test]
+    fn native_command_line_preserves_windows_argument_boundaries() {
+        let mut command = Command::new(r"C:\Program Files\fixture.exe");
+        command.args([
+            OsStr::new("plain"),
+            OsStr::new("two words"),
+            OsStr::new("embedded\"quote"),
+            OsStr::new(r"trailing slash\"),
+            OsStr::new(""),
+        ]);
+
+        let encoded = build_command_line(&command).expect("command line should encode");
+        let value = String::from_utf16(&encoded[..encoded.len() - 1])
+            .expect("test command line is Unicode");
+
+        assert_eq!(
+            value,
+            r#""C:\Program Files\fixture.exe" plain "two words" "embedded\"quote" "trailing slash\\" """#
+        );
+    }
+
+    #[test]
+    fn batch_program_detection_is_case_insensitive_and_extension_bound() {
+        assert!(is_batch_program(OsStr::new(r"C:\tools\npm.CMD")));
+        assert!(is_batch_program(OsStr::new(r"C:\tools\build.bat")));
+        assert!(!is_batch_program(OsStr::new(r"C:\tools\service.exe")));
+        assert!(!is_batch_program(OsStr::new(r"C:\tools\not-a-cmd.txt")));
+    }
 
     #[test]
     fn service_log_rotates_while_output_is_streaming() {

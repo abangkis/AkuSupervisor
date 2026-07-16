@@ -1,3 +1,5 @@
+use std::fs;
+use std::io::Read;
 use std::process::{Command, ExitCode, Stdio};
 use std::thread;
 use std::time::Duration;
@@ -9,8 +11,31 @@ fn main() -> ExitCode {
         Some("--root") => root(),
         Some("--child") => child(),
         Some("--exit-after") => exit_after(),
+        Some("--capture-launch") => capture_launch(),
         _ => ExitCode::from(2),
     }
+}
+
+fn capture_launch() -> ExitCode {
+    let mut args = std::env::args().skip(2);
+    let Some(output_path) = args.next() else {
+        return ExitCode::from(2);
+    };
+    let forwarded_args = args.collect::<Vec<_>>();
+    let mut stdin = Vec::new();
+    if std::io::stdin().read_to_end(&mut stdin).is_err() {
+        return ExitCode::FAILURE;
+    }
+    let payload = serde_json::json!({
+        "args": forwarded_args,
+        "environment": std::env::var("AKU_SUPERVISOR_FIXTURE_ENV").ok(),
+        "stdinBytes": stdin.len(),
+    });
+    if fs::write(output_path, payload.to_string()).is_err() {
+        return ExitCode::FAILURE;
+    }
+    println!("process fixture launch captured");
+    ExitCode::SUCCESS
 }
 
 fn exit_after() -> ExitCode {

@@ -739,9 +739,14 @@ Application integration recipes:
   application-owned server from a tool-owned development server and one-shot
   build, handle Windows `SIGBREAK` plus POSIX `SIGTERM`, and require
   application cleanup evidence in addition to `forced: false`;
-- [ ] certify a reusable Node.js recipe independently of AkuSidecar ownership;
-  the npm/Rollup service supplies Windows owned-tree exit evidence, while a
-  deterministic application-owned fixture and Linux/macOS evidence remain;
+- [x] certify a reusable Node.js recipe independently of AkuSidecar ownership
+  for the current Windows adapter;
+  `AkuSupervisorConformance` now owns the dependency-free application fixture,
+  deterministic test, isolated Windows runner, and JSON report contract; the
+  deterministic and native gates pass with application-observed `SIGBREAK`,
+  complete cleanup evidence, no forced fallback, listener release, and
+  unrelated-process preservation; Linux and macOS remain separate future
+  adapter tuples;
 - [ ] certify a reusable Rust managed-application recipe; and
 - [ ] certify Kotlin/JVM shutdown-hook and Windows console behavior.
 
