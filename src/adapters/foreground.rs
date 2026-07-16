@@ -29,6 +29,7 @@ use crate::platform::windows::{
 
 const INPUT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const HEALTH_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+const CONFIG_RECONCILE_INTERVAL: Duration = Duration::from_millis(250);
 const INTERACTIVE_HELP: &str = "Commands:\n\
   status\n\
   start <service> [reason]\n\
@@ -44,6 +45,7 @@ type WindowsRegistry = ServiceRegistry<WindowsProcessSpawner, WindowsPortInspect
 /// # Errors
 ///
 /// Returns a startup, configuration, console-handler, input, or cleanup error.
+#[allow(clippy::too_many_lines)]
 pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> {
     let config_path = resolved_config.path();
     let source = fs::read_to_string(config_path).map_err(|source| ForegroundError::ReadConfig {
@@ -105,10 +107,18 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
         Arc::clone(&control),
         cooperative,
         journal,
-        logs,
+        Arc::clone(&logs),
     )
     .map_err(ForegroundError::ControlApi)?;
-    let mut service_monitor = ServiceMonitor::start(Arc::clone(&registry), audited);
+    let (mut config_monitor, mut service_monitor) = start_runtime_monitors(
+        &registry,
+        audited,
+        logs,
+        config_path,
+        &config,
+        &fingerprint,
+        &runtime_services_directory,
+    );
 
     print_startup(
         resolved_config,
@@ -136,6 +146,7 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
         Clone::clone,
     );
 
+    config_monitor.shutdown();
     service_monitor.shutdown();
     let server_result = control_server.shutdown();
     let cleanup_result = cleanup(control.as_ref(), &shutdown_cause);
@@ -145,6 +156,162 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
     }
     cleanup_result?;
     foreground_result.map(|_| ())
+}
+
+fn start_runtime_monitors(
+    registry: &Arc<WindowsRegistry>,
+    audited: Arc<AuditedControl>,
+    logs: Arc<ServiceLogStore>,
+    config_path: &std::path::Path,
+    config: &SupervisorConfig,
+    fingerprint: &str,
+    runtime_services_directory: &std::path::Path,
+) -> (ConfigMonitor, ServiceMonitor) {
+    let config_monitor = ConfigMonitor::start(
+        Arc::clone(registry),
+        Arc::clone(&audited),
+        logs,
+        config_path.to_owned(),
+        config.clone(),
+        fingerprint.to_owned(),
+        runtime_services_directory.to_owned(),
+    );
+    let service_monitor = ServiceMonitor::start(Arc::clone(registry), audited);
+    (config_monitor, service_monitor)
+}
+
+#[derive(Debug)]
+struct ConfigMonitor {
+    stop: Arc<AtomicBool>,
+    worker: Option<JoinHandle<()>>,
+}
+
+impl ConfigMonitor {
+    #[allow(clippy::too_many_arguments)]
+    fn start(
+        registry: Arc<WindowsRegistry>,
+        audited: Arc<AuditedControl>,
+        logs: Arc<ServiceLogStore>,
+        config_path: PathBuf,
+        mut active_config: SupervisorConfig,
+        mut active_fingerprint: String,
+        runtime_services_directory: PathBuf,
+    ) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stop);
+        let worker = thread::spawn(move || {
+            let mut last_error = None;
+            while !worker_stop.load(Ordering::Acquire) {
+                let result = reconcile_configuration(
+                    &registry,
+                    &audited,
+                    &logs,
+                    &config_path,
+                    &active_config,
+                    &active_fingerprint,
+                    &runtime_services_directory,
+                );
+                match result {
+                    Ok(Some((config, fingerprint, outcome))) => {
+                        last_error = None;
+                        active_config = config;
+                        active_fingerprint = fingerprint;
+                        println!(
+                            "[registry] Applied configuration without Supervisor handoff: added={}, updated={}, removed={}; unrelated services preserved.",
+                            display_service_ids(&outcome.added),
+                            display_service_ids(&outcome.updated),
+                            display_service_ids(&outcome.removed),
+                        );
+                    }
+                    Ok(None) => {
+                        last_error = None;
+                    }
+                    Err(error) => {
+                        if last_error.as_ref() != Some(&error) {
+                            eprintln!("[registry] Configuration reconciliation deferred: {error}");
+                        }
+                        last_error = Some(error);
+                    }
+                }
+                for _ in 0..5 {
+                    if worker_stop.load(Ordering::Acquire) {
+                        return;
+                    }
+                    thread::sleep(CONFIG_RECONCILE_INTERVAL / 5);
+                }
+            }
+        });
+        Self {
+            stop,
+            worker: Some(worker),
+        }
+    }
+
+    fn shutdown(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(worker) = self.worker.take() {
+            worker.join().ok();
+        }
+    }
+}
+
+impl Drop for ConfigMonitor {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+fn reconcile_configuration(
+    registry: &WindowsRegistry,
+    audited: &AuditedControl,
+    logs: &ServiceLogStore,
+    config_path: &std::path::Path,
+    active_config: &SupervisorConfig,
+    active_fingerprint: &str,
+    runtime_services_directory: &std::path::Path,
+) -> Result<
+    Option<(
+        SupervisorConfig,
+        String,
+        crate::application::RegistryReconcileOutcome,
+    )>,
+    String,
+> {
+    let source = fs::read_to_string(config_path)
+        .map_err(|error| format!("cannot read {}: {error}", config_path.display()))?;
+    let config = SupervisorConfig::parse_json(&source).map_err(|error| error.to_string())?;
+    config.validate().map_err(|error| error.to_string())?;
+    let fingerprint = config.fingerprint().map_err(|error| error.to_string())?;
+    if fingerprint == active_fingerprint {
+        return Ok(None);
+    }
+    if !same_foreground_contract(active_config, &config) {
+        return Err(
+            "non-service configuration changed; control, observability, cooperative actions, and version require an explicit Supervisor restart"
+                .to_owned(),
+        );
+    }
+    let outcome = registry
+        .reconcile_registrations(config.service_registrations_with_logs(runtime_services_directory))
+        .map_err(|error| error.to_string())?;
+    logs.reconcile_service_ids(config.services.keys().cloned());
+    audited.set_config_fingerprint(fingerprint.clone());
+    Ok(Some((config, fingerprint, outcome)))
+}
+
+fn same_foreground_contract(left: &SupervisorConfig, right: &SupervisorConfig) -> bool {
+    left.version == right.version
+        && left.control == right.control
+        && left.observability == right.observability
+        && left.cooperative_actions == right.cooperative_actions
+}
+
+fn display_service_ids(service_ids: &[String]) -> String {
+    if service_ids.is_empty() {
+        "-".to_owned()
+    } else {
+        service_ids.join(",")
+    }
 }
 
 #[derive(Debug)]

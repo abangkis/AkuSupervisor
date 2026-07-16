@@ -117,9 +117,6 @@ function Get-WatchFingerprint {
             $files += Get-Item $path
         }
     }
-    if ($script:configPath -and (Test-Path -LiteralPath $script:configPath -PathType Leaf)) {
-        $files += Get-Item -LiteralPath $script:configPath
-    }
     foreach ($watcherRelativePath in @('scripts\dev.ps1', 'scripts\rust-toolchain.ps1')) {
         $watcherPath = Join-Path $repository $watcherRelativePath
         if (Test-Path -LiteralPath $watcherPath -PathType Leaf) {
@@ -503,7 +500,7 @@ try {
         }
 
         $runningServices = @(Get-RunningServiceIds)
-        Request-GracefulShutdown -Reason 'successful build or configuration change'
+        Request-GracefulShutdown -Reason 'successful development build'
         if (-not (Wait-ForExit -Process $supervisorProcess)) {
             throw 'Graceful development restart timed out.'
         }

@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, btree_map::Entry};
 use std::fmt;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -42,6 +42,21 @@ pub struct ProcessExitEvent {
 pub struct ServiceRefresh {
     pub health: HealthSnapshot,
     pub process_exit: Option<ProcessExitEvent>,
+}
+
+/// Topology changes applied without replacing retained service entries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistryReconcileOutcome {
+    pub added: Vec<String>,
+    pub updated: Vec<String>,
+    pub removed: Vec<String>,
+}
+
+impl RegistryReconcileOutcome {
+    #[must_use]
+    pub fn changed(&self) -> bool {
+        !(self.added.is_empty() && self.updated.is_empty() && self.removed.is_empty())
+    }
 }
 
 /// Stop outcome plus owned-tree shutdown evidence when a process was present.
@@ -138,7 +153,7 @@ where
     Spawner: ProcessTreeSpawner,
     Inspector: PortInspector,
 {
-    services: BTreeMap<String, ServiceEntry<Spawner::Process>>,
+    services: RwLock<BTreeMap<String, ServiceEntry<Spawner::Process>>>,
     spawner: Spawner,
     port_inspector: Inspector,
     health_probe: Arc<dyn HealthProbe>,
@@ -195,7 +210,7 @@ where
             }
         }
         Ok(Self {
-            services,
+            services: RwLock::new(services),
             spawner,
             port_inspector,
             health_probe,
@@ -205,7 +220,93 @@ where
 
     #[must_use]
     pub fn service_ids(&self) -> Vec<String> {
-        self.services.keys().cloned().collect()
+        self.services
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    /// Applies a validated service topology while retaining every unchanged
+    /// entry, including its process owner, health, hold, and restart state.
+    /// Updated and removed entries must be fully stopped.
+    ///
+    /// # Errors
+    ///
+    /// Returns a duplicate-ID, active-service, process-observation, or poisoned
+    /// registry failure. No topology change is applied on error.
+    pub fn reconcile_registrations(
+        &self,
+        registrations: impl IntoIterator<Item = ServiceRegistration>,
+    ) -> Result<RegistryReconcileOutcome, RegistryReconcileError<ProcessError<Spawner>>> {
+        let mut desired = BTreeMap::new();
+        for registration in registrations {
+            match desired.entry(registration.id.clone()) {
+                Entry::Vacant(entry) => {
+                    entry.insert(registration);
+                }
+                Entry::Occupied(entry) => {
+                    return Err(RegistryReconcileError::DuplicateServiceId(
+                        entry.key().clone(),
+                    ));
+                }
+            }
+        }
+
+        let mut services = self
+            .services
+            .write()
+            .map_err(|_| RegistryReconcileError::LockPoisoned)?;
+        for (service_id, entry) in services.iter() {
+            let changed_or_removed = desired
+                .get(service_id)
+                .is_none_or(|registration| registration != &entry.registration);
+            if !changed_or_removed {
+                continue;
+            }
+            let desired_state = entry
+                .supervision
+                .lock()
+                .map_err(|_| RegistryReconcileError::LockPoisoned)?
+                .desired_state;
+            let has_process = entry.runtime.has_process().map_err(|error| match error {
+                ServiceRuntimeError::Poisoned => RegistryReconcileError::LockPoisoned,
+                ServiceRuntimeError::Transition(_)
+                | ServiceRuntimeError::Start(())
+                | ServiceRuntimeError::Stop(())
+                | ServiceRuntimeError::Inspect(()) => RegistryReconcileError::InternalState,
+            })?;
+            if desired_state != DesiredState::Stopped || has_process {
+                return Err(RegistryReconcileError::ServiceActive(service_id.clone()));
+            }
+        }
+
+        let mut current = std::mem::take(&mut *services);
+        let mut next = BTreeMap::new();
+        let mut outcome = RegistryReconcileOutcome {
+            added: Vec::new(),
+            updated: Vec::new(),
+            removed: Vec::new(),
+        };
+        for (service_id, registration) in desired {
+            match current.remove(&service_id) {
+                Some(entry) if entry.registration == registration => {
+                    next.insert(service_id, entry);
+                }
+                Some(_) => {
+                    outcome.updated.push(service_id.clone());
+                    next.insert(service_id, ServiceEntry::new(registration));
+                }
+                None => {
+                    outcome.added.push(service_id.clone());
+                    next.insert(service_id, ServiceEntry::new(registration));
+                }
+            }
+        }
+        outcome.removed.extend(current.into_keys());
+        *services = next;
+        Ok(outcome)
     }
 
     /// Starts one registered service after authority and port checks.
@@ -219,7 +320,8 @@ where
         actor: Actor,
         reason: Reason,
     ) -> Result<StartOutcome, RegistryError<ProcessError<Spawner>, Inspector::Error>> {
-        let entry = self.entry(service_id)?;
+        let services = self.read_services()?;
+        let entry = Self::entry(&services, service_id)?;
         let _mutation = lock(&entry.mutation)?;
         let mut control = lock(&entry.control)?;
         control
@@ -285,7 +387,8 @@ where
         actor: Actor,
         reason: Reason,
     ) -> Result<ServiceStopResult, RegistryError<ProcessError<Spawner>, Inspector::Error>> {
-        let entry = self.entry(service_id)?;
+        let services = self.read_services()?;
+        let entry = Self::entry(&services, service_id)?;
         let _mutation = lock(&entry.mutation)?;
         let mut control = lock(&entry.control)?;
         control
@@ -348,7 +451,8 @@ where
         actor: Actor,
         reason: Reason,
     ) -> Result<ServiceRestartResult, RegistryError<ProcessError<Spawner>, Inspector::Error>> {
-        let entry = self.entry(service_id)?;
+        let services = self.read_services()?;
+        let entry = Self::entry(&services, service_id)?;
         let _mutation = lock(&entry.mutation)?;
         let mut control = lock(&entry.control)?;
         control
@@ -399,7 +503,7 @@ where
     pub fn snapshots(
         &self,
     ) -> Result<Vec<ServiceSnapshot>, RegistryError<ProcessError<Spawner>, Inspector::Error>> {
-        self.services.values().map(Self::snapshot).collect()
+        self.read_services()?.values().map(Self::snapshot).collect()
     }
 
     /// Refreshes health for every service while preserving per-service
@@ -428,7 +532,7 @@ where
     pub fn refresh_services(
         &self,
     ) -> Result<Vec<ServiceRefresh>, RegistryError<ProcessError<Spawner>, Inspector::Error>> {
-        self.services
+        self.read_services()?
             .values()
             .map(|entry| {
                 let _mutation = lock(&entry.mutation)?;
@@ -628,16 +732,28 @@ where
     }
 
     #[allow(clippy::type_complexity)]
-    fn entry(
-        &self,
+    fn entry<'a>(
+        services: &'a BTreeMap<String, ServiceEntry<Spawner::Process>>,
         service_id: &str,
     ) -> Result<
-        &ServiceEntry<Spawner::Process>,
+        &'a ServiceEntry<Spawner::Process>,
+        RegistryError<ProcessError<Spawner>, Inspector::Error>,
+    > {
+        services
+            .get(service_id)
+            .ok_or_else(|| RegistryError::ServiceNotFound(service_id.to_owned()))
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn read_services(
+        &self,
+    ) -> Result<
+        RwLockReadGuard<'_, BTreeMap<String, ServiceEntry<Spawner::Process>>>,
         RegistryError<ProcessError<Spawner>, Inspector::Error>,
     > {
         self.services
-            .get(service_id)
-            .ok_or_else(|| RegistryError::ServiceNotFound(service_id.to_owned()))
+            .read()
+            .map_err(|_| RegistryError::LockPoisoned)
     }
 
     fn ensure_ports_available(
@@ -849,6 +965,38 @@ impl fmt::Display for RegistryBuildError {
 }
 
 impl std::error::Error for RegistryBuildError {}
+
+/// Failure while atomically reconciling the live service topology.
+#[derive(Debug)]
+pub enum RegistryReconcileError<ProcessFailure> {
+    DuplicateServiceId(String),
+    ServiceActive(String),
+    LockPoisoned,
+    InternalState,
+    Observation(ProcessFailure),
+}
+
+impl<ProcessFailure: fmt::Display> fmt::Display for RegistryReconcileError<ProcessFailure> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DuplicateServiceId(service_id) => {
+                write!(formatter, "duplicate registered service ID: {service_id}")
+            }
+            Self::ServiceActive(service_id) => write!(
+                formatter,
+                "service must be stopped before its registration can change: {service_id}"
+            ),
+            Self::LockPoisoned => formatter.write_str("service registry lock is poisoned"),
+            Self::InternalState => formatter.write_str("service registry invariant was violated"),
+            Self::Observation(error) => write!(formatter, "process observation failed: {error}"),
+        }
+    }
+}
+
+impl<ProcessFailure> std::error::Error for RegistryReconcileError<ProcessFailure> where
+    ProcessFailure: std::error::Error + 'static
+{
+}
 
 /// Platform failure that occurs inside a serialized lifecycle callback.
 #[derive(Debug)]
@@ -1204,6 +1352,23 @@ mod tests {
         )
     }
 
+    fn named_registration(service_id: &str, label: &str) -> ServiceRegistration {
+        ServiceRegistration::new(
+            service_id,
+            label,
+            LaunchSpec::new(
+                service_id,
+                std::iter::empty::<&str>(),
+                ".",
+                std::iter::empty::<(&str, &str)>(),
+            ),
+            HealthCheckSpec::Process,
+            ServiceRestartPolicy::Manual,
+            Vec::new(),
+            Duration::from_millis(10),
+        )
+    }
+
     fn http_registration() -> ServiceRegistration {
         ServiceRegistration::new(
             "fixture",
@@ -1527,5 +1692,110 @@ mod tests {
             registry.snapshots().expect("stopped snapshot")[0].desired_state,
             crate::domain::DesiredState::Stopped
         );
+    }
+
+    #[test]
+    fn registration_reconciliation_retains_unrelated_running_owner() {
+        let spawner = ControllableSpawner::new();
+        let existing = named_registration("fixture", "Fixture");
+        let registry = ServiceRegistry::new(
+            [existing.clone()],
+            spawner,
+            FakePortInspector { occupied: false },
+            Arc::new(FakeHealthProbe),
+        )
+        .expect("valid registry");
+        registry
+            .start("fixture", Actor::UserCli, reason("start retained service"))
+            .expect("start fixture");
+        let before = registry.snapshots().expect("snapshot before reconcile")[0].clone();
+
+        let outcome = registry
+            .reconcile_registrations([
+                existing,
+                named_registration("registered", "Registered service"),
+            ])
+            .expect("add stopped registration");
+
+        assert_eq!(outcome.added, ["registered"]);
+        assert!(outcome.updated.is_empty());
+        assert!(outcome.removed.is_empty());
+        let snapshots = registry.snapshots().expect("snapshot after reconcile");
+        let retained = snapshots
+            .iter()
+            .find(|snapshot| snapshot.id == "fixture")
+            .expect("retained fixture");
+        assert_eq!(retained.root_pid, before.root_pid);
+        assert_eq!(retained.owned_pids, before.owned_pids);
+        assert_eq!(retained.lifecycle, before.lifecycle);
+        let added = snapshots
+            .iter()
+            .find(|snapshot| snapshot.id == "registered")
+            .expect("new registration");
+        assert_eq!(added.lifecycle, crate::domain::LifecycleState::Stopped);
+        assert_eq!(added.desired_state, crate::domain::DesiredState::Stopped);
+    }
+
+    #[test]
+    fn registration_reconciliation_rejects_active_target_atomically() {
+        let registry = ServiceRegistry::new(
+            [named_registration("fixture", "Fixture")],
+            FakeSpawner {
+                spawn_count: Arc::new(AtomicU32::new(0)),
+            },
+            FakePortInspector { occupied: false },
+            Arc::new(FakeHealthProbe),
+        )
+        .expect("valid registry");
+        registry
+            .start("fixture", Actor::UserCli, reason("start fixture"))
+            .expect("start fixture");
+
+        let error = registry
+            .reconcile_registrations([
+                named_registration("fixture", "Changed fixture"),
+                named_registration("new", "Must not be added"),
+            ])
+            .expect_err("active target rejects reconcile");
+
+        assert!(matches!(
+            error,
+            super::RegistryReconcileError::ServiceActive(service_id)
+                if service_id == "fixture"
+        ));
+        assert_eq!(registry.service_ids(), ["fixture"]);
+        assert_eq!(
+            registry.snapshots().expect("unchanged registry")[0].label,
+            "Fixture"
+        );
+    }
+
+    #[test]
+    fn stopped_registration_can_be_updated_and_removed() {
+        let registry = ServiceRegistry::new(
+            [named_registration("fixture", "Fixture")],
+            FakeSpawner {
+                spawn_count: Arc::new(AtomicU32::new(0)),
+            },
+            FakePortInspector { occupied: false },
+            Arc::new(FakeHealthProbe),
+        )
+        .expect("valid registry");
+
+        let updated = registry
+            .reconcile_registrations([named_registration("fixture", "Updated fixture")])
+            .expect("update stopped registration");
+        assert_eq!(updated.updated, ["fixture"]);
+        assert_eq!(
+            registry.snapshots().expect("updated registry")[0].label,
+            "Updated fixture"
+        );
+
+        let removed = registry
+            .reconcile_registrations([named_registration("other", "Other")])
+            .expect("remove stopped registration");
+        assert_eq!(removed.added, ["other"]);
+        assert_eq!(removed.removed, ["fixture"]);
+        assert_eq!(registry.service_ids(), ["other"]);
     }
 }

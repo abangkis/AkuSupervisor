@@ -1,6 +1,6 @@
 # Human-Gated Service Registration
 
-Status: **Phases 1 through 3 implemented and live-validated on 2026-07-16**
+Status: **Phases 1 through 4 implemented; phase 4 integration-validated on 2026-07-16**
 
 AkuSupervisor exposes a separate stdio MCP server for discovering, validating,
 preparing, and committing service registrations. It does not expand the
@@ -19,8 +19,9 @@ flowchart LR
     D -->|"full review"| H["Human interactive CLI"]
     H -->|"hash-bound approval"| D
     D -->|"commit after checks"| C["Atomic services.json replace"]
-    C --> W["Development watcher handoff"]
-    W --> S["New service remains stopped"]
+    C --> R["Live registry reconciliation"]
+    R --> S["New service remains stopped"]
+    R --> U["Unchanged services retain PID and state"]
 ```
 
 The MCP process can prepare and commit but cannot approve. Approval requires a
@@ -114,11 +115,22 @@ approved draft.
   target lifecycle as exactly `stopped` at commit time.
 - Unregistering the final service is rejected by the existing configuration
   invariant that requires at least one registered service.
-- A watcher notices the valid configuration replacement and performs its
-  existing graceful handoff. A stable foreground instance needs a restart to
-  load the new registry; the commit result reports this explicitly.
+- A running foreground Supervisor notices the valid atomic replacement and
+  reconciles only `services`. New registrations enter as stopped; unchanged
+  entries retain their process owner, PID set, health, operator hold, and
+  restart state. No Supervisor handoff and no unrelated-service restart occurs.
+- Update and unregister are applied only while their target remains stopped. If
+  a race makes the target active after commit validation, reconciliation is
+  deferred and retried; the running service is never detached or silently
+  replaced.
+- Non-service settings (`control`, `observability`, cooperative actions, or
+  config version) still require an explicit Supervisor restart. Registration
+  MCP cannot change those fields.
+- If no Supervisor is running, the next normal startup loads the committed
+  configuration; no special promotion or reload action is required.
 
-After registration and watcher handoff, start the service separately:
+After the watcher prints `[registry] Applied configuration without Supervisor
+handoff` (or `simple-status` shows the new stopped entry), start it separately:
 
 ```powershell
 .\target\aku-supervisor.exe start <service-id> `

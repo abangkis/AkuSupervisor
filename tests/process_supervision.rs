@@ -89,6 +89,86 @@ fn terminal_tree_is_reaped_and_on_failure_is_capped_and_audited() {
     assert!(output.status.success(), "supervisor failed: {output:?}");
 }
 
+#[test]
+fn registration_change_preserves_running_service_and_supervisor_process() {
+    let directory = TestDirectory::create();
+    let config_directory = directory.path.join("AkuSupervisor");
+    fs::create_dir_all(&config_directory).expect("create config directory");
+    let config_path = config_directory.join("services.json");
+    let mut config = json!({
+        "version": 1,
+        "control": {
+            "host": "127.0.0.1",
+            "port": available_port(),
+            "tokenFile": ".runtime/control-token"
+        },
+        "services": {
+            "retained": root_service("Retained")
+        }
+    });
+    fs::write(
+        &config_path,
+        serde_json::to_vec_pretty(&config).expect("serialize config"),
+    )
+    .expect("write config");
+
+    let child = Command::new(supervisor())
+        .env_remove("AKU_SUPERVISOR_CONFIG")
+        .env("LOCALAPPDATA", &directory.path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start supervisor");
+    let mut guard = ChildGuard::new(child);
+    let supervisor_pid = guard.child_mut().id();
+    wait_for_status(&directory.path);
+    start_service(&directory.path, "retained");
+    let retained_before = wait_for_service(&directory.path, "retained", |service| {
+        service["lifecycle"] == "running" && service["rootPid"].is_number()
+    });
+    let retained_pid = retained_before["rootPid"].clone();
+
+    config["services"]["registered"] = root_service("Registered");
+    fs::write(
+        &config_path,
+        serde_json::to_vec_pretty(&config).expect("serialize changed config"),
+    )
+    .expect("write changed config");
+
+    let registered = wait_for_service(&directory.path, "registered", |service| {
+        service["lifecycle"] == "stopped" && service["desiredState"] == "stopped"
+    });
+    assert_eq!(registered["rootPid"], Value::Null);
+    let retained_after = wait_for_service(&directory.path, "retained", |service| {
+        service["rootPid"] == retained_pid && service["lifecycle"] == "running"
+    });
+    assert_eq!(retained_after["rootPid"], retained_pid);
+    assert_eq!(guard.child_mut().id(), supervisor_pid);
+
+    let logs = client(&directory.path)
+        .args(["logs", "registered", "--stream", "stdout", "--tail", "5"])
+        .output()
+        .expect("registered log client");
+    assert!(
+        logs.status.success(),
+        "dynamic log allowlist failed: {logs:?}"
+    );
+
+    let mut stdin = guard.child_mut().stdin.take().expect("supervisor stdin");
+    stdin.write_all(b"quit\n").expect("request quit");
+    drop(stdin);
+    let output = guard
+        .disarm()
+        .wait_with_output()
+        .expect("collect supervisor output");
+    assert!(output.status.success(), "supervisor failed: {output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("[registry] Applied configuration without Supervisor handoff"));
+    assert!(stdout.contains("added=registered"));
+    assert!(stdout.contains("unrelated services preserved"));
+}
+
 fn crash_service(restart_policy: &str) -> Value {
     json!({
         "label": "Crash Fixture",
@@ -99,6 +179,20 @@ fn crash_service(restart_policy: &str) -> Value {
         "health": { "type": "process" },
         "ports": [],
         "restartPolicy": restart_policy,
+        "shutdownGraceMs": 250
+    })
+}
+
+fn root_service(label: &str) -> Value {
+    json!({
+        "label": label,
+        "cwd": std::env::temp_dir(),
+        "command": process_fixture(),
+        "args": ["--root"],
+        "environment": {},
+        "health": { "type": "process" },
+        "ports": [],
+        "restartPolicy": "manual",
         "shutdownGraceMs": 250
     })
 }

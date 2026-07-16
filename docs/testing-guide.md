@@ -340,12 +340,12 @@ argument, the watcher retains its original Supervisor-only behavior. The script
 validates every requested ID against the selected configuration before building;
 `akusupervisor` is not a service ID because `dev.ps1` already starts it.
 
-For every later source or configuration change, the watcher first builds the
-staged binary and uses it to validate the selected configuration before asking
-the running Supervisor to stop. If validation fails, the current Supervisor and
-its services remain active and the watcher prints the structured validation
-path, code, and message. A malformed edit therefore cannot turn a safe live
-handoff into avoidable service downtime.
+For every later Rust source or Cargo-manifest change, the watcher first builds
+the staged binary and uses it to validate the selected configuration before
+asking the running Supervisor to stop. Configuration-only changes do not trigger
+a watcher build or handoff. The foreground Supervisor validates them and
+reconciles service registrations in place; malformed changes are rejected while
+the current registry and services remain active.
 
 Requested startup services are independent. If one service misses its startup
 contract, `dev.ps1` warns and continues to own the Supervisor and every service
@@ -357,7 +357,7 @@ Supervisor. Ctrl+C requests the ordinary graceful Supervisor shutdown, waits
 for owned-service cleanup, and prints a completion message; it never kills the
 service tree directly.
 
-After an automatic build/configuration handoff, inspect the lifecycle journal:
+After an automatic development-build handoff, inspect the lifecycle journal:
 cleanup from the replaced instance uses actor `recovery/supervisor` and a
 `development watcher handoff:` reason. Ctrl+C, interactive `quit`, and stopping
 the watcher use `user/cli`. In every case, `ownedPidsAfter` must be empty.
@@ -511,7 +511,9 @@ suite. A safe smoke test against the real profile performs discovery only:
 The tool list must contain six registration tools and no approval tool. The
 capabilities result must show the selected absolute configuration path,
 current SHA-256 revision, `autoStart: false`, and
-`approvalAvailableThroughMcp: false`.
+`approvalAvailableThroughMcp: false`. It must also advertise
+`automaticRegistryReconciliation: true` and
+`unrelatedServicesRestarted: false`.
 
 Do not create a disposable draft against the real AkuWorkspace profile merely
 to test persistence. The automated fixtures create an isolated valid profile
@@ -522,11 +524,15 @@ and prove:
 - commit rejection before approval;
 - hash-bound approval and atomic register commit;
 - registered-but-stopped result with no auto-start;
+- live topology reconciliation preserving the Supervisor PID and an unrelated
+  running service PID;
+- dynamic log allowlist update for the newly registered service;
 - commit recovery/idempotency;
 - update rejection when stopped state cannot be proved; and
 - secret-like environment-key rejection.
 
 For an intentional real registration, follow the MCP-provided workflow and
-read the entire CLI approval output. After commit, let the development watcher
-complete its configuration handoff, confirm the service appears as `stopped`
+read the entire CLI approval output. After commit, wait for the foreground
+`[registry]` reconciliation message, confirm the service appears as `stopped`
 with `simple-status`, and start it only through a separate lifecycle command.
+The watcher and all unrelated services must keep the same PID.

@@ -30,7 +30,8 @@ fn watcher_requires_executable_release_without_force_killing_an_owner() {
     );
     assert!(!script.contains("throw \"Could not start requested service '$serviceId'.\""));
     assert!(script.contains("owned services completed graceful shutdown"));
-    assert!(script.contains("successful build or configuration change"));
+    assert!(script.contains("successful development build"));
+    assert!(!script.contains("Get-Item -LiteralPath $script:configPath"));
     assert!(script.contains("development watcher stopped by user"));
     assert!(script.contains("Test-ConfigurationBeforeHandoff"));
     assert!(script.contains(
@@ -54,8 +55,8 @@ fn watcher_requires_executable_release_without_force_killing_an_owner() {
         .rfind("if (-not (Test-ConfigurationBeforeHandoff))")
         .expect("configuration must be validated before a live handoff");
     let graceful_handoff = script
-        .rfind("Request-GracefulShutdown -Reason 'successful build or configuration change'")
-        .expect("successful changes should request graceful handoff");
+        .rfind("Request-GracefulShutdown -Reason 'successful development build'")
+        .expect("successful builds should request graceful handoff");
     assert!(configuration_gate < graceful_handoff);
     assert!(!script.contains("Stop-Process"));
     assert!(!script.contains(".Kill("));

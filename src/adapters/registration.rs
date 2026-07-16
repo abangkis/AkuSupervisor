@@ -94,7 +94,8 @@ pub struct CommitResult {
     pub registered_state: &'static str,
     pub auto_started: bool,
     pub registry_reload_required: bool,
-    pub development_watcher_can_handoff: bool,
+    pub registry_reconciliation: &'static str,
+    pub unrelated_services_restarted: bool,
     pub next_command: Option<String>,
 }
 
@@ -175,6 +176,8 @@ impl RegistrationAuthority {
                 "atomicConfigurationReplace": true,
                 "registerInitialState": "stopped",
                 "autoStart": false,
+                "automaticRegistryReconciliation": true,
+                "unrelatedServicesRestarted": false,
                 "updateAndUnregisterRequireObservedStoppedState": true,
                 "arbitraryShellCommands": false,
                 "secretEnvironmentKeys": "rejected"
@@ -834,8 +837,9 @@ fn commit_result(draft: &RegistrationDraft) -> CommitResult {
         configuration_revision: draft.proposed_revision.clone(),
         registered_state: if present { "stopped" } else { "unregistered" },
         auto_started: false,
-        registry_reload_required: true,
-        development_watcher_can_handoff: true,
+        registry_reload_required: false,
+        registry_reconciliation: "automatic_when_supervisor_is_running",
+        unrelated_services_restarted: false,
         next_command: present.then(|| {
             format!(
                 "aku-supervisor start {} --actor user --reason \"start registered service\"",
@@ -1187,6 +1191,12 @@ mod tests {
         let commit = authority.commit(&draft.draft_id).expect("commit");
         assert_eq!(commit.registered_state, "stopped");
         assert!(!commit.auto_started);
+        assert!(!commit.registry_reload_required);
+        assert_eq!(
+            commit.registry_reconciliation,
+            "automatic_when_supervisor_is_running"
+        );
+        assert!(!commit.unrelated_services_restarted);
         assert!(fixture.config().services.contains_key("worker"));
 
         let recovered = authority

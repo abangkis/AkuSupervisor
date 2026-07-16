@@ -503,7 +503,7 @@ checkpoint without granting lifecycle mutation or bootstrap authority.
 
 ### Phase 6B - Generic service registration authority
 
-Status: **Phases 1 through 3 completed on 2026-07-16**
+Status: **Phases 1 through 4 completed on 2026-07-16**
 
 The implementation and operator contract are maintained in
 [Human-Gated Service Registration](service-registration.md).
@@ -537,6 +537,20 @@ Phase 3 - transactional mutation:
 - [x] update/unregister require live stopped-state evidence; and
 - [x] append-only registration audit contains identity and hashes without full
   environment/config values.
+
+Phase 4 - zero-disruption live registry reconciliation:
+
+- [x] the foreground Supervisor watches the atomically replaced configuration
+  and reconciles service definitions without a process handoff;
+- [x] unchanged registry entries retain owned processes, PID sets, health,
+  operator holds, desired state, last action, and restart counters;
+- [x] new services appear stopped and are added to the bounded log allowlist;
+- [x] changed or removed targets fail closed while active and retry after they
+  become stopped;
+- [x] non-service configuration changes remain explicit-restart boundaries;
+- [x] `dev.ps1` no longer treats `services.json` as a Rust rebuild trigger; and
+- [x] a Windows integration test proves both the Supervisor PID and unrelated
+  running service PID remain unchanged across a registration addition.
 
 Discovery adapters, unattended approval, secrets, dependency graphs, and
 agent-initiated Supervisor bootstrap remain outside this milestone.

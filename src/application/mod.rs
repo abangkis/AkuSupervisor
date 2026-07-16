@@ -34,8 +34,9 @@ pub use platform_ports::{
 };
 pub use service_registry::{
     BackendOperationError, LastAction, ProcessExitEvent, RegistryBuildError, RegistryError,
-    ServiceRefresh, ServiceRegistration, ServiceRegistry, ServiceRestartPolicy,
-    ServiceRestartResult, ServiceSnapshot, ServiceStopResult,
+    RegistryReconcileError, RegistryReconcileOutcome, ServiceRefresh, ServiceRegistration,
+    ServiceRegistry, ServiceRestartPolicy, ServiceRestartResult, ServiceSnapshot,
+    ServiceStopResult,
 };
 pub use service_runtime::{
     RestartOutcome, ServiceRuntime, ServiceRuntimeError, StartOutcome, StopOutcome,

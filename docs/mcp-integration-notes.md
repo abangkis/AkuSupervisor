@@ -74,7 +74,8 @@ AkuSupervisor now has two deliberately separate MCP identities:
 - `/mcp` plus `mcp-proxy` remains the exact read-only runtime observation
   surface described below; and
 - `registration-mcp` is an independent stdio authority for human-gated config
-  registration through phase 3.
+  registration through phase 4, including zero-disruption live registry
+  reconciliation.
 
 The registration authority does not grant lifecycle control and exposes no
 approval tool. See [Human-Gated Service Registration](service-registration.md).

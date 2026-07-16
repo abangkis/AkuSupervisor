@@ -2,7 +2,7 @@ use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -254,7 +254,7 @@ pub struct AuditedControl {
     inner: Arc<dyn SupervisorControl>,
     journal: Arc<FileJournal>,
     supervisor_instance_id: String,
-    config_fingerprint: String,
+    config_fingerprint: RwLock<String>,
     console_events: Option<ConsoleEvents>,
     event_publication: Mutex<()>,
 }
@@ -270,7 +270,7 @@ impl AuditedControl {
             inner,
             journal,
             supervisor_instance_id: format!("{}-{}", std::process::id(), unix_milliseconds()),
-            config_fingerprint: config_fingerprint.into(),
+            config_fingerprint: RwLock::new(config_fingerprint.into()),
             console_events: None,
             event_publication: Mutex::new(()),
         }
@@ -282,6 +282,22 @@ impl AuditedControl {
     pub const fn with_console_events(mut self, console_events: ConsoleEvents) -> Self {
         self.console_events = Some(console_events);
         self
+    }
+
+    /// Updates the fingerprint attached to subsequent lifecycle records after
+    /// a successful live service-registry reconciliation.
+    pub fn set_config_fingerprint(&self, fingerprint: impl Into<String>) {
+        *self
+            .config_fingerprint
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = fingerprint.into();
+    }
+
+    fn config_fingerprint(&self) -> String {
+        self.config_fingerprint
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     fn publish_console_event(&self, record: &JournalRecord) {
@@ -340,7 +356,7 @@ impl AuditedControl {
                 exit_code: event.exit_code,
                 automatic_restart_planned: Some(event.automatic_restart_planned),
                 shutdown: None,
-                config_fingerprint: self.config_fingerprint.clone(),
+                config_fingerprint: self.config_fingerprint(),
             })
             .map_err(|error| {
                 ControlError::internal(format!("failed to persist process-exit journal: {error}"))
@@ -356,7 +372,7 @@ impl fmt::Debug for AuditedControl {
             .debug_struct("AuditedControl")
             .field("journal", &self.journal.path())
             .field("supervisor_instance_id", &self.supervisor_instance_id)
-            .field("config_fingerprint", &self.config_fingerprint)
+            .field("config_fingerprint", &self.config_fingerprint())
             .finish_non_exhaustive()
     }
 }
@@ -436,7 +452,7 @@ impl SupervisorControl for AuditedControl {
                 .as_ref()
                 .ok()
                 .and_then(|result| result.shutdown.clone()),
-            config_fingerprint: self.config_fingerprint.clone(),
+            config_fingerprint: self.config_fingerprint(),
         };
         let _publication = self
             .event_publication

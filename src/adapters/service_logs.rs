@@ -3,6 +3,7 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::RwLock;
 
 use serde::Serialize;
 
@@ -36,9 +37,10 @@ pub struct ServiceLogTail {
     pub truncated_to: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ServiceLogStore {
-    paths: BTreeMap<String, ServiceLogPaths>,
+    runtime_services_directory: PathBuf,
+    paths: RwLock<BTreeMap<String, ServiceLogPaths>>,
 }
 
 impl ServiceLogStore {
@@ -47,17 +49,35 @@ impl ServiceLogStore {
         runtime_services_directory: &Path,
         service_ids: impl IntoIterator<Item = String>,
     ) -> Self {
+        let store = Self {
+            runtime_services_directory: runtime_services_directory.to_owned(),
+            paths: RwLock::new(BTreeMap::new()),
+        };
+        store.reconcile_service_ids(service_ids);
+        store
+    }
+
+    /// Replaces the bounded service-ID allowlist after a live registry
+    /// reconciliation. Existing files are retained on disk.
+    pub fn reconcile_service_ids(&self, service_ids: impl IntoIterator<Item = String>) {
         let paths = service_ids
             .into_iter()
             .map(|service_id| {
                 let paths = ServiceLogPaths {
-                    stdout: runtime_services_directory.join(format!("{service_id}.stdout.log")),
-                    stderr: runtime_services_directory.join(format!("{service_id}.stderr.log")),
+                    stdout: self
+                        .runtime_services_directory
+                        .join(format!("{service_id}.stdout.log")),
+                    stderr: self
+                        .runtime_services_directory
+                        .join(format!("{service_id}.stderr.log")),
                 };
                 (service_id, paths)
             })
             .collect();
-        Self { paths }
+        *self
+            .paths
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = paths;
     }
 
     /// Reads at most the requested number of lines from the active log file.
@@ -71,8 +91,11 @@ impl ServiceLogStore {
         stream: LogStream,
         lines: usize,
     ) -> Result<ServiceLogTail, ServiceLogError> {
-        let paths = self
+        let allowed = self
             .paths
+            .read()
+            .map_err(|_| ServiceLogError::LockPoisoned)?;
+        let paths = allowed
             .get(service_id)
             .ok_or_else(|| ServiceLogError::ServiceNotFound(service_id.to_owned()))?;
         let path = match stream {
@@ -125,6 +148,7 @@ struct ServiceLogPaths {
 #[derive(Debug)]
 pub enum ServiceLogError {
     ServiceNotFound(String),
+    LockPoisoned,
     Read { path: PathBuf, source: io::Error },
     Oversized { path: PathBuf, bytes: u64 },
 }
@@ -133,6 +157,7 @@ impl fmt::Display for ServiceLogError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ServiceNotFound(service_id) => write!(formatter, "unknown service: {service_id}"),
+            Self::LockPoisoned => formatter.write_str("service log registry lock is poisoned"),
             Self::Read { path, source } => {
                 write!(
                     formatter,
@@ -172,6 +197,9 @@ mod tests {
 
         assert_eq!(tail.lines, ["two", "three"]);
         assert!(store.tail("unknown", LogStream::Stdout, 2).is_err());
+        store.reconcile_service_ids(["new".to_owned()]);
+        assert!(store.tail("api", LogStream::Stdout, 2).is_err());
+        assert!(store.tail("new", LogStream::Stdout, 2).is_ok());
         fs::remove_dir_all(directory).ok();
     }
 }

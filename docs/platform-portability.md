@@ -109,6 +109,7 @@ it is considered supported.
 | Secure entropy | Correctly isolated in Windows CNG adapter | Add independently tested Linux and macOS providers |
 | Configuration discovery | Per-OS default paths already separated | Add native path tests and native service profiles |
 | Process ownership and port observation | Correctly isolated, Windows only | Implement and prove each native ownership backend |
+| Live service-registry reconciliation | Portable `RwLock` topology swap plus typed configuration adapter; unchanged runtime entries are retained | Run the same PID-preservation and active-target rejection fixtures on native CI |
 | Foreground host composition | Partially portable; shared interaction code is currently compiled with concrete `WindowsRegistry` and `ConsoleShutdown` types | Extract a generic foreground host driven by platform-neutral registry, shutdown, and runtime-secret ports before implementing the second OS |
 | Checked-in AkuWorkspace profile | Intentionally Windows-specific data, not core logic | Supply separate profiles; do not add path rewriting to the core |
 | Development watcher | Portable Rust file-signal adapter; Windows PowerShell orchestration | Add a native runner that preserves build-first, graceful handoff, and service restoration | Add a native runner that preserves build-first, graceful handoff, and service restoration |
@@ -125,6 +126,14 @@ notifications, or a native watcher, but must retain these invariants: compile
 before stopping the active binary, keep it alive on build failure, request its
 normal cleanup path, preserve a constant executable path, and restore only the
 services that were observed running immediately before handoff.
+
+Configuration registration does not depend on PowerShell file watching. The
+foreground Rust adapter periodically reads the atomically replaced typed
+configuration and calls the platform-neutral registry reconciliation method.
+Linux and macOS may later replace polling with native notifications, but the
+semantic boundary must remain identical: service-only changes are live,
+unchanged owners are retained, active changed targets fail closed, and
+non-service host settings require an explicit restart.
 
 ## Source layout
 

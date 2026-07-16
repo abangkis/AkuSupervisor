@@ -69,7 +69,7 @@ on top of Supervisor lifecycle ownership, not a service dependency graph.
 Audit identity distinguishes these paths without changing cleanup:
 
 - Ctrl+C, interactive `quit`, or stopping the watcher is `user/cli`; and
-- a successful development build/configuration handoff is
+- a successful development-build handoff is
   `recovery/supervisor`.
 
 Both still use the same bounded graceful stop and complete owned-tree cleanup.
@@ -312,7 +312,9 @@ It self-describes the full schema and workflow, creates revision-bound drafts,
 and can commit only after the user runs `registration approve <draft-id>` in a
 real terminal and reviews the full before/after configuration. There is no MCP
 approval tool, registration never auto-starts a service, and update/unregister
-require live stopped-state evidence. See
+require live stopped-state evidence. A running Supervisor reconciles the
+committed service topology in place: unchanged services retain their process
+owners and are not restarted. See
 [Human-gated service registration](docs/service-registration.md).
 
 After the Gate 5 build has been loaded into Chrome once, either the user or

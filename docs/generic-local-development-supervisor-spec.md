@@ -521,6 +521,12 @@ configured owner; alternative modes that share a repository default must use
 explicit port overrides or separate profiles. Startup order remains an explicit
 operator or CLI choice; registration must not imply a dependency graph.
 
+When a validated registration transaction replaces the service configuration,
+an active Supervisor must reconcile the registry in place. Unchanged entries
+retain their process owner and runtime state; a newly registered entry begins
+stopped. Updating or removing an active target fails closed. Source-code watcher
+handoff is a separate concern and must not be triggered by registration alone.
+
 Repository tasks that copy artifacts, build releases, upload to cloud storage,
 invalidate caches, or switch remote production state are not services. They
 remain outside the supervisor even when they are adjacent to the daily
