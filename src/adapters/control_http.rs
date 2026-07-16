@@ -972,7 +972,71 @@ pub fn client_request_with_response_timeout(
         .take(MAX_RESPONSE_BYTES)
         .read_to_end(&mut response)
         .map_err(ControlClientError::Read)?;
-    let header_end = find_bytes(&response, b"\r\n\r\n")
+    parse_json_client_response(&response)
+}
+
+/// Sends one request within a caller-owned total deadline.
+///
+/// Serialization, connect, write, and response read all consume the same
+/// budget. This is used by bounded reconciliation acknowledgment rather than
+/// ordinary lifecycle requests, whose response timeout is operation-derived.
+///
+/// # Errors
+///
+/// Returns a deadline, connection, protocol, serialization, or non-success
+/// response error.
+pub(crate) fn client_request_until(
+    address: SocketAddr,
+    token: &RuntimeToken,
+    method: &str,
+    target: &str,
+    body: Option<Value>,
+    deadline: Instant,
+) -> Result<Value, ControlClientError> {
+    let body = body
+        .map(|value| serde_json::to_vec(&value))
+        .transpose()
+        .map_err(ControlClientError::Serialize)?
+        .unwrap_or_default();
+    let connect_timeout = remaining_budget(deadline)?.min(IO_TIMEOUT);
+    let mut stream = TcpStream::connect_timeout(&address, connect_timeout)
+        .map_err(ControlClientError::Connect)?;
+    let header = format!(
+        "{method} {target} HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        token.expose_for_authorization_header(),
+        body.len()
+    );
+    let mut request = header.into_bytes();
+    request.extend_from_slice(&body);
+    stream
+        .set_write_timeout(Some(remaining_budget(deadline)?))
+        .ok();
+    stream
+        .write_all(&request)
+        .map_err(ControlClientError::Write)?;
+    stream.shutdown(Shutdown::Write).ok();
+    stream
+        .set_read_timeout(Some(remaining_budget(deadline)?))
+        .ok();
+
+    let mut response = Vec::new();
+    stream
+        .take(MAX_RESPONSE_BYTES)
+        .read_to_end(&mut response)
+        .map_err(ControlClientError::Read)?;
+    remaining_budget(deadline)?;
+    parse_json_client_response(&response)
+}
+
+fn remaining_budget(deadline: Instant) -> Result<Duration, ControlClientError> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or(ControlClientError::DeadlineExceeded)
+}
+
+fn parse_json_client_response(response: &[u8]) -> Result<Value, ControlClientError> {
+    let header_end = find_bytes(response, b"\r\n\r\n")
         .map(|position| position + 4)
         .ok_or(ControlClientError::MalformedResponse)?;
     let headers = std::str::from_utf8(&response[..header_end])
@@ -1112,6 +1176,7 @@ pub enum ControlClientError {
     Deserialize(serde_json::Error),
     MessageTooLarge,
     MalformedResponse,
+    DeadlineExceeded,
     Rejected { status: u16, body: Value },
 }
 
@@ -1136,6 +1201,9 @@ impl fmt::Display for ControlClientError {
             Self::Deserialize(error) => write!(formatter, "invalid JSON response: {error}"),
             Self::MessageTooLarge => formatter.write_str("MCP message exceeds bounded body size"),
             Self::MalformedResponse => formatter.write_str("malformed HTTP response"),
+            Self::DeadlineExceeded => {
+                formatter.write_str("control request exceeded its total deadline")
+            }
             Self::Rejected { status, body } => {
                 write!(
                     formatter,
@@ -1173,6 +1241,40 @@ mod tests {
             }
             .is_transient()
         );
+    }
+
+    #[test]
+    fn deadline_request_cannot_wait_for_the_ordinary_io_timeout() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind slow server");
+        let address = listener.local_addr().expect("slow server address");
+        let worker = thread::spawn(move || {
+            let (_stream, _) = listener.accept().expect("accept deadline request");
+            thread::sleep(Duration::from_millis(300));
+        });
+        let token_path = std::env::temp_dir().join(format!(
+            "aku-supervisor-deadline-token-{}",
+            std::process::id()
+        ));
+        std::fs::remove_file(&token_path).ok();
+        let token =
+            RuntimeToken::load_or_create(&token_path, || Ok("a".repeat(64))).expect("create token");
+        let started = Instant::now();
+        let error = client_request_until(
+            address,
+            &token,
+            "GET",
+            "/v1/registry",
+            None,
+            started + Duration::from_millis(75),
+        )
+        .expect_err("slow response must exceed total deadline");
+        assert!(matches!(
+            error,
+            ControlClientError::Read(_) | ControlClientError::DeadlineExceeded
+        ));
+        assert!(started.elapsed() < Duration::from_millis(250));
+        worker.join().expect("slow server worker");
+        std::fs::remove_file(token_path).ok();
     }
 
     #[derive(Debug, Default)]

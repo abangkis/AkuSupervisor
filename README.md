@@ -336,6 +336,10 @@ registration commit waits for a bounded acknowledgment and returns that actual
 runtime result; `offline` means no running Supervisor could be queried and the
 committed file will be loaded on the next normal startup.
 
+`simple-status` keeps its ordinary table unchanged while the registry is
+current. If disk and runtime diverge, it prepends one bounded `REGISTRY WARNING`
+with state, active revision, disk revision, and diagnostic detail.
+
 After the Gate 5 build has been loaded into Chrome once, either the user or
 Codex can request the only browser-side mutation exposed by AkuSupervisor:
 

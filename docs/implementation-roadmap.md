@@ -503,7 +503,7 @@ checkpoint without granting lifecycle mutation or bootstrap authority.
 
 ### Phase 6B - Generic service registration authority
 
-Status: **Phases 1 through 4 completed on 2026-07-16**
+Status: **Phases 1 through 4.1.1 completed on 2026-07-16**
 
 The implementation and operator contract are maintained in
 [Human-Gated Service Registration](service-registration.md).
@@ -569,6 +569,16 @@ Phase 4.1 - explicit reconciliation acknowledgment:
   and
 - [x] no change expands the four-tool read-only MCP endpoint or introduces a
   platform-specific dependency.
+
+Phase 4.1.1 - deadline and operator visibility hardening:
+
+- [x] one absolute two-second budget covers acknowledgment connect, write,
+  polling delay, and response read instead of resetting per attempt;
+- [x] a slow loopback fixture proves the request cannot fall through to the
+  ordinary five-second control timeout;
+- [x] `simple-status` remains unchanged for matching current revisions; and
+- [x] non-current, unavailable, or mismatched registry state prepends one
+  bounded warning without expanding the read-only MCP surface.
 
 Discovery adapters, unattended approval, secrets, dependency graphs, and
 agent-initiated Supervisor bootstrap remain outside this milestone.

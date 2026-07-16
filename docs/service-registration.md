@@ -1,6 +1,6 @@
 # Human-Gated Service Registration
 
-Status: **Phases 1 through 4.1 implemented; phase 4 integration-validated on 2026-07-16**
+Status: **Phases 1 through 4.1.1 implemented; phase 4 integration-validated on 2026-07-16**
 
 AkuSupervisor exposes a separate stdio MCP server for discovering, validating,
 preparing, and committing service registrations. It does not expand the
@@ -149,7 +149,8 @@ approved draft.
 
 ## Runtime acknowledgment
 
-Commit polls the authenticated runtime boundary for at most two seconds and
+Commit polls the authenticated runtime boundary with one absolute two-second
+deadline shared by connect, write, polling delay, and response reads, and
 returns `applied`, `pending`, `deferred`, `rejected`, or `offline`. The first
 four values describe a running Supervisor; `offline` means no compatible
 runtime could be queried and the committed file will be loaded on the next
@@ -166,6 +167,10 @@ any time with:
 
 The authenticated `GET /v1/registry` endpoint is deliberately separate from
 the four-tool read-only MCP endpoint.
+
+The ordinary service table remains quiet when revisions match. When they do
+not, `simple-status` prepends a bounded `REGISTRY WARNING`, so an operator does
+not have to remember a second command to notice a deferred or rejected change.
 
 After commit reports `applied` and the watcher prints `[registry] Applied
 revision ... without Supervisor handoff` (or `simple-status` shows the new

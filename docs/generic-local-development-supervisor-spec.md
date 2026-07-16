@@ -540,6 +540,11 @@ diagnostics. Registration commit waits for a bounded runtime acknowledgment;
 its client-side `offline` result is not a live runtime state and does not roll
 back an already successful atomic configuration commit.
 
+The acknowledgment deadline is end-to-end across connection establishment,
+request write, polling delay, and response read. Human summary output must stay
+quiet for a current registry and surface a bounded warning whenever state is
+non-current or active and disk revisions differ.
+
 Repository tasks that copy artifacts, build releases, upload to cloud storage,
 invalidate caches, or switch remote production state are not services. They
 remain outside the supervisor even when they are adjacent to the daily

@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 
 use super::config::{ConfigIssue, ServiceConfig, SupervisorConfig};
 use super::config_path::{ConfigPathError, resolve_config_path};
-use super::control_http::{ControlClientError, client_request};
+use super::control_http::{ControlClientError, client_request, client_request_until};
 use super::runtime_token::{RuntimeToken, resolve_token_path};
 use crate::application::{RegistryReconciliationSnapshot, RegistryReconciliationState};
 
@@ -540,8 +540,9 @@ impl RegistrationAuthority {
             Err(error) => return ReconciliationObservation::offline(&error.to_string()),
         };
         let deadline = Instant::now() + RECONCILIATION_ACK_TIMEOUT;
+        let mut last_snapshot = None;
         loop {
-            match client_request(address, &token, "GET", "/v1/registry", None) {
+            match client_request_until(address, &token, "GET", "/v1/registry", None, deadline) {
                 Ok(response) => {
                     let snapshot = response.get("registry").cloned().and_then(|value| {
                         serde_json::from_value::<RegistryReconciliationSnapshot>(value).ok()
@@ -551,6 +552,7 @@ impl RegistrationAuthority {
                             "Supervisor returned an invalid registry reconciliation response",
                         );
                     };
+                    last_snapshot = Some(snapshot.clone());
                     let matches_disk = snapshot.disk_revision.as_deref() == Some(proposed_revision);
                     if snapshot.state == RegistryReconciliationState::Current
                         && snapshot.active_revision == proposed_revision
@@ -581,9 +583,30 @@ impl RegistrationAuthority {
                         );
                     }
                 }
-                Err(error) => return ReconciliationObservation::offline(&error.to_string()),
+                Err(error) => {
+                    return last_snapshot.map_or_else(
+                        || ReconciliationObservation::offline(&error.to_string()),
+                        |snapshot| {
+                            ReconciliationObservation::from_snapshot(
+                                RegistrationReconciliationOutcome::Pending,
+                                snapshot,
+                            )
+                        },
+                    );
+                }
             }
-            std::thread::sleep(RECONCILIATION_ACK_POLL);
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                return last_snapshot.map_or_else(
+                    || ReconciliationObservation::offline("runtime acknowledgment timed out"),
+                    |snapshot| {
+                        ReconciliationObservation::from_snapshot(
+                            RegistrationReconciliationOutcome::Pending,
+                            snapshot,
+                        )
+                    },
+                );
+            };
+            std::thread::sleep(RECONCILIATION_ACK_POLL.min(remaining));
         }
     }
 

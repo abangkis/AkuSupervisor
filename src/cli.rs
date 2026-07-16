@@ -1002,6 +1002,23 @@ fn remote_request(command: RemoteCommand) -> Result<(), String> {
         retry_safe,
         response_timeout,
     )?;
+    if simple_status {
+        let registry =
+            control_request_with_retry(address, &token, "GET", "/v1/registry", None, false)
+                .ok()
+                .and_then(|value| value.get("registry").cloned())
+                .unwrap_or_else(|| {
+                    serde_json::json!({
+                        "state": "unavailable",
+                        "activeRevision": null,
+                        "diskRevision": null,
+                        "detail": "registry reconciliation status is unavailable"
+                    })
+                });
+        if let Some(object) = response.as_object_mut() {
+            object.insert("registry".to_owned(), registry);
+        }
+    }
     if let Some(request_id) = wait_request_id {
         let reload = config.cooperative_actions.aku_bridge_reload.as_ref();
         let timeout = reload.map_or(25_000, |value| value.timeout_ms.saturating_add(5_000));
@@ -1279,10 +1296,28 @@ fn format_simple_status(response: &serde_json::Value) -> Result<String, String> 
         .get("services")
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| "service status response omitted the services array".to_owned())?;
-    let mut lines = vec![
+    let mut lines = Vec::new();
+    if let Some(registry) = response.get("registry") {
+        let field = |name: &str| {
+            registry
+                .get(name)
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("-")
+        };
+        let state = field("state");
+        let active = field("activeRevision");
+        let disk = field("diskRevision");
+        if state != "current" || active == "-" || active != disk {
+            let detail = field("detail").chars().take(160).collect::<String>();
+            lines.push(format!(
+                "REGISTRY WARNING: state={state} active={active} disk={disk} detail={detail}"
+            ));
+        }
+    }
+    lines.push(
         "SERVICE              STATE       DESIRED     HEALTH      ROOT PID   OWNED PIDS       HOLD"
             .to_owned(),
-    ];
+    );
     for service in services {
         let text = |field: &str| {
             service
@@ -1596,6 +1631,12 @@ mod tests {
         assert!(parse(args(&["simple-status", "--json"])).is_err());
 
         let table = format_simple_status(&serde_json::json!({
+            "registry": {
+                "state": "current",
+                "activeRevision": "sha256:same",
+                "diskRevision": "sha256:same",
+                "detail": null
+            },
             "services": [{
                 "id": "api",
                 "lifecycle": "running",
@@ -1610,6 +1651,21 @@ mod tests {
         assert!(table.contains("SERVICE              STATE"));
         assert!(table.contains("api                  running"));
         assert!(table.contains("1234,5678"));
+        assert!(!table.contains("REGISTRY WARNING"));
+
+        let warning = format_simple_status(&serde_json::json!({
+            "registry": {
+                "state": "deferred",
+                "activeRevision": "sha256:active",
+                "diskRevision": "sha256:disk",
+                "detail": "target is still running"
+            },
+            "services": []
+        }))
+        .expect("deferred registry table");
+        assert!(warning.starts_with("REGISTRY WARNING: state=deferred"));
+        assert!(warning.contains("active=sha256:active disk=sha256:disk"));
+        assert!(warning.contains("target is still running"));
     }
 
     #[test]

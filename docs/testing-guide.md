@@ -528,6 +528,12 @@ while retaining an unrelated PID; unit fixtures cover state transitions and
 the offline result. The public contract additionally defines `pending`,
 `deferred`, and `rejected` for non-terminal and failed live reconciliation.
 
+`simple-status` must produce no registry warning for that current state. Unit
+coverage injects a deferred revision mismatch and requires a bounded warning
+before the unchanged service table. A slow loopback fixture accepts a request
+without replying and proves the acknowledgment transport obeys its caller's
+total deadline instead of falling back to the ordinary five-second I/O timeout.
+
 Do not create a disposable draft against the real AkuWorkspace profile merely
 to test persistence. The automated fixtures create an isolated valid profile
 and prove:
