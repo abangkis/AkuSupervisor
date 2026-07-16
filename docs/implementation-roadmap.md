@@ -541,6 +541,15 @@ Phase 3 - transactional mutation:
 Discovery adapters, unattended approval, secrets, dependency graphs, and
 agent-initiated Supervisor bootstrap remain outside this milestone.
 
+Live acceptance on the active AkuWorkspace profile completed a reversible
+register/unregister cycle. The register commit moved the exact config revision
+from `b7bbb1e0...b4411` to `c0351244...f758d`; watcher handoff restored the
+previously running AkuSidecar as healthy and exposed the smoke service as
+stopped with no PID. A separately approved unregister commit returned the
+revision exactly to `b7bbb1e0...b4411`. The append-only audit contains all six
+prepared, human-approved, and MCP-committed records, with no smoke service or
+process left behind.
+
 ### Phase 7 - Agent-initiated supervisor bootstrap
 
 Status: **Deferred and requires a separate design decision**

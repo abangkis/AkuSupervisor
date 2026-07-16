@@ -1,6 +1,6 @@
 # Human-Gated Service Registration
 
-Status: **Phases 1 through 3 implemented**
+Status: **Phases 1 through 3 implemented and live-validated on 2026-07-16**
 
 AkuSupervisor exposes a separate stdio MCP server for discovering, validating,
 preparing, and committing service registrations. It does not expand the
@@ -160,3 +160,29 @@ Draft and audit state lives beside the selected control token:
 `commit.lock` exists only during a commit. If a process crashes while holding
 this simple portable lock, verify that no registration MCP process is running
 before deleting the stale file.
+
+## AkuWorkspace live acceptance
+
+The stable registration MCP completed a reversible acceptance cycle against
+the active default profile:
+
+- discovered revision `sha256:b7bbb1e0...b4411` and the complete service
+  schema without external documentation;
+- validated and prepared `registration-smoke`, pointing to the stable
+  AkuSupervisor binary with only `--version` and no port;
+- rejected MCP/piped approval while accepting the user's exact interactive
+  hash-bound confirmation;
+- atomically registered the service at revision
+  `sha256:c0351244...f758d` without starting it;
+- the development watcher performed its normal handoff, restored AkuSidecar as
+  `running / healthy`, and exposed `registration-smoke` as
+  `stopped / stopped` with no PID;
+- unregister required a second full human approval and observed stopped-state
+  evidence; and
+- the second atomic commit removed the smoke service and returned the profile
+  exactly to revision `sha256:b7bbb1e0...b4411` while AkuSidecar remained
+  healthy.
+
+The registration audit contains separate `prepared`, `approved`, and
+`committed` records for both operations. No smoke process was launched and no
+temporary service remains in the active configuration.
