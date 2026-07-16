@@ -125,9 +125,13 @@ journal record has been durably written.
 Example default output:
 
 ```text
-[event #244] geofu-be start: stopped -> running (user/cli, success)
-[event #245] geofu-be stop: running -> stopped (user/cli, graceful)
+[2026-07-16T10:42:13.527Z] [event #244] geofu-be start: stopped -> running (user/cli, success)
+[2026-07-16T10:45:01.104Z] [event #245] geofu-be stop: running -> stopped (user/cli, graceful)
 ```
+
+The leading timestamp is the persisted event time rendered as RFC 3339 UTC.
+The explicit `Z` keeps console evidence comparable across Windows, Linux,
+macOS, CI, and machines with different local time zones.
 
 This is Supervisor activity, not managed-service stdout/stderr. Service output
 continues to use the files beneath `.runtime/services` and the `logs` command.

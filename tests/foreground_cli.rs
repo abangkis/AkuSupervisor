@@ -130,11 +130,19 @@ fn foreground_cli_runs_registered_lifecycle_and_cleans_up() {
 }
 
 fn assert_console_events(stdout: &str, stderr: &str) {
-    assert!(stdout.contains("[event #1] fixture start: stopped -> running (agent/codex, success)"));
+    assert!(
+        stdout.contains("] [event #1] fixture start: stopped -> running (agent/codex, success)")
+    );
+    let stderr_lines = stderr.lines().collect::<Vec<_>>();
     assert_eq!(
-        stderr.lines().collect::<Vec<_>>(),
-        ["[event #3] fixture start: stopped -> stopped (agent/codex, unauthorized)"],
+        stderr_lines.len(),
+        1,
         "stderr may contain only the expected canonical authorization failure event"
+    );
+    assert!(stderr_lines[0].starts_with('['));
+    assert!(
+        stderr_lines[0]
+            .contains("] [event #3] fixture start: stopped -> stopped (agent/codex, unauthorized)")
     );
 }
 

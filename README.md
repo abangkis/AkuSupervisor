@@ -394,8 +394,11 @@ or `verbose`. Failures remain visible on stderr even in `off` mode. The default
 prints one bounded line such as:
 
 ```text
-[event #244] geofu-be start: stopped -> running (user/cli, success)
+[2026-07-16T10:42:13.527Z] [event #244] geofu-be start: stopped -> running (user/cli, success)
 ```
+
+The leading RFC 3339 timestamp is the persisted event time in UTC (`Z`), so
+console evidence remains unambiguous across machines and future OS ports.
 
 See the [configuration guide](docs/configuration-guide.md) for the distinction
 between Supervisor lifecycle events and managed-service stdout/stderr logs.

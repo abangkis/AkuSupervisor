@@ -468,10 +468,11 @@ fn format_console_event(record: &JournalRecord, mode: ConsoleEvents) -> Option<S
     let previous = lifecycle_state_label(record.previous_state);
     let resulting = lifecycle_state_label(record.resulting_state);
     let outcome = event_outcome_label(record);
+    let timestamp = console_timestamp(&record.timestamp);
 
     if mode != ConsoleEvents::Verbose {
         return Some(format!(
-            "[event #{}] {} {action}: {previous} -> {resulting} ({actor}, {outcome})",
+            "[{timestamp}] [event #{}] {} {action}: {previous} -> {resulting} ({actor}, {outcome})",
             record.sequence, record.service_id
         ));
     }
@@ -508,9 +509,55 @@ fn format_console_event(record: &JournalRecord, mode: ConsoleEvents) -> Option<S
         details.push(format!("exitCode={exit_code}"));
     }
     Some(format!(
-        "[event #{}] {}",
+        "[{timestamp}] [event #{}] {}",
         record.sequence,
         details.join(" ")
+    ))
+}
+
+fn console_timestamp(value: &str) -> String {
+    if let Some(milliseconds) = value
+        .strip_prefix("unix-ms:")
+        .and_then(|value| value.parse::<u128>().ok())
+        && let Some(formatted) = format_unix_milliseconds_utc(milliseconds)
+    {
+        return formatted;
+    }
+    if !value.is_empty()
+        && value.len() <= 40
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b':' | b'.' | b'+' | b'_')
+        })
+    {
+        value.to_owned()
+    } else {
+        "timestamp-invalid".to_owned()
+    }
+}
+
+fn format_unix_milliseconds_utc(milliseconds: u128) -> Option<String> {
+    let total_seconds = milliseconds / 1_000;
+    let days = i64::try_from(total_seconds / 86_400).ok()?;
+    let seconds_in_day = u64::try_from(total_seconds % 86_400).ok()?;
+    let shifted_days = days.checked_add(719_468)?;
+    let era = shifted_days / 146_097;
+    let day_of_era = shifted_days - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let mut year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
+    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
+    if month <= 2 {
+        year += 1;
+    }
+    let hour = seconds_in_day / 3_600;
+    let minute = (seconds_in_day % 3_600) / 60;
+    let second = seconds_in_day % 60;
+    let millisecond = milliseconds % 1_000;
+    Some(format!(
+        "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millisecond:03}Z"
     ))
 }
 
@@ -688,7 +735,7 @@ mod tests {
 
     use super::{
         ErrorCategory, FileJournal, JournalAction, JournalRecord, JournalResult,
-        format_console_event,
+        format_console_event, format_unix_milliseconds_utc,
     };
 
     fn record(reason: &str) -> JournalRecord {
@@ -730,7 +777,9 @@ mod tests {
 
         assert_eq!(
             format_console_event(&record, ConsoleEvents::Lifecycle).as_deref(),
-            Some("[event #7] akusidecar restart: running -> running (agent/generic, success)")
+            Some(
+                "[2026-07-13T12:00:00.000Z] [event #7] akusidecar restart: running -> running (agent/generic, success)"
+            )
         );
         assert_eq!(format_console_event(&record, ConsoleEvents::Off), None);
     }
@@ -754,7 +803,7 @@ mod tests {
             .expect("lifecycle console event");
         assert_eq!(
             lifecycle,
-            "[event #7] akusidecar stop: running -> stopped (user/cli, graceful)"
+            "[2026-07-13T12:00:00.000Z] [event #7] akusidecar stop: running -> stopped (user/cli, graceful)"
         );
 
         let verbose =
@@ -775,8 +824,34 @@ mod tests {
 
         assert_eq!(
             format_console_event(&failed, ConsoleEvents::Off).as_deref(),
-            Some("[event #7] akusidecar restart: running -> failed (agent/generic, spawn_failed)")
+            Some(
+                "[2026-07-13T12:00:00.000Z] [event #7] akusidecar restart: running -> failed (agent/generic, spawn_failed)"
+            )
         );
+    }
+
+    #[test]
+    fn unix_millisecond_console_timestamp_is_portable_rfc3339_utc() {
+        assert_eq!(
+            format_unix_milliseconds_utc(0).as_deref(),
+            Some("1970-01-01T00:00:00.000Z")
+        );
+        assert_eq!(
+            format_unix_milliseconds_utc(1_721_044_800_123).as_deref(),
+            Some("2024-07-15T12:00:00.123Z")
+        );
+    }
+
+    #[test]
+    fn malformed_timestamp_cannot_inject_an_extra_console_line() {
+        let mut record = record("bounded console timestamp");
+        record.timestamp = "malformed\ninjected".to_owned();
+
+        let line = format_console_event(&record, ConsoleEvents::Lifecycle)
+            .expect("lifecycle console event");
+
+        assert!(line.starts_with("[timestamp-invalid] [event #7]"));
+        assert_eq!(line.lines().count(), 1);
     }
 
     #[test]
