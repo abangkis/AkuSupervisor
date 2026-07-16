@@ -335,7 +335,7 @@ impl RegistrationAuthority {
             ));
         }
         write_json_atomic(&draft_path, &draft)?;
-        self.audit("prepared", &draft, None)?;
+        self.audit("prepared", &draft, Some("registration_mcp"))?;
         Ok(draft)
     }
 

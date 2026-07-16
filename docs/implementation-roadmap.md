@@ -551,6 +551,11 @@ Phase 4 - zero-disruption live registry reconciliation:
 - [x] `dev.ps1` no longer treats `services.json` as a Rust rebuild trigger; and
 - [x] a Windows integration test proves both the Supervisor PID and unrelated
   running service PID remain unchanged across a registration addition.
+- [x] the foreground follows the secret-free registration audit and prints new
+  prepare, human approval, recovery, and commit events with UTC timestamp,
+  actor, operation, service, draft, request, and proposed revision;
+- [x] audit following skips history, defers partial lines, bounds records, and
+  surfaces malformed data without weakening the durable audit.
 
 Discovery adapters, unattended approval, secrets, dependency graphs, and
 agent-initiated Supervisor bootstrap remain outside this milestone.
@@ -563,6 +568,13 @@ stopped with no PID. A separately approved unregister commit returned the
 revision exactly to `b7bbb1e0...b4411`. The append-only audit contains all six
 prepared, human-approved, and MCP-committed records, with no smoke service or
 process left behind.
+
+A second zero-disruption acceptance at revisions `f8a5e9bc...de17b98` and
+`3e947a56...b24216c` proved the active Supervisor PID remained `32660` and the
+running AkuSidecar PID remained `34620` across registration. Lifecycle events
+`#891/#892` later changed the Sidecar PID only because another agent explicitly
+requested a development rebuild. Unregister restored the exact initial
+revision and removed the smoke entry without replacing the Supervisor.
 
 ### Phase 7 - Agent-initiated supervisor bootstrap
 

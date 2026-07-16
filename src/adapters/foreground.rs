@@ -16,6 +16,7 @@ use crate::adapters::control_http::{ControlHttpError, ControlHttpServer};
 use crate::adapters::development_shutdown::{DevelopmentShutdown, DevelopmentShutdownError};
 use crate::adapters::http_health::LoopbackTransportHealthProbe;
 use crate::adapters::journal::{AuditedControl, FileJournal, FileJournalError};
+use crate::adapters::registration_events::RegistrationAuditTail;
 use crate::adapters::runtime_token::{RuntimeToken, RuntimeTokenError, resolve_token_path};
 use crate::adapters::service_logs::ServiceLogStore;
 use crate::application::{
@@ -110,15 +111,16 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
         Arc::clone(&logs),
     )
     .map_err(ForegroundError::ControlApi)?;
-    let (mut config_monitor, mut service_monitor) = start_runtime_monitors(
-        &registry,
-        audited,
-        logs,
-        config_path,
-        &config,
-        &fingerprint,
-        &runtime_services_directory,
-    );
+    let (mut config_monitor, mut registration_monitor, mut service_monitor) =
+        start_runtime_monitors(
+            &registry,
+            audited,
+            logs,
+            config_path,
+            &config,
+            &fingerprint,
+            &runtime_services_directory,
+        );
 
     print_startup(
         resolved_config,
@@ -146,6 +148,7 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
         Clone::clone,
     );
 
+    registration_monitor.shutdown();
     config_monitor.shutdown();
     service_monitor.shutdown();
     let server_result = control_server.shutdown();
@@ -166,7 +169,7 @@ fn start_runtime_monitors(
     config: &SupervisorConfig,
     fingerprint: &str,
     runtime_services_directory: &std::path::Path,
-) -> (ConfigMonitor, ServiceMonitor) {
+) -> (ConfigMonitor, RegistrationEventMonitor, ServiceMonitor) {
     let config_monitor = ConfigMonitor::start(
         Arc::clone(registry),
         Arc::clone(&audited),
@@ -176,8 +179,73 @@ fn start_runtime_monitors(
         fingerprint.to_owned(),
         runtime_services_directory.to_owned(),
     );
+    let registration_audit_path = runtime_services_directory
+        .parent()
+        .expect("runtime services directory has a parent")
+        .join("registration/audit.jsonl");
+    let registration_monitor = RegistrationEventMonitor::start(registration_audit_path);
     let service_monitor = ServiceMonitor::start(Arc::clone(registry), audited);
-    (config_monitor, service_monitor)
+    (config_monitor, registration_monitor, service_monitor)
+}
+
+#[derive(Debug)]
+struct RegistrationEventMonitor {
+    stop: Arc<AtomicBool>,
+    worker: Option<JoinHandle<()>>,
+}
+
+impl RegistrationEventMonitor {
+    fn start(audit_path: PathBuf) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stop);
+        let worker = thread::spawn(move || {
+            let mut tail = RegistrationAuditTail::follow(audit_path);
+            let mut last_error = None;
+            while !worker_stop.load(Ordering::Acquire) {
+                match tail.poll() {
+                    Ok(events) => {
+                        last_error = None;
+                        for event in events {
+                            println!("{}", event.console_line());
+                        }
+                    }
+                    Err(error) => {
+                        let current = error.to_string();
+                        if last_error.as_ref() != Some(&current) {
+                            eprintln!(
+                                "[registration] Audit visibility failed for {}: {current}",
+                                tail.path().display()
+                            );
+                        }
+                        last_error = Some(current);
+                    }
+                }
+                for _ in 0..5 {
+                    if worker_stop.load(Ordering::Acquire) {
+                        return;
+                    }
+                    thread::sleep(CONFIG_RECONCILE_INTERVAL / 5);
+                }
+            }
+        });
+        Self {
+            stop,
+            worker: Some(worker),
+        }
+    }
+
+    fn shutdown(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(worker) = self.worker.take() {
+            worker.join().ok();
+        }
+    }
+}
+
+impl Drop for RegistrationEventMonitor {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
 }
 
 #[derive(Debug)]
@@ -217,7 +285,9 @@ impl ConfigMonitor {
                         active_config = config;
                         active_fingerprint = fingerprint;
                         println!(
-                            "[registry] Applied configuration without Supervisor handoff: added={}, updated={}, removed={}; unrelated services preserved.",
+                            "[{}] [registry] Applied revision {} without Supervisor handoff: added={}, updated={}, removed={}; unrelated services preserved.",
+                            console_timestamp_now(),
+                            active_fingerprint,
                             display_service_ids(&outcome.added),
                             display_service_ids(&outcome.updated),
                             display_service_ids(&outcome.removed),
@@ -312,6 +382,15 @@ fn display_service_ids(service_ids: &[String]) -> String {
     } else {
         service_ids.join(",")
     }
+}
+
+fn console_timestamp_now() -> String {
+    let milliseconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    crate::adapters::journal::format_unix_milliseconds_utc(milliseconds)
+        .unwrap_or_else(|| "timestamp-invalid".to_owned())
 }
 
 #[derive(Debug)]
@@ -472,6 +551,12 @@ fn print_startup(
     }
     println!("Control token: {}", token_path.display());
     println!("Lifecycle journal: {}", journal_path.display());
+    if let Some(runtime_directory) = journal_path.parent() {
+        println!(
+            "Registration audit: {}",
+            runtime_directory.join("registration/audit.jsonl").display()
+        );
+    }
     println!(
         "Console lifecycle events: {}",
         config.observability.console_events.as_str()

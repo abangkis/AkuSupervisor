@@ -526,6 +526,9 @@ and prove:
 - registered-but-stopped result with no auto-start;
 - live topology reconciliation preserving the Supervisor PID and an unrelated
   running service PID;
+- foreground visibility for appended `prepared`, `approved`, and `committed`
+  audit records with agent/user identity and UTC timestamp;
+- no historical registration audit replay and no partial JSONL publication;
 - dynamic log allowlist update for the newly registered service;
 - commit recovery/idempotency;
 - update rejection when stopped state cannot be proved; and
@@ -536,3 +539,9 @@ read the entire CLI approval output. After commit, wait for the foreground
 `[registry]` reconciliation message, confirm the service appears as `stopped`
 with `simple-status`, and start it only through a separate lifecycle command.
 The watcher and all unrelated services must keep the same PID.
+
+In the watcher terminal, confirm the same draft and request identity progresses
+through `prepared` by `agent/registration_mcp`, `approved` by `user/human_cli`,
+and `committed` by `agent/registration_mcp`. The later `[registry] Applied
+revision ...` line confirms runtime application; it is distinct from the
+cross-process registration audit events.

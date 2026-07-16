@@ -551,7 +551,7 @@ fn console_timestamp(value: &str) -> String {
     }
 }
 
-fn format_unix_milliseconds_utc(milliseconds: u128) -> Option<String> {
+pub(crate) fn format_unix_milliseconds_utc(milliseconds: u128) -> Option<String> {
     let total_seconds = milliseconds / 1_000;
     let days = i64::try_from(total_seconds / 86_400).ok()?;
     let seconds_in_day = u64::try_from(total_seconds % 86_400).ok()?;

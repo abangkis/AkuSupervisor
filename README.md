@@ -317,6 +317,11 @@ committed service topology in place: unchanged services retain their process
 owners and are not restarted. See
 [Human-gated service registration](docs/service-registration.md).
 
+The foreground console also follows the secret-free registration audit. An MCP
+prepare, interactive approval, and MCP commit appear with UTC timestamp, actor,
+operation, service, draft, request ID, and proposed revision. Existing audit
+history is not replayed when the Supervisor starts.
+
 After the Gate 5 build has been loaded into Chrome once, either the user or
 Codex can request the only browser-side mutation exposed by AkuSupervisor:
 

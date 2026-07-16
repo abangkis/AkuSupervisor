@@ -94,6 +94,10 @@ fn registration_change_preserves_running_service_and_supervisor_process() {
     let directory = TestDirectory::create();
     let config_directory = directory.path.join("AkuSupervisor");
     fs::create_dir_all(&config_directory).expect("create config directory");
+    let registration_directory = config_directory.join(".runtime/registration");
+    fs::create_dir_all(&registration_directory).expect("create registration directory");
+    let registration_audit = registration_directory.join("audit.jsonl");
+    fs::write(&registration_audit, []).expect("create empty registration audit");
     let config_path = config_directory.join("services.json");
     let mut config = json!({
         "version": 1,
@@ -123,6 +127,9 @@ fn registration_change_preserves_running_service_and_supervisor_process() {
     let mut guard = ChildGuard::new(child);
     let supervisor_pid = guard.child_mut().id();
     wait_for_status(&directory.path);
+    append_registration_audit(&registration_audit, "prepared", "registration_mcp");
+    append_registration_audit(&registration_audit, "approved", "human_cli");
+    append_registration_audit(&registration_audit, "committed", "registration_mcp");
     start_service(&directory.path, "retained");
     let retained_before = wait_for_service(&directory.path, "retained", |service| {
         service["lifecycle"] == "running" && service["rootPid"].is_number()
@@ -164,9 +171,34 @@ fn registration_change_preserves_running_service_and_supervisor_process() {
         .expect("collect supervisor output");
     assert!(output.status.success(), "supervisor failed: {output:?}");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("[registry] Applied configuration without Supervisor handoff"));
+    assert!(stdout.contains("[registry] Applied revision"));
+    assert!(stdout.contains("without Supervisor handoff"));
+    assert!(
+        stdout.contains(
+            "[registration] prepared register registration-smoke by agent/registration_mcp"
+        )
+    );
+    assert!(
+        stdout.contains("[registration] approved register registration-smoke by user/human_cli")
+    );
+    assert!(stdout.contains(
+        "[registration] committed register registration-smoke by agent/registration_mcp"
+    ));
     assert!(stdout.contains("added=registered"));
     assert!(stdout.contains("unrelated services preserved"));
+}
+
+fn append_registration_audit(path: &Path, event: &str, actor: &str) {
+    let mut file = fs::OpenOptions::new()
+        .append(true)
+        .open(path)
+        .expect("open registration audit");
+    writeln!(
+        file,
+        "{{\"schemaVersion\":1,\"timestampUnixMs\":1784194436858,\"event\":\"{event}\",\"actor\":\"{actor}\",\"draftId\":\"registration-live-test\",\"requestId\":\"live-test\",\"operation\":\"register\",\"serviceId\":\"registration-smoke\",\"baseRevision\":\"sha256:base\",\"proposedRevision\":\"sha256:proposed\",\"proposalHash\":\"sha256:proposal\",\"status\":\"{event}\"}}"
+    )
+    .expect("append registration audit");
+    file.flush().expect("flush registration audit");
 }
 
 fn crash_service(restart_policy: &str) -> Value {

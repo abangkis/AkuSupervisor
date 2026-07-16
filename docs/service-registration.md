@@ -71,6 +71,24 @@ available from MCP:
 
 No registration approval tool exists.
 
+## Foreground visibility
+
+The foreground Supervisor follows new records appended to
+`.runtime/registration/audit.jsonl`. This makes actions performed by the
+separate MCP and approval processes visible in the watcher terminal:
+
+```text
+[2026-07-16T09:36:08.377Z] [registration] prepared register api by agent/registration_mcp (draft=registration-..., request=..., revision=sha256:...)
+[2026-07-16T09:36:15.124Z] [registration] approved register api by user/human_cli (draft=registration-..., request=..., revision=sha256:...)
+[2026-07-16T09:36:18.911Z] [registration] committed register api by agent/registration_mcp (draft=registration-..., request=..., revision=sha256:...)
+```
+
+Only records appended after the Supervisor begins following the file are
+printed, so a restart does not replay historical approvals. Partial JSONL lines
+are retained until complete, malformed or oversized records fail visibly, and
+the console representation is bounded to one line. Full proposal content and
+environment values remain absent from the audit.
+
 ## Human commands
 
 Inspect live capabilities and the current revision:
@@ -175,8 +193,25 @@ before deleting the stale file.
 
 ## AkuWorkspace live acceptance
 
-The stable registration MCP completed a reversible acceptance cycle against
-the active default profile:
+The stable registration MCP completed reversible acceptance cycles against the
+active default profile. The latest zero-disruption proof:
+
+- began at revision `sha256:f8a5e9bc...de17b98` with Supervisor PID `32660`
+  and AkuSidecar PID `34620`;
+- registered `registration-smoke` at revision
+  `sha256:3e947a56...b24216c`; the entry appeared stopped without a PID while
+  both baseline PIDs remained unchanged;
+- a separate agent subsequently performed an explicit Sidecar development
+  rebuild, recorded as lifecycle events `#891/#892`; this was not caused by
+  registration reconciliation;
+- unregister removed the smoke entry and returned the exact initial revision
+  while retaining the same Supervisor process and the then-current healthy
+  Sidecar owner; and
+- the audit persisted prepared, human-approved, and MCP-committed records for
+  both directions without launching the smoke service.
+
+The earlier phase-3 acceptance also established the approval and transaction
+boundaries:
 
 - discovered revision `sha256:b7bbb1e0...b4411` and the complete service
   schema without external documentation;

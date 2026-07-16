@@ -527,6 +527,11 @@ retain their process owner and runtime state; a newly registered entry begins
 stopped. Updating or removing an active target fails closed. Source-code watcher
 handoff is a separate concern and must not be triggered by registration alone.
 
+Because registration and approval occur in separate processes, the foreground
+host must follow the append-only registration audit and show new prepare,
+approval, and commit identities without replaying historical records or
+including configuration values and secrets.
+
 Repository tasks that copy artifacts, build releases, upload to cloud storage,
 invalidate caches, or switch remote production state are not services. They
 remain outside the supervisor even when they are adjacent to the daily
