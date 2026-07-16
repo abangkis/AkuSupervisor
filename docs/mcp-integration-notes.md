@@ -78,7 +78,10 @@ AkuSupervisor now has two deliberately separate MCP identities:
   reconciliation.
 
 The registration authority does not grant lifecycle control and exposes no
-approval tool. See [Human-Gated Service Registration](service-registration.md).
+approval tool. Its self-description returns a human `approvalCommand` with
+`--commit`, so user approval completes the mutation without depending on a
+later agent turn. The MCP commit tool remains an idempotent result and recovery
+operation. See [Human-Gated Service Registration](service-registration.md).
 
 ### 4.1 Read-only tools
 

@@ -310,10 +310,12 @@ configuration. During development it may temporarily point at
 
 Generic service onboarding uses a second MCP identity, `registration-mcp`.
 It self-describes the full schema and workflow, creates revision-bound drafts,
-and can commit only after the user runs `registration approve <draft-id>` in a
-real terminal and reviews the full before/after configuration. There is no MCP
-approval tool, registration never auto-starts a service, and update/unregister
-require live stopped-state evidence. A running Supervisor reconciles the
+and returns `registration approve <draft-id> --commit` for the user to run in a
+real terminal after reviewing the full before/after configuration. That single
+human command completes approval and mutation; the agent's idempotent MCP
+commit call only retrieves or confirms the result. There is no MCP approval
+tool, registration never auto-starts a service, and update/unregister require
+live stopped-state evidence. A running Supervisor reconciles the
 committed service topology in place: unchanged services retain their process
 owners and are not restarted. See
 [Human-gated service registration](docs/service-registration.md).

@@ -1,6 +1,6 @@
 # Human-Gated Service Registration
 
-Status: **Phases 1 through 4.1.1 implemented; phase 4 integration-validated on 2026-07-16**
+Status: **Phases 1 through 4.2 implemented; phase 4 integration-validated on 2026-07-16**
 
 AkuSupervisor exposes a separate stdio MCP server for discovering, validating,
 preparing, and committing service registrations. It does not expand the
@@ -17,8 +17,8 @@ program.
 flowchart LR
     A["Codex registration MCP"] -->|"discover and validate"| D["Revision-bound draft"]
     D -->|"full review"| H["Human interactive CLI"]
-    H -->|"hash-bound approval"| D
-    D -->|"commit after checks"| C["Atomic services.json replace"]
+    H -->|"hash-bound approve + commit"| C["Atomic services.json replace"]
+    D -->|"approval-only recovery"| C
     C --> R["Live registry reconciliation"]
     R --> S["New service remains stopped"]
     R --> U["Unchanged services retain PID and state"]
@@ -65,11 +65,15 @@ available from MCP:
 2. `supervisor_registration_get_schema`
 3. `supervisor_registration_validate_service`
 4. `supervisor_registration_prepare_change`
-5. ask the user to run the returned `approvalCommand`
-6. `supervisor_registration_get_draft`
-7. `supervisor_registration_commit_change`
+5. ask the user to run the returned `approvalCommand`; its `--commit` option
+   completes both approval and mutation after the review
+6. after the user responds, call `supervisor_registration_commit_change`
+   idempotently to retrieve or confirm the final result
 
-No registration approval tool exists.
+No registration approval tool exists. The agent follow-up is useful for
+visibility and recovery, but the mutation no longer depends on the agent
+continuing after the human approves it. This is a runtime contract returned by
+MCP, not knowledge that must be recovered from this document.
 
 ## Foreground visibility
 
@@ -79,8 +83,8 @@ separate MCP and approval processes visible in the watcher terminal:
 
 ```text
 [2026-07-16T09:36:08.377Z] [registration] prepared register api by agent/registration_mcp (draft=registration-..., request=..., revision=sha256:...)
-[2026-07-16T09:36:15.124Z] [registration] approved register api by user/human_cli (draft=registration-..., request=..., revision=sha256:...)
-[2026-07-16T09:36:18.911Z] [registration] committed register api by agent/registration_mcp (draft=registration-..., request=..., revision=sha256:...)
+[2026-07-16T09:36:15.124Z] [registration] approved register api by user/human_cli (draft=registration-..., request=..., revision=sha256:...); authorization recorded, configuration unchanged until commit
+[2026-07-16T09:36:15.173Z] [registration] committed register api by user/human_cli (draft=registration-..., request=..., revision=sha256:...); transaction finalized
 ```
 
 Only records appended after the Supervisor begins following the file are
@@ -103,14 +107,21 @@ Inspect a draft again without approving it:
 .\target\aku-supervisor.exe registration show registration-0123456789abcdef0123
 ```
 
-Approve only after reading the entire output:
+Approve and commit only after reading the entire output (recommended):
 
 ```powershell
-.\target\aku-supervisor.exe registration approve registration-0123456789abcdef0123
+.\target\aku-supervisor.exe registration approve registration-0123456789abcdef0123 --commit
 ```
 
-Approval does not change `services.json`. The MCP client must still commit the
-approved draft.
+The CLI states before prompting that the exact proposal will be committed. On
+success it prints `APPROVED AND COMMITTED` and the complete structured result.
+If commit fails after approval, rerun the same command; the approved draft is
+resumed without requiring another agent or another approval phrase.
+
+Advanced two-phase workflows may omit `--commit`. In that mode the command
+prints `APPROVED ONLY`, `services.json` remains unchanged, and either the same
+human command with `--commit` or the idempotent MCP commit tool must finish the
+transaction.
 
 ## Transaction and lifecycle rules
 

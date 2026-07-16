@@ -179,13 +179,16 @@ impl RegistrationAuthority {
                 "Call supervisor_registration_get_schema and supervisor_registration_get_capabilities.",
                 "Validate the complete service object with supervisor_registration_validate_service.",
                 "Prepare a revision-bound draft with supervisor_registration_prepare_change.",
-                "Ask the user to run the returned approvalCommand in a real interactive terminal.",
-                "After human approval, call supervisor_registration_commit_change exactly once."
+                "Ask the user to run the returned approvalCommand in a real interactive terminal; its --commit flag completes the mutation after approval.",
+                "After the user reports completion, call supervisor_registration_commit_change idempotently to retrieve or confirm the final result; the mutation does not depend on this follow-up."
             ],
             "safety": {
                 "approvalAvailableThroughMcp": false,
                 "approvalRequiresInteractiveTerminal": true,
                 "approvalShowsFullBeforeAndAfterConfiguration": true,
+                "approvalCommandCommits": true,
+                "agentCommitRequiredAfterApprovalCommand": false,
+                "mcpCommitIsIdempotent": true,
                 "approvalBoundToProposalHash": true,
                 "draftLifetimeMs": DRAFT_LIFETIME_MS,
                 "optimisticConcurrency": "exact base revision",
@@ -210,7 +213,8 @@ impl RegistrationAuthority {
             ],
             "humanCommands": {
                 "inspect": "aku-supervisor registration show <draft-id>",
-                "approve": "aku-supervisor registration approve <draft-id>"
+                "approveAndCommit": "aku-supervisor registration approve <draft-id> --commit",
+                "approveOnly": "aku-supervisor registration approve <draft-id>"
             }
         }))
     }
@@ -396,6 +400,35 @@ impl RegistrationAuthority {
         &self,
         draft_id: &str,
     ) -> Result<RegistrationDraft, RegistrationError> {
+        self.approve_interactive_mode(draft_id, false)
+    }
+
+    /// Shows the full proposal, records exact human approval, and immediately
+    /// commits through the same revision and lifecycle checks used by MCP.
+    ///
+    /// An already-approved or committed draft is resumed idempotently without
+    /// requiring an agent process to finish the transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns a terminal, approval, concurrency, runtime-state, persistence,
+    /// or reconciliation failure.
+    pub fn approve_and_commit_interactive(
+        &self,
+        draft_id: &str,
+    ) -> Result<CommitResult, RegistrationError> {
+        let draft = self.get_draft(draft_id)?;
+        if draft.status == DraftStatus::Prepared {
+            self.approve_interactive_mode(draft_id, true)?;
+        }
+        self.commit_with_actor(draft_id, "human_cli")
+    }
+
+    fn approve_interactive_mode(
+        &self,
+        draft_id: &str,
+        commit_after_approval: bool,
+    ) -> Result<RegistrationDraft, RegistrationError> {
         if !io::stdin().is_terminal() {
             return Err(RegistrationError::new(
                 "interactive_terminal_required",
@@ -403,7 +436,7 @@ impl RegistrationAuthority {
             ));
         }
         let draft = self.get_draft(draft_id)?;
-        print_approval_review(&draft)?;
+        print_approval_review(&draft, commit_after_approval)?;
         print!("\nType exactly: {}\n> ", draft.confirmation_phrase);
         io::stdout()
             .flush()
@@ -469,6 +502,14 @@ impl RegistrationAuthority {
     ///
     /// Returns an approval, expiry, concurrency, runtime-state, or persistence failure.
     pub fn commit(&self, draft_id: &str) -> Result<CommitResult, RegistrationError> {
+        self.commit_with_actor(draft_id, "registration_mcp")
+    }
+
+    fn commit_with_actor(
+        &self,
+        draft_id: &str,
+        audit_actor: &'static str,
+    ) -> Result<CommitResult, RegistrationError> {
         let _commit_lock = CommitLock::acquire(&self.registration_directory)?;
         let mut draft = self.get_draft(draft_id)?;
         if draft.status == DraftStatus::Committed {
@@ -477,7 +518,7 @@ impl RegistrationAuthority {
         if draft.status != DraftStatus::Approved {
             return Err(RegistrationError::new(
                 "human_approval_required",
-                "draft is not approved; MCP cannot approve it",
+                "draft is not approved; commit cannot create its own approval",
             ));
         }
         if now_ms()? > draft.expires_at_unix_ms {
@@ -492,7 +533,7 @@ impl RegistrationAuthority {
             draft.status = DraftStatus::Committed;
             draft.committed_at_unix_ms = Some(now_ms()?);
             write_json_atomic(&self.draft_path(&draft.draft_id)?, &draft)?;
-            self.audit("commit_recovered", &draft, Some("registration_mcp"))?;
+            self.audit("commit_recovered", &draft, Some(audit_actor))?;
             return Ok(self.commit_result(&draft));
         }
         if current_revision != draft.base_revision {
@@ -513,7 +554,7 @@ impl RegistrationAuthority {
         draft.status = DraftStatus::Committed;
         draft.committed_at_unix_ms = Some(now_ms()?);
         write_json_atomic(&self.draft_path(&draft.draft_id)?, &draft)?;
-        self.audit("committed", &draft, Some("registration_mcp"))?;
+        self.audit("committed", &draft, Some(audit_actor))?;
         Ok(self.commit_result(&draft))
     }
 
@@ -1011,7 +1052,10 @@ fn commit_result(
     }
 }
 
-fn print_approval_review(draft: &RegistrationDraft) -> Result<(), RegistrationError> {
+fn print_approval_review(
+    draft: &RegistrationDraft,
+    commit_after_approval: bool,
+) -> Result<(), RegistrationError> {
     println!("AkuSupervisor registration approval\n");
     println!("Draft:            {}", draft.draft_id);
     println!("Operation:        {}", draft.operation);
@@ -1039,9 +1083,15 @@ fn print_approval_review(draft: &RegistrationDraft) -> Result<(), RegistrationEr
         "\nFULL PROPOSED CONFIGURATION:\n{}",
         serde_json::to_string_pretty(&draft.after_configuration).map_err(json_error)?
     );
-    println!(
-        "\nApproval does not start the service. Commit remains revision-bound and update/unregister require observed stopped state."
-    );
+    if commit_after_approval {
+        println!(
+            "\nAFTER CONFIRMATION: this command will immediately commit the exact proposed configuration. The service will not auto-start. Revision and stopped-state checks still apply."
+        );
+    } else {
+        println!(
+            "\nAPPROVAL ONLY: the configuration will remain unchanged until a separate commit. Use --commit to complete approval and mutation in one human command."
+        );
+    }
     Ok(())
 }
 
@@ -1374,6 +1424,47 @@ mod tests {
                 .expect("idempotent prepare after commit")
                 .status,
             DraftStatus::Committed
+        );
+    }
+
+    #[test]
+    fn human_completed_transaction_is_audited_as_human_cli() {
+        let fixture = Fixture::new();
+        let authority = fixture.authority();
+        let draft = authority
+            .prepare(PrepareRegistration {
+                request_id: "human-commit-worker".to_owned(),
+                operation: RegistrationOperation::Register,
+                service_id: "worker".to_owned(),
+                base_revision: fixture.config().fingerprint().expect("base revision"),
+                service: Some(fixture.service("Worker", 0)),
+            })
+            .expect("prepare");
+        authority
+            .approve_with_confirmation(draft.clone(), &draft.confirmation_phrase)
+            .expect("approve");
+
+        let committed = authority
+            .commit_with_actor(&draft.draft_id, "human_cli")
+            .expect("human commit");
+        assert_eq!(committed.registered_state, "stopped");
+        assert!(fixture.config().services.contains_key("worker"));
+
+        let audit = fs::read_to_string(fixture.directory.join(".runtime/registration/audit.jsonl"))
+            .expect("registration audit");
+        let committed_event = audit
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .find(|event| event["event"] == "committed")
+            .expect("committed audit event");
+        assert_eq!(committed_event["actor"], "human_cli");
+
+        let confirmed = authority
+            .commit(&draft.draft_id)
+            .expect("MCP confirmation is idempotent");
+        assert_eq!(
+            confirmed.configuration_revision,
+            committed.configuration_revision
         );
     }
 

@@ -34,7 +34,7 @@ impl RegistrationAuditEvent {
         let timestamp = format_unix_milliseconds_utc(u128::from(self.timestamp_unix_ms))
             .unwrap_or_else(|| "timestamp-invalid".to_owned());
         format!(
-            "[{timestamp}] [registration] {} {} {} by {} (draft={}, request={}, revision={})",
+            "[{timestamp}] [registration] {} {} {} by {} (draft={}, request={}, revision={}){}",
             console_token(&self.event),
             console_token(&self.operation),
             console_token(&self.service_id),
@@ -42,7 +42,18 @@ impl RegistrationAuditEvent {
             console_token(&self.draft_id),
             console_token(&self.request_id),
             short_revision(&self.proposed_revision),
+            event_state_note(&self.event),
         )
+    }
+}
+
+fn event_state_note(event: &str) -> &'static str {
+    match event {
+        "approved" | "approval_recovered" => {
+            "; authorization recorded, configuration unchanged until commit"
+        }
+        "committed" | "commit_recovered" => "; transaction finalized",
+        _ => "",
     }
 }
 
@@ -239,7 +250,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(
             events[0].console_line(),
-            "[2024-07-15T12:00:00.124Z] [registration] approved register api by user/human_cli (draft=registration-abc, request=request-1, revision=sha256:123456789abc...)"
+            "[2024-07-15T12:00:00.124Z] [registration] approved register api by user/human_cli (draft=registration-abc, request=request-1, revision=sha256:123456789abc...); authorization recorded, configuration unchanged until commit"
         );
         drop(file);
         fs::remove_file(path).ok();

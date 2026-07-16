@@ -503,7 +503,7 @@ checkpoint without granting lifecycle mutation or bootstrap authority.
 
 ### Phase 6B - Generic service registration authority
 
-Status: **Phases 1 through 4.1.1 completed on 2026-07-16**
+Status: **Phases 1 through 4.2 completed on 2026-07-16**
 
 The implementation and operator contract are maintained in
 [Human-Gated Service Registration](service-registration.md).
@@ -579,6 +579,20 @@ Phase 4.1.1 - deadline and operator visibility hardening:
 - [x] `simple-status` remains unchanged for matching current revisions; and
 - [x] non-current, unavailable, or mismatched registry state prepends one
   bounded warning without expanding the read-only MCP surface.
+
+Phase 4.2 - human-completable transaction:
+
+- [x] MCP returns `registration approve <draft-id> --commit` as the primary
+  approval command and explicitly says no external document is required;
+- [x] the interactive CLI displays whether approval will immediately commit
+  the exact proposal and produces one final structured result;
+- [x] approval plus commit is audited as `user/human_cli`, applies the existing
+  revision, stopped-state, atomicity, and reconciliation checks, and remains
+  resumable after a post-approval failure;
+- [x] approval-only remains available as an explicit advanced flow with a
+  prominent warning that the configuration is unchanged; and
+- [x] MCP commit is advertised and tested as an idempotent result/recovery
+  operation, not a correctness dependency after the human command completes.
 
 Discovery adapters, unattended approval, secrets, dependency graphs, and
 agent-initiated Supervisor bootstrap remain outside this milestone.

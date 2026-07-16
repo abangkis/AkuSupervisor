@@ -123,7 +123,7 @@ fn initialize(params: &Value) -> Result<Value, String> {
             "version":crate::VERSION,
             "description":"Prepare and commit revision-bound service registration drafts. Human approval is intentionally unavailable through MCP."
         },
-        "instructions":"Begin with get_capabilities and get_schema. Validate a complete service definition, prepare a draft, ask the user to run the exact approvalCommand in an interactive terminal, then commit. Registration never auto-starts a service. Update and unregister fail unless the running Supervisor proves the target is stopped."
+        "instructions":"No external documentation is required. Begin with get_capabilities and get_schema, validate a complete service definition, then prepare a draft. Ask the user to run the exact approvalCommand in an interactive terminal; its --commit flag approves and completes the mutation, so agent follow-up is not required for correctness. After the user responds, call supervisor_registration_commit_change idempotently to retrieve or confirm the final result. Registration never auto-starts a service. Update and unregister fail unless the running Supervisor proves the target is stopped."
     }))
 }
 
@@ -138,7 +138,7 @@ fn list_tools(params: &Value) -> Result<Value, String> {
         tool("supervisor_registration_validate_service", "Validate service change", "Validate a register, update, or unregister proposal against the current complete configuration without creating a draft.", &change_input_schema(false), true, false, true),
         tool("supervisor_registration_prepare_change", "Prepare registration draft", "Create an expiring, revision-bound, hash-bound draft. This does not change the configuration and cannot approve itself.", &change_input_schema(true), false, false, false),
         tool("supervisor_registration_get_draft", "Get registration draft", "Inspect the complete persisted draft, full before/after configuration, warnings, status, confirmation phrase, and approval command.", &draft_input_schema(), true, false, true),
-        tool("supervisor_registration_commit_change", "Commit approved registration", "Atomically commit a previously human-approved draft after exact revision and stopped-state checks, then return a bounded live reconciliation acknowledgment. Never auto-starts the service.", &draft_input_schema(), false, true, false)
+        tool("supervisor_registration_commit_change", "Commit or confirm approved registration", "Idempotently commit an approval-only draft, recover an interrupted commit, or retrieve the final result after the human approvalCommand already committed it. Exact revision and stopped-state checks remain mandatory. Never auto-starts the service.", &draft_input_schema(), false, true, true)
     ]}))
 }
 
@@ -219,8 +219,11 @@ fn call_tool(params: &Value, authority: &RegistrationAuthority) -> Result<Value,
             authority.get_draft(draft_id).map(|draft| {
                 json!({
                     "draft":draft,
-                    "approvalCommand":format!("aku-supervisor registration approve {draft_id}"),
-                    "approvalAvailableThroughMcp":false
+                    "approvalCommand":approval_command(draft_id),
+                    "approvalCommandCommits":true,
+                    "agentCommitRequired":false,
+                    "approvalAvailableThroughMcp":false,
+                    "completionCheck":completion_check()
                 })
             })
         }
@@ -279,10 +282,26 @@ fn prepare_tool(
         let draft_id = draft.draft_id.clone();
         json!({
             "draft":draft,
-            "approvalCommand":format!("aku-supervisor registration approve {draft_id}"),
+            "approvalCommand":approval_command(&draft_id),
+            "approvalCommandCommits":true,
+            "agentCommitRequired":false,
             "approvalAvailableThroughMcp":false,
-            "nextStep":"Ask the user to run approvalCommand in a real interactive terminal after reviewing the complete configuration."
+            "completionCheck":completion_check(),
+            "nextStep":"Ask the user to run approvalCommand in a real interactive terminal after reviewing the complete configuration. That command approves and commits. After the user responds, call completionCheck.tool idempotently to retrieve or confirm the result; the configuration change does not depend on that follow-up."
         })
+    })
+}
+
+fn approval_command(draft_id: &str) -> String {
+    format!("aku-supervisor registration approve {draft_id} --commit")
+}
+
+fn completion_check() -> Value {
+    json!({
+        "tool":"supervisor_registration_commit_change",
+        "idempotent":true,
+        "requiredForMutation":false,
+        "purpose":"Retrieve or confirm the final reconciliation result after the human command returns."
     })
 }
 
@@ -455,6 +474,19 @@ mod tests {
             .expect("commit tool");
         assert_eq!(commit["annotations"]["destructiveHint"], true);
         assert_eq!(commit["annotations"]["readOnlyHint"], false);
+        assert_eq!(commit["annotations"]["idempotentHint"], true);
+    }
+
+    #[test]
+    fn approval_command_completes_the_mutation_without_agent_follow_up() {
+        assert_eq!(
+            approval_command("registration-0123456789abcdef0123"),
+            "aku-supervisor registration approve registration-0123456789abcdef0123 --commit"
+        );
+        let completion = completion_check();
+        assert_eq!(completion["tool"], "supervisor_registration_commit_change");
+        assert_eq!(completion["idempotent"], true);
+        assert_eq!(completion["requiredForMutation"], false);
     }
 
     #[test]

@@ -29,7 +29,7 @@ Usage:\n\
   aku-supervisor registration-mcp [--config <path>]\n\
   aku-supervisor registration capabilities [--json] [--config <path>]\n\
   aku-supervisor registration show <draft-id> [--json] [--config <path>]\n\
-  aku-supervisor registration approve <draft-id> [--config <path>]\n\
+  aku-supervisor registration approve <draft-id> [--commit] [--config <path>]\n\
   aku-supervisor --help\n\
   aku-supervisor --version\n\n\
 Without --config, AkuSupervisor checks AKU_SUPERVISOR_CONFIG and then the default user configuration.";
@@ -64,6 +64,7 @@ enum Command {
     RegistrationApprove {
         draft_id: String,
         config: Option<PathBuf>,
+        commit: bool,
     },
     Remote(RemoteCommand),
 }
@@ -159,9 +160,11 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
             config,
             json,
         }) => run_registration_show(config, &draft_id, json),
-        Ok(Command::RegistrationApprove { draft_id, config }) => {
-            run_registration_approve(config, &draft_id)
-        }
+        Ok(Command::RegistrationApprove {
+            draft_id,
+            config,
+            commit,
+        }) => run_registration_approve(config, &draft_id, commit),
         Ok(Command::Remote(command)) => run_remote(command),
         Err(message) => {
             eprintln!("error: {message}\n\n{HELP}");
@@ -253,14 +256,51 @@ fn parse_registration(arguments: &[OsString]) -> Result<Command, String> {
                 .and_then(|value| value.to_str())
                 .ok_or_else(|| "registration approve requires a draft ID".to_owned())?
                 .to_owned();
-            let (config, json) = parse_output_options(&arguments[2..])?;
-            if json {
-                return Err("interactive approval does not support --json".to_owned());
-            }
-            Ok(Command::RegistrationApprove { draft_id, config })
+            let (config, commit) = parse_registration_approve_options(&arguments[2..])?;
+            Ok(Command::RegistrationApprove {
+                draft_id,
+                config,
+                commit,
+            })
         }
         _ => Err("registration requires capabilities, show, or approve".to_owned()),
     }
+}
+
+fn parse_registration_approve_options(
+    arguments: &[OsString],
+) -> Result<(Option<PathBuf>, bool), String> {
+    let mut config = None;
+    let mut commit = false;
+    let mut index = 0;
+    while index < arguments.len() {
+        match arguments[index].to_str() {
+            Some("--commit") if !commit => {
+                commit = true;
+                index += 1;
+            }
+            Some("--config") if config.is_none() => {
+                config = Some(PathBuf::from(option_value(arguments, index)?));
+                index += 2;
+            }
+            Some("--json") => {
+                return Err("interactive approval does not support --json".to_owned());
+            }
+            Some("--commit" | "--config") => {
+                return Err(format!(
+                    "duplicate option: {}",
+                    arguments[index].to_string_lossy()
+                ));
+            }
+            _ => {
+                return Err(format!(
+                    "unsupported option: {}",
+                    arguments[index].to_string_lossy()
+                ));
+            }
+        }
+    }
+    Ok((config, commit))
 }
 
 fn run_registration_capabilities(config: Option<PathBuf>, json_output: bool) -> ExitCode {
@@ -280,20 +320,43 @@ fn run_registration_show(config: Option<PathBuf>, draft_id: &str, json_output: b
     print_registration_result(result, json_output)
 }
 
-fn run_registration_approve(config: Option<PathBuf>, draft_id: &str) -> ExitCode {
-    let result = crate::adapters::registration::RegistrationAuthority::open(config)
-        .and_then(|authority| authority.approve_interactive(draft_id));
-    match result {
-        Ok(draft) => {
-            println!(
-                "\nAPPROVED: {}\nProposal hash: {}\nThe configuration has not changed yet. Return to the MCP client to commit this one-time draft.",
-                draft.draft_id, draft.proposal_hash
-            );
-            ExitCode::SUCCESS
-        }
+fn run_registration_approve(config: Option<PathBuf>, draft_id: &str, commit: bool) -> ExitCode {
+    let authority = match crate::adapters::registration::RegistrationAuthority::open(config) {
+        Ok(authority) => authority,
         Err(error) => {
             eprintln!("error: {error}");
-            ExitCode::FAILURE
+            return ExitCode::FAILURE;
+        }
+    };
+    if commit {
+        match authority.approve_and_commit_interactive(draft_id) {
+            Ok(result) => {
+                println!(
+                    "\nAPPROVED AND COMMITTED: {}\n{}",
+                    result.draft_id,
+                    serde_json::to_string_pretty(&result)
+                        .expect("commit result serialization cannot fail")
+                );
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("error: {error}");
+                ExitCode::FAILURE
+            }
+        }
+    } else {
+        match authority.approve_interactive(draft_id) {
+            Ok(draft) => {
+                println!(
+                    "\nAPPROVED ONLY: {}\nProposal hash: {}\nThe configuration has not changed. Run this command again with --commit or ask the MCP client to commit the approved draft.",
+                    draft.draft_id, draft.proposal_hash
+                );
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("error: {error}");
+                ExitCode::FAILURE
+            }
         }
     }
 }
@@ -1418,6 +1481,43 @@ mod tests {
                 "approve",
                 "registration-0123456789abcdef0123",
                 "--json"
+            ]))
+            .is_err()
+        );
+        assert_eq!(
+            parse(args(&[
+                "registration",
+                "approve",
+                "registration-0123456789abcdef0123",
+                "--commit",
+                "--config",
+                "services.json",
+            ])),
+            Ok(Command::RegistrationApprove {
+                draft_id: "registration-0123456789abcdef0123".to_owned(),
+                config: Some(PathBuf::from("services.json")),
+                commit: true,
+            })
+        );
+        assert_eq!(
+            parse(args(&[
+                "registration",
+                "approve",
+                "registration-0123456789abcdef0123",
+            ])),
+            Ok(Command::RegistrationApprove {
+                draft_id: "registration-0123456789abcdef0123".to_owned(),
+                config: None,
+                commit: false,
+            })
+        );
+        assert!(
+            parse(args(&[
+                "registration",
+                "approve",
+                "registration-0123456789abcdef0123",
+                "--commit",
+                "--commit",
             ]))
             .is_err()
         );

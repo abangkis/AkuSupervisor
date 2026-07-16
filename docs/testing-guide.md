@@ -510,7 +510,9 @@ capabilities result must show the selected absolute configuration path,
 current SHA-256 revision, `autoStart: false`, and
 `approvalAvailableThroughMcp: false`. It must also advertise
 `automaticRegistryReconciliation: true` and
-`unrelatedServicesRestarted: false`.
+`unrelatedServicesRestarted: false`. The returned approval command must include
+`--commit`, state that it completes the mutation, and mark the MCP commit
+follow-up as idempotent and not required for mutation correctness.
 
 With the development Supervisor running, verify its revision truth directly:
 
@@ -539,6 +541,7 @@ and prove:
 - base-revision conflict rejection;
 - commit rejection before approval;
 - hash-bound approval and atomic register commit;
+- human `--commit` audit identity and idempotent MCP result confirmation;
 - registered-but-stopped result with no auto-start;
 - live topology reconciliation preserving the Supervisor PID and an unrelated
   running service PID;
@@ -551,13 +554,17 @@ and prove:
 - secret-like environment-key rejection.
 
 For an intentional real registration, follow the MCP-provided workflow and
-read the entire CLI approval output. After commit, wait for the foreground
+read the entire CLI approval output before running its `--commit` command.
+After the command reports `APPROVED AND COMMITTED`, use the MCP commit tool as
+an idempotent result check; correctness does not depend on that follow-up.
+Then wait for the foreground
 `[registry]` reconciliation message, confirm the service appears as `stopped`
 with `simple-status`, and start it only through a separate lifecycle command.
 The watcher and all unrelated services must keep the same PID.
 
 In the watcher terminal, confirm the same draft and request identity progresses
-through `prepared` by `agent/registration_mcp`, `approved` by `user/human_cli`,
-and `committed` by `agent/registration_mcp`. The later `[registry] Applied
+through `prepared` by `agent/registration_mcp`, then `approved` and `committed`
+by `user/human_cli`. An approval-only recovery may instead be committed by
+`agent/registration_mcp`. The later `[registry] Applied
 revision ...` line confirms runtime application; it is distinct from the
 cross-process registration audit events.
