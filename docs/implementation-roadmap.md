@@ -633,15 +633,20 @@ Required design work:
 
 Do not implement this phase by directly spawning AkuSupervisor from an ordinary restricted agent runner.
 
-### Phase 8 - Geofu portability validation
+### Phase 8 - Multi-stack development portability validation
 
-Status: **Geofu BE and Geofu plugin proofs complete; GeoLibre proof in progress**
+Status: **Completed for the canonical Windows AkuWorkspace development profile on 2026-07-16; AI4U applicability assessed and BE recipe implemented on 2026-07-17**
 
 Target family:
 
 - Geofu;
 - GeoLibre; and
 - Geofu_be.
+
+Additional applicability candidates (not yet live-supervised):
+
+- AI4U backend (`ai4u_be`, Go); and
+- AI4U frontend (`ai4u_fe`, React/Vite/Node toolchain).
 
 The first independently runnable profiles passed without project-specific
 changes to the lifecycle core. GeoLibre now extends the proof to two distinct
@@ -730,14 +735,35 @@ Application integration recipes:
 
 - [x] Go `net/http` graceful shutdown is documented, application-tested, and
   live-validated on Windows; Linux amd64 and macOS arm64 are compile-checked;
+- [x] finalize the Node classification and candidate contract: distinguish an
+  application-owned server from a tool-owned development server and one-shot
+  build, handle Windows `SIGBREAK` plus POSIX `SIGTERM`, and require
+  application cleanup evidence in addition to `forced: false`;
 - [ ] certify a reusable Node.js recipe independently of AkuSidecar ownership;
-  the npm/Rollup service is Windows live-validated with `forced: false`, while
-  a deterministic application shutdown test and Linux/macOS evidence remain;
+  the npm/Rollup service supplies Windows owned-tree exit evidence, while a
+  deterministic application-owned fixture and Linux/macOS evidence remain;
 - [ ] certify a reusable Rust managed-application recipe; and
 - [ ] certify Kotlin/JVM shutdown-hook and Windows console behavior.
 
 Recipe maintenance and evidence rules are defined in
 [Cooperative shutdown recipes](cooperative-shutdown-recipes.md).
+
+AI4U applicability assessment:
+
+- [x] `ai4u_fe` is correctly classified as a tool-owned Vite development
+  server, not an application-owned Node server; React source cannot control
+  Vite shutdown, and production build remains a one-shot workflow;
+- [x] installed Vite 7.3.6 source exposes bounded watcher/WebSocket/HTTP close
+  behavior but does not establish the Windows `SIGBREAK` evidence required by
+  AkuSupervisor's Ctrl+Break adapter;
+- [x] `ai4u_be` now implements the maintained Go recipe with a shared signal
+  context, bounded HTTP drain, cancellable workers/scheduler/WebSocket hub, and
+  database-pool close, without changing AkuSupervisor's lifecycle core;
+- [x] deterministic AI4U BE tests prove active-request drain plus active-client
+  WebSocket cleanup; broad `cmd/...` and `pkg/...` compilation/tests pass with
+  repository-baseline vet checks disabled; and
+- [ ] live-validate the built AI4U BE executable through AkuSupervisor before
+  claiming a second native Windows `forced: false` Go proof.
 
 The detailed commands and evidence requirements are in
 [Geofu BE portability proof](geofu-be-portability.md) and
