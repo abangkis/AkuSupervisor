@@ -12,7 +12,8 @@ use serde_json::{Value, json};
 
 use crate::application::{
     ControlAction, ControlErrorKind, CooperativeActionControl, CooperativeOperationError,
-    CooperativeOperationManager, CooperativeOperationStatus, SupervisorControl,
+    CooperativeOperationManager, CooperativeOperationStatus, RegistryReconciliationStatus,
+    SupervisorControl,
 };
 use crate::domain::{Actor, Reason};
 
@@ -68,6 +69,7 @@ impl ControlHttpServer {
         cooperative: Option<Arc<dyn CooperativeActionControl>>,
         journal: Arc<FileJournal>,
         logs: Arc<ServiceLogStore>,
+        reconciliation: Arc<RegistryReconciliationStatus>,
     ) -> Result<Self, ControlHttpError> {
         let listener = TcpListener::bind((host, port)).map_err(ControlHttpError::Bind)?;
         listener
@@ -90,6 +92,7 @@ impl ControlHttpServer {
                     cooperative.as_deref(),
                     &journal,
                     &logs,
+                    &reconciliation,
                     &thread_stop,
                 )
             })
@@ -150,6 +153,7 @@ fn serve(
     cooperative: Option<&CooperativeOperationManager>,
     journal: &FileJournal,
     logs: &ServiceLogStore,
+    reconciliation: &RegistryReconciliationStatus,
     stop: &AtomicBool,
 ) -> Result<(), ControlHttpError> {
     let mut idempotency = IdempotencyStore::default();
@@ -166,6 +170,7 @@ fn serve(
                     cooperative,
                     journal,
                     logs,
+                    reconciliation,
                     &mut idempotency,
                 ) {
                     let response = error_response(400, "bad_request", &error.to_string());
@@ -190,6 +195,7 @@ fn handle_connection(
     cooperative: Option<&CooperativeOperationManager>,
     journal: &FileJournal,
     logs: &ServiceLogStore,
+    reconciliation: &RegistryReconciliationStatus,
     idempotency: &mut IdempotencyStore,
 ) -> Result<(), RequestError> {
     let request = read_request(stream)?;
@@ -201,6 +207,7 @@ fn handle_connection(
         cooperative,
         journal,
         logs,
+        reconciliation,
         idempotency,
     );
     write_response(stream, &response).map_err(RequestError::Write)
@@ -215,6 +222,7 @@ fn route(
     cooperative: Option<&CooperativeOperationManager>,
     journal: &FileJournal,
     logs: &ServiceLogStore,
+    reconciliation: &RegistryReconciliationStatus,
     idempotency: &mut IdempotencyStore,
 ) -> Response {
     if request.target == mcp::MCP_ENDPOINT {
@@ -236,6 +244,13 @@ fn route(
             Ok(services) => json_response(200, &json!({ "services": services })),
             Err(error) => error_response(500, "internal", error.message()),
         };
+    }
+
+    if request.method == "GET" && request.target == "/v1/registry" {
+        if !request_is_authorized(request, token) {
+            return error_response(401, "unauthorized", "valid bearer token required");
+        }
+        return json_response(200, &json!({ "registry": reconciliation.snapshot() }));
     }
 
     if request.method == "GET" && request.target == "/v1/cooperative-actions/aku-bridge/active" {
@@ -1235,6 +1250,7 @@ mod tests {
             FileJournal::open(&journal_path, Vec::<String>::new()).expect("create test journal");
         let logs = ServiceLogStore::new(&std::env::temp_dir(), ["api".to_owned()]);
         let control = FakeControl::default();
+        let reconciliation = RegistryReconciliationStatus::new("sha256:test".to_owned());
         let request = HttpRequest {
             method: "POST".to_owned(),
             target: "/v1/services/api/start".to_owned(),
@@ -1254,6 +1270,7 @@ mod tests {
             None,
             &journal,
             &logs,
+            &reconciliation,
             &mut IdempotencyStore::default(),
         );
 
@@ -1274,6 +1291,65 @@ mod tests {
     }
 
     #[test]
+    fn registry_revision_status_requires_authentication() {
+        let token_path = std::env::temp_dir().join(format!(
+            "aku-supervisor-registry-token-{}",
+            std::process::id()
+        ));
+        let journal_path = token_path.with_extension("jsonl");
+        std::fs::remove_file(&token_path).ok();
+        std::fs::remove_file(&journal_path).ok();
+        let token =
+            RuntimeToken::load_or_create(&token_path, || Ok("a".repeat(64))).expect("create token");
+        let journal =
+            FileJournal::open(&journal_path, Vec::<String>::new()).expect("create journal");
+        let logs = ServiceLogStore::new(&std::env::temp_dir(), std::iter::empty());
+        let control = FakeControl::default();
+        let reconciliation = RegistryReconciliationStatus::new("sha256:active".to_owned());
+        let request = |authorization| HttpRequest {
+            method: "GET".to_owned(),
+            target: "/v1/registry".to_owned(),
+            authorization,
+            accept: None,
+            content_type: None,
+            origin: None,
+            mcp_protocol_version: None,
+            body: Vec::new(),
+        };
+
+        let unauthorized = route(
+            &request(None),
+            &token,
+            &McpConfig::default(),
+            &control,
+            None,
+            &journal,
+            &logs,
+            &reconciliation,
+            &mut IdempotencyStore::default(),
+        );
+        assert_eq!(unauthorized.status, 401);
+
+        let authorized = route(
+            &request(Some(format!("Bearer {}", "a".repeat(64)))),
+            &token,
+            &McpConfig::default(),
+            &control,
+            None,
+            &journal,
+            &logs,
+            &reconciliation,
+            &mut IdempotencyStore::default(),
+        );
+        assert_eq!(authorized.status, 200);
+        let payload: Value = serde_json::from_slice(&authorized.body).expect("registry JSON");
+        assert_eq!(payload["registry"]["state"], "current");
+        assert_eq!(payload["registry"]["activeRevision"], "sha256:active");
+        std::fs::remove_file(token_path).ok();
+        std::fs::remove_file(journal_path).ok();
+    }
+
+    #[test]
     fn authenticated_bridge_reload_uses_the_narrow_cooperative_boundary() {
         let token_path = std::env::temp_dir().join(format!(
             "aku-supervisor-bridge-token-{}",
@@ -1288,6 +1364,7 @@ mod tests {
             FileJournal::open(&journal_path, Vec::<String>::new()).expect("create journal");
         let logs = ServiceLogStore::new(&std::env::temp_dir(), ["api".to_owned()]);
         let control = FakeControl::default();
+        let reconciliation = RegistryReconciliationStatus::new("sha256:test".to_owned());
         let cooperative = Arc::new(FakeCooperativeControl::default());
         let manager = CooperativeOperationManager::new(cooperative.clone());
         let request = HttpRequest {
@@ -1309,6 +1386,7 @@ mod tests {
             Some(&manager),
             &journal,
             &logs,
+            &reconciliation,
             &mut IdempotencyStore::default(),
         );
 
@@ -1339,6 +1417,7 @@ mod tests {
             Some(&manager),
             &journal,
             &logs,
+            &reconciliation,
             &mut IdempotencyStore::default(),
         );
         assert_eq!(status.status, 200);
@@ -1366,6 +1445,7 @@ mod tests {
             Some(&manager),
             &journal,
             &logs,
+            &reconciliation,
             &mut IdempotencyStore::default(),
         );
         assert_eq!(active.status, 200);
@@ -1390,6 +1470,7 @@ mod tests {
             FileJournal::open(&journal_path, Vec::<String>::new()).expect("create journal");
         let logs = ServiceLogStore::new(&std::env::temp_dir(), ["api".to_owned()]);
         let control = FakeControl::default();
+        let reconciliation = RegistryReconciliationStatus::new("sha256:test".to_owned());
         let request = HttpRequest {
             method: "POST".to_owned(),
             target: "/v1/services/api/start".to_owned(),
@@ -1410,6 +1491,7 @@ mod tests {
             None,
             &journal,
             &logs,
+            &reconciliation,
             &mut idempotency,
         );
         let second = route(
@@ -1420,6 +1502,7 @@ mod tests {
             None,
             &journal,
             &logs,
+            &reconciliation,
             &mut idempotency,
         );
         let conflicting = HttpRequest {
@@ -1434,6 +1517,7 @@ mod tests {
             None,
             &journal,
             &logs,
+            &reconciliation,
             &mut idempotency,
         );
 

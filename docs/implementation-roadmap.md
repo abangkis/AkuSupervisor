@@ -557,6 +557,19 @@ Phase 4 - zero-disruption live registry reconciliation:
 - [x] audit following skips history, defers partial lines, bounds records, and
   surfaces malformed data without weakening the durable audit.
 
+Phase 4.1 - explicit reconciliation acknowledgment:
+
+- [x] one portable shared state records active and disk revisions plus
+  `current`, `pending`, `deferred`, or `rejected`;
+- [x] authenticated `GET /v1/registry` and `registry-status [--json]` expose
+  the same secret-free runtime truth;
+- [x] registration commit waits for a bounded acknowledgment and reports
+  `applied`, `pending`, `deferred`, `rejected`, or client-side `offline`;
+- [x] failures preserve the last active revision and bound diagnostic detail;
+  and
+- [x] no change expands the four-tool read-only MCP endpoint or introduces a
+  platform-specific dependency.
+
 Discovery adapters, unattended approval, secrets, dependency graphs, and
 agent-initiated Supervisor bootstrap remain outside this milestone.
 

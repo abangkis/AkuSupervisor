@@ -127,6 +127,7 @@ cargo run -- --help
 cargo run
 cargo run -- --config C:\path\to\services.json
 cargo run -- status
+cargo run -- registry-status
 cargo run -- events --limit 20
 cargo run -- logs akusidecar --stream stdout --tail 100
 cargo run -- restart akusidecar --actor codex --reason "source changed"
@@ -321,6 +322,19 @@ The foreground console also follows the secret-free registration audit. An MCP
 prepare, interactive approval, and MCP commit appear with UTC timestamp, actor,
 operation, service, draft, request ID, and proposed revision. Existing audit
 history is not replayed when the Supervisor starts.
+
+The live registry revision is independently inspectable:
+
+```powershell
+.\target\aku-supervisor.exe registry-status
+.\target\aku-supervisor.exe registry-status --json
+```
+
+It reports the configuration revision active in memory, the valid revision
+observed on disk, and `current`, `pending`, `deferred`, or `rejected`. A
+registration commit waits for a bounded acknowledgment and returns that actual
+runtime result; `offline` means no running Supervisor could be queried and the
+committed file will be loaded on the next normal startup.
 
 After the Gate 5 build has been loaded into Chrome once, either the user or
 Codex can request the only browser-side mutation exposed by AkuSupervisor:

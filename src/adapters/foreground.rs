@@ -21,7 +21,8 @@ use crate::adapters::runtime_token::{RuntimeToken, RuntimeTokenError, resolve_to
 use crate::adapters::service_logs::ServiceLogStore;
 use crate::application::{
     ControlAction, ControlMutationOutcome, CooperativeActionControl, CooperativeActionError,
-    RegistryBuildError, ServiceRegistry, ServiceSnapshot, SupervisorControl,
+    RegistryBuildError, RegistryReconciliationStatus, ServiceRegistry, ServiceSnapshot,
+    SupervisorControl,
 };
 use crate::domain::{Actor, Reason};
 use crate::platform::windows::{
@@ -100,6 +101,7 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
     ));
     let (cooperative, cooperative_audit_path) =
         build_cooperative_control(&config, runtime_directory, &fingerprint)?;
+    let reconciliation = Arc::new(RegistryReconciliationStatus::new(fingerprint.clone()));
     let mut control_server = ControlHttpServer::start(
         &config.control.host,
         config.control.port,
@@ -109,6 +111,7 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
         cooperative,
         journal,
         Arc::clone(&logs),
+        Arc::clone(&reconciliation),
     )
     .map_err(ForegroundError::ControlApi)?;
     let (mut config_monitor, mut registration_monitor, mut service_monitor) =
@@ -120,6 +123,7 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
             &config,
             &fingerprint,
             &runtime_services_directory,
+            reconciliation,
         );
 
     print_startup(
@@ -161,6 +165,7 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
     foreground_result.map(|_| ())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn start_runtime_monitors(
     registry: &Arc<WindowsRegistry>,
     audited: Arc<AuditedControl>,
@@ -169,6 +174,7 @@ fn start_runtime_monitors(
     config: &SupervisorConfig,
     fingerprint: &str,
     runtime_services_directory: &std::path::Path,
+    reconciliation: Arc<RegistryReconciliationStatus>,
 ) -> (ConfigMonitor, RegistrationEventMonitor, ServiceMonitor) {
     let config_monitor = ConfigMonitor::start(
         Arc::clone(registry),
@@ -178,6 +184,7 @@ fn start_runtime_monitors(
         config.clone(),
         fingerprint.to_owned(),
         runtime_services_directory.to_owned(),
+        reconciliation,
     );
     let registration_audit_path = runtime_services_directory
         .parent()
@@ -264,6 +271,7 @@ impl ConfigMonitor {
         mut active_config: SupervisorConfig,
         mut active_fingerprint: String,
         runtime_services_directory: PathBuf,
+        reconciliation: Arc<RegistryReconciliationStatus>,
     ) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
@@ -278,12 +286,14 @@ impl ConfigMonitor {
                     &active_config,
                     &active_fingerprint,
                     &runtime_services_directory,
+                    &reconciliation,
                 );
                 match result {
                     Ok(Some((config, fingerprint, outcome))) => {
                         last_error = None;
                         active_config = config;
                         active_fingerprint = fingerprint;
+                        reconciliation.applied(active_fingerprint.clone(), &outcome);
                         println!(
                             "[{}] [registry] Applied revision {} without Supervisor handoff: added={}, updated={}, removed={}; unrelated services preserved.",
                             console_timestamp_now(),
@@ -298,7 +308,24 @@ impl ConfigMonitor {
                     }
                     Err(error) => {
                         if last_error.as_ref() != Some(&error) {
-                            eprintln!("[registry] Configuration reconciliation deferred: {error}");
+                            let state = match reconciliation.snapshot().state {
+                                crate::application::RegistryReconciliationState::Deferred => {
+                                    "deferred"
+                                }
+                                crate::application::RegistryReconciliationState::Rejected => {
+                                    "rejected"
+                                }
+                                crate::application::RegistryReconciliationState::Pending => {
+                                    "pending"
+                                }
+                                crate::application::RegistryReconciliationState::Current => {
+                                    "current"
+                                }
+                            };
+                            eprintln!(
+                                "[{}] [registry] Configuration reconciliation {state}: {error}",
+                                console_timestamp_now()
+                            );
                         }
                         last_error = Some(error);
                     }
@@ -331,6 +358,7 @@ impl Drop for ConfigMonitor {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn reconcile_configuration(
     registry: &WindowsRegistry,
     audited: &AuditedControl,
@@ -339,6 +367,7 @@ fn reconcile_configuration(
     active_config: &SupervisorConfig,
     active_fingerprint: &str,
     runtime_services_directory: &std::path::Path,
+    reconciliation: &RegistryReconciliationStatus,
 ) -> Result<
     Option<(
         SupervisorConfig,
@@ -347,23 +376,54 @@ fn reconcile_configuration(
     )>,
     String,
 > {
-    let source = fs::read_to_string(config_path)
-        .map_err(|error| format!("cannot read {}: {error}", config_path.display()))?;
-    let config = SupervisorConfig::parse_json(&source).map_err(|error| error.to_string())?;
-    config.validate().map_err(|error| error.to_string())?;
-    let fingerprint = config.fingerprint().map_err(|error| error.to_string())?;
+    let source = fs::read_to_string(config_path).map_err(|error| {
+        let message = format!("cannot read {}: {error}", config_path.display());
+        reconciliation.rejected(None, &message);
+        message
+    })?;
+    let config = SupervisorConfig::parse_json(&source).map_err(|error| {
+        let message = error.to_string();
+        reconciliation.rejected(None, &message);
+        message
+    })?;
+    config.validate().map_err(|error| {
+        let message = error.to_string();
+        reconciliation.rejected(None, &message);
+        message
+    })?;
+    let fingerprint = config.fingerprint().map_err(|error| {
+        let message = error.to_string();
+        reconciliation.rejected(None, &message);
+        message
+    })?;
     if fingerprint == active_fingerprint {
+        if reconciliation.snapshot().state
+            != crate::application::RegistryReconciliationState::Current
+        {
+            reconciliation.applied(
+                fingerprint,
+                &crate::application::RegistryReconcileOutcome {
+                    added: Vec::new(),
+                    updated: Vec::new(),
+                    removed: Vec::new(),
+                },
+            );
+        }
         return Ok(None);
     }
+    reconciliation.pending(fingerprint.clone());
     if !same_foreground_contract(active_config, &config) {
-        return Err(
-            "non-service configuration changed; control, observability, cooperative actions, and version require an explicit Supervisor restart"
-                .to_owned(),
-        );
+        let message = "non-service configuration changed; control, observability, cooperative actions, and version require an explicit Supervisor restart".to_owned();
+        reconciliation.rejected(Some(fingerprint), &message);
+        return Err(message);
     }
     let outcome = registry
         .reconcile_registrations(config.service_registrations_with_logs(runtime_services_directory))
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| {
+            let message = error.to_string();
+            reconciliation.deferred(Some(fingerprint.clone()), &message);
+            message
+        })?;
     logs.reconcile_service_ids(config.services.keys().cloned());
     audited.set_config_fingerprint(fingerprint.clone());
     Ok(Some((config, fingerprint, outcome)))

@@ -6,7 +6,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, IsTerminal, Write};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -16,9 +16,12 @@ use super::config::{ConfigIssue, ServiceConfig, SupervisorConfig};
 use super::config_path::{ConfigPathError, resolve_config_path};
 use super::control_http::{ControlClientError, client_request};
 use super::runtime_token::{RuntimeToken, resolve_token_path};
+use crate::application::{RegistryReconciliationSnapshot, RegistryReconciliationState};
 
 const DRAFT_LIFETIME_MS: u64 = 30 * 60 * 1_000;
 const REGISTRATION_SCHEMA_VERSION: u32 = 1;
+const RECONCILIATION_ACK_TIMEOUT: Duration = Duration::from_secs(2);
+const RECONCILIATION_ACK_POLL: Duration = Duration::from_millis(50);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -94,9 +97,22 @@ pub struct CommitResult {
     pub registered_state: &'static str,
     pub auto_started: bool,
     pub registry_reload_required: bool,
-    pub registry_reconciliation: &'static str,
+    pub registry_reconciliation: RegistrationReconciliationOutcome,
+    pub runtime_active_revision: Option<String>,
+    pub runtime_disk_revision: Option<String>,
+    pub reconciliation_detail: Option<String>,
     pub unrelated_services_restarted: bool,
     pub next_command: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RegistrationReconciliationOutcome {
+    Applied,
+    Pending,
+    Deferred,
+    Rejected,
+    Offline,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -177,6 +193,8 @@ impl RegistrationAuthority {
                 "registerInitialState": "stopped",
                 "autoStart": false,
                 "automaticRegistryReconciliation": true,
+                "boundedRuntimeAcknowledgmentMs": RECONCILIATION_ACK_TIMEOUT.as_millis(),
+                "reconciliationOutcomes": ["applied", "pending", "deferred", "rejected", "offline"],
                 "unrelatedServicesRestarted": false,
                 "updateAndUnregisterRequireObservedStoppedState": true,
                 "arbitraryShellCommands": false,
@@ -431,6 +449,20 @@ impl RegistrationAuthority {
         Ok(draft)
     }
 
+    /// Approves a fixture draft without a terminal.
+    ///
+    /// This test-only boundary is absent from normal release builds and must
+    /// never be exposed by either MCP server.
+    #[cfg(feature = "test-fixtures")]
+    #[doc(hidden)]
+    pub fn approve_fixture(
+        &self,
+        draft: RegistrationDraft,
+    ) -> Result<RegistrationDraft, RegistrationError> {
+        let confirmation = draft.confirmation_phrase.clone();
+        self.approve_with_confirmation(draft, &confirmation)
+    }
+
     /// Atomically commits one approved draft after revision and state checks.
     ///
     /// # Errors
@@ -440,7 +472,7 @@ impl RegistrationAuthority {
         let _commit_lock = CommitLock::acquire(&self.registration_directory)?;
         let mut draft = self.get_draft(draft_id)?;
         if draft.status == DraftStatus::Committed {
-            return Ok(commit_result(&draft));
+            return Ok(self.commit_result(&draft));
         }
         if draft.status != DraftStatus::Approved {
             return Err(RegistrationError::new(
@@ -461,7 +493,7 @@ impl RegistrationAuthority {
             draft.committed_at_unix_ms = Some(now_ms()?);
             write_json_atomic(&self.draft_path(&draft.draft_id)?, &draft)?;
             self.audit("commit_recovered", &draft, Some("registration_mcp"))?;
-            return Ok(commit_result(&draft));
+            return Ok(self.commit_result(&draft));
         }
         if current_revision != draft.base_revision {
             return Err(RegistrationError::with_details(
@@ -482,7 +514,77 @@ impl RegistrationAuthority {
         draft.committed_at_unix_ms = Some(now_ms()?);
         write_json_atomic(&self.draft_path(&draft.draft_id)?, &draft)?;
         self.audit("committed", &draft, Some("registration_mcp"))?;
-        Ok(commit_result(&draft))
+        Ok(self.commit_result(&draft))
+    }
+
+    fn commit_result(&self, draft: &RegistrationDraft) -> CommitResult {
+        let observation =
+            self.observe_reconciliation(&draft.after_configuration, &draft.proposed_revision);
+        commit_result(draft, observation)
+    }
+
+    fn observe_reconciliation(
+        &self,
+        config: &SupervisorConfig,
+        proposed_revision: &str,
+    ) -> ReconciliationObservation {
+        let token_path = resolve_token_path(&self.configuration_path, &config.control.token_file);
+        let token = match RuntimeToken::load(&token_path) {
+            Ok(token) => token,
+            Err(error) => return ReconciliationObservation::offline(&error.to_string()),
+        };
+        let address = match format!("{}:{}", config.control.host, config.control.port)
+            .parse::<SocketAddr>()
+        {
+            Ok(address) => address,
+            Err(error) => return ReconciliationObservation::offline(&error.to_string()),
+        };
+        let deadline = Instant::now() + RECONCILIATION_ACK_TIMEOUT;
+        loop {
+            match client_request(address, &token, "GET", "/v1/registry", None) {
+                Ok(response) => {
+                    let snapshot = response.get("registry").cloned().and_then(|value| {
+                        serde_json::from_value::<RegistryReconciliationSnapshot>(value).ok()
+                    });
+                    let Some(snapshot) = snapshot else {
+                        return ReconciliationObservation::offline(
+                            "Supervisor returned an invalid registry reconciliation response",
+                        );
+                    };
+                    let matches_disk = snapshot.disk_revision.as_deref() == Some(proposed_revision);
+                    if snapshot.state == RegistryReconciliationState::Current
+                        && snapshot.active_revision == proposed_revision
+                    {
+                        return ReconciliationObservation::from_snapshot(
+                            RegistrationReconciliationOutcome::Applied,
+                            snapshot,
+                        );
+                    }
+                    if matches_disk
+                        && matches!(
+                            snapshot.state,
+                            RegistryReconciliationState::Deferred
+                                | RegistryReconciliationState::Rejected
+                        )
+                    {
+                        let outcome = if snapshot.state == RegistryReconciliationState::Deferred {
+                            RegistrationReconciliationOutcome::Deferred
+                        } else {
+                            RegistrationReconciliationOutcome::Rejected
+                        };
+                        return ReconciliationObservation::from_snapshot(outcome, snapshot);
+                    }
+                    if Instant::now() >= deadline {
+                        return ReconciliationObservation::from_snapshot(
+                            RegistrationReconciliationOutcome::Pending,
+                            snapshot,
+                        );
+                    }
+                }
+                Err(error) => return ReconciliationObservation::offline(&error.to_string()),
+            }
+            std::thread::sleep(RECONCILIATION_ACK_POLL);
+        }
     }
 
     fn current_config(&self) -> Result<SupervisorConfig, RegistrationError> {
@@ -824,7 +926,41 @@ fn change_summary(
     })
 }
 
-fn commit_result(draft: &RegistrationDraft) -> CommitResult {
+#[derive(Debug)]
+struct ReconciliationObservation {
+    outcome: RegistrationReconciliationOutcome,
+    active_revision: Option<String>,
+    disk_revision: Option<String>,
+    detail: Option<String>,
+}
+
+impl ReconciliationObservation {
+    fn from_snapshot(
+        outcome: RegistrationReconciliationOutcome,
+        snapshot: RegistryReconciliationSnapshot,
+    ) -> Self {
+        Self {
+            outcome,
+            active_revision: Some(snapshot.active_revision),
+            disk_revision: snapshot.disk_revision,
+            detail: snapshot.detail,
+        }
+    }
+
+    fn offline(detail: &str) -> Self {
+        Self {
+            outcome: RegistrationReconciliationOutcome::Offline,
+            active_revision: None,
+            disk_revision: None,
+            detail: Some(detail.chars().take(512).collect()),
+        }
+    }
+}
+
+fn commit_result(
+    draft: &RegistrationDraft,
+    observation: ReconciliationObservation,
+) -> CommitResult {
     let present = draft
         .after_configuration
         .services
@@ -838,7 +974,10 @@ fn commit_result(draft: &RegistrationDraft) -> CommitResult {
         registered_state: if present { "stopped" } else { "unregistered" },
         auto_started: false,
         registry_reload_required: false,
-        registry_reconciliation: "automatic_when_supervisor_is_running",
+        registry_reconciliation: observation.outcome,
+        runtime_active_revision: observation.active_revision,
+        runtime_disk_revision: observation.disk_revision,
+        reconciliation_detail: observation.detail,
         unrelated_services_restarted: false,
         next_command: present.then(|| {
             format!(
@@ -1194,7 +1333,7 @@ mod tests {
         assert!(!commit.registry_reload_required);
         assert_eq!(
             commit.registry_reconciliation,
-            "automatic_when_supervisor_is_running"
+            RegistrationReconciliationOutcome::Offline
         );
         assert!(!commit.unrelated_services_restarted);
         assert!(fixture.config().services.contains_key("worker"));

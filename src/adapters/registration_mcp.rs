@@ -138,7 +138,7 @@ fn list_tools(params: &Value) -> Result<Value, String> {
         tool("supervisor_registration_validate_service", "Validate service change", "Validate a register, update, or unregister proposal against the current complete configuration without creating a draft.", &change_input_schema(false), true, false, true),
         tool("supervisor_registration_prepare_change", "Prepare registration draft", "Create an expiring, revision-bound, hash-bound draft. This does not change the configuration and cannot approve itself.", &change_input_schema(true), false, false, false),
         tool("supervisor_registration_get_draft", "Get registration draft", "Inspect the complete persisted draft, full before/after configuration, warnings, status, confirmation phrase, and approval command.", &draft_input_schema(), true, false, true),
-        tool("supervisor_registration_commit_change", "Commit approved registration", "Atomically commit a previously human-approved draft after exact revision and stopped-state checks. Never auto-starts the service.", &draft_input_schema(), false, true, false)
+        tool("supervisor_registration_commit_change", "Commit approved registration", "Atomically commit a previously human-approved draft after exact revision and stopped-state checks, then return a bounded live reconciliation acknowledgment. Never auto-starts the service.", &draft_input_schema(), false, true, false)
     ]}))
 }
 

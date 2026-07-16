@@ -9,6 +9,7 @@ mod cooperative_actions;
 mod cooperative_operations;
 mod health;
 mod platform_ports;
+mod registry_reconciliation;
 mod service_registry;
 mod service_runtime;
 
@@ -31,6 +32,9 @@ pub use health::{HealthCheckSpec, HealthProbe, HealthSnapshot, HealthStatus, Tra
 pub use platform_ports::{
     LaunchSpec, ManagedProcessTree, NetworkFamily, PortDiagnostic, PortInspector, PortOccupant,
     ProcessTreeSpawner, ShutdownSignal, TreeStopReport,
+};
+pub use registry_reconciliation::{
+    RegistryReconciliationSnapshot, RegistryReconciliationState, RegistryReconciliationStatus,
 };
 pub use service_registry::{
     BackendOperationError, LastAction, ProcessExitEvent, RegistryBuildError, RegistryError,

@@ -1,6 +1,6 @@
 # Human-Gated Service Registration
 
-Status: **Phases 1 through 4 implemented; phase 4 integration-validated on 2026-07-16**
+Status: **Phases 1 through 4.1 implemented; phase 4 integration-validated on 2026-07-16**
 
 AkuSupervisor exposes a separate stdio MCP server for discovering, validating,
 preparing, and committing service registrations. It does not expand the
@@ -147,8 +147,29 @@ approved draft.
 - If no Supervisor is running, the next normal startup loads the committed
   configuration; no special promotion or reload action is required.
 
-After the watcher prints `[registry] Applied configuration without Supervisor
-handoff` (or `simple-status` shows the new stopped entry), start it separately:
+## Runtime acknowledgment
+
+Commit polls the authenticated runtime boundary for at most two seconds and
+returns `applied`, `pending`, `deferred`, `rejected`, or `offline`. The first
+four values describe a running Supervisor; `offline` means no compatible
+runtime could be queried and the committed file will be loaded on the next
+normal startup.
+
+The result also carries `runtimeActiveRevision`, `runtimeDiskRevision`, and a
+bounded `reconciliationDetail`. Inspect the same secret-free runtime truth at
+any time with:
+
+```powershell
+.\target\aku-supervisor.exe registry-status
+.\target\aku-supervisor.exe registry-status --json
+```
+
+The authenticated `GET /v1/registry` endpoint is deliberately separate from
+the four-tool read-only MCP endpoint.
+
+After commit reports `applied` and the watcher prints `[registry] Applied
+revision ... without Supervisor handoff` (or `simple-status` shows the new
+stopped entry), start it separately:
 
 ```powershell
 .\target\aku-supervisor.exe start <service-id> `

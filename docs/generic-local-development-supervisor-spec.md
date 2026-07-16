@@ -342,6 +342,7 @@ GET  /v1/health
 GET  /v1/services
 GET  /v1/services/:id
 GET  /v1/events?after=<sequence>&limit=<n>
+GET  /v1/registry
 POST /v1/services/:id/start
 POST /v1/services/:id/stop
 POST /v1/services/:id/restart
@@ -531,6 +532,13 @@ Because registration and approval occur in separate processes, the foreground
 host must follow the append-only registration audit and show new prepare,
 approval, and commit identities without replaying historical records or
 including configuration values and secrets.
+
+The foreground also owns one queryable reconciliation state. It distinguishes
+the valid revision on disk from the revision active in memory and reports
+`current`, `pending`, `deferred`, or `rejected` with bounded, secret-free
+diagnostics. Registration commit waits for a bounded runtime acknowledgment;
+its client-side `offline` result is not a live runtime state and does not roll
+back an already successful atomic configuration commit.
 
 Repository tasks that copy artifacts, build releases, upload to cloud storage,
 invalidate caches, or switch remote production state are not services. They

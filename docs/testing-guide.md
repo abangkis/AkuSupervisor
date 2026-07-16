@@ -515,6 +515,19 @@ current SHA-256 revision, `autoStart: false`, and
 `automaticRegistryReconciliation: true` and
 `unrelatedServicesRestarted: false`.
 
+With the development Supervisor running, verify its revision truth directly:
+
+```powershell
+.\target\dev\aku-supervisor.exe registry-status
+.\target\dev\aku-supervisor.exe registry-status --json
+```
+
+The initial state must be `current` and `activeRevision` must equal
+`diskRevision`. The process fixture proves bounded `applied` acknowledgment
+while retaining an unrelated PID; unit fixtures cover state transitions and
+the offline result. The public contract additionally defines `pending`,
+`deferred`, and `rejected` for non-terminal and failed live reconciliation.
+
 Do not create a disposable draft against the real AkuWorkspace profile merely
 to test persistence. The automated fixtures create an isolated valid profile
 and prove:

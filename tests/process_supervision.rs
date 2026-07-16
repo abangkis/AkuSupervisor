@@ -10,6 +10,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 
+use aku_supervisor::adapters::config::ServiceConfig;
+use aku_supervisor::adapters::registration::{
+    PrepareRegistration, RegistrationAuthority, RegistrationOperation,
+    RegistrationReconciliationOutcome,
+};
+
 const TIMEOUT: Duration = Duration::from_secs(15);
 
 fn supervisor() -> &'static str {
@@ -99,7 +105,7 @@ fn registration_change_preserves_running_service_and_supervisor_process() {
     let registration_audit = registration_directory.join("audit.jsonl");
     fs::write(&registration_audit, []).expect("create empty registration audit");
     let config_path = config_directory.join("services.json");
-    let mut config = json!({
+    let config = json!({
         "version": 1,
         "control": {
             "host": "127.0.0.1",
@@ -127,21 +133,13 @@ fn registration_change_preserves_running_service_and_supervisor_process() {
     let mut guard = ChildGuard::new(child);
     let supervisor_pid = guard.child_mut().id();
     wait_for_status(&directory.path);
-    append_registration_audit(&registration_audit, "prepared", "registration_mcp");
-    append_registration_audit(&registration_audit, "approved", "human_cli");
-    append_registration_audit(&registration_audit, "committed", "registration_mcp");
     start_service(&directory.path, "retained");
     let retained_before = wait_for_service(&directory.path, "retained", |service| {
         service["lifecycle"] == "running" && service["rootPid"].is_number()
     });
     let retained_pid = retained_before["rootPid"].clone();
 
-    config["services"]["registered"] = root_service("Registered");
-    fs::write(
-        &config_path,
-        serde_json::to_vec_pretty(&config).expect("serialize changed config"),
-    )
-    .expect("write changed config");
+    register_service_and_require_applied(&config_path);
 
     let registered = wait_for_service(&directory.path, "registered", |service| {
         service["lifecycle"] == "stopped" && service["desiredState"] == "stopped"
@@ -174,31 +172,53 @@ fn registration_change_preserves_running_service_and_supervisor_process() {
     assert!(stdout.contains("[registry] Applied revision"));
     assert!(stdout.contains("without Supervisor handoff"));
     assert!(
-        stdout.contains(
-            "[registration] prepared register registration-smoke by agent/registration_mcp"
-        )
+        stdout.contains("[registration] prepared register registered by agent/registration_mcp")
     );
+    assert!(stdout.contains("[registration] approved register registered by user/human_cli"));
     assert!(
-        stdout.contains("[registration] approved register registration-smoke by user/human_cli")
+        stdout.contains("[registration] committed register registered by agent/registration_mcp")
     );
-    assert!(stdout.contains(
-        "[registration] committed register registration-smoke by agent/registration_mcp"
-    ));
     assert!(stdout.contains("added=registered"));
     assert!(stdout.contains("unrelated services preserved"));
 }
 
-fn append_registration_audit(path: &Path, event: &str, actor: &str) {
-    let mut file = fs::OpenOptions::new()
-        .append(true)
-        .open(path)
-        .expect("open registration audit");
-    writeln!(
-        file,
-        "{{\"schemaVersion\":1,\"timestampUnixMs\":1784194436858,\"event\":\"{event}\",\"actor\":\"{actor}\",\"draftId\":\"registration-live-test\",\"requestId\":\"live-test\",\"operation\":\"register\",\"serviceId\":\"registration-smoke\",\"baseRevision\":\"sha256:base\",\"proposedRevision\":\"sha256:proposed\",\"proposalHash\":\"sha256:proposal\",\"status\":\"{event}\"}}"
-    )
-    .expect("append registration audit");
-    file.flush().expect("flush registration audit");
+fn register_service_and_require_applied(config_path: &Path) {
+    let authority = RegistrationAuthority::open(Some(config_path.to_owned()))
+        .expect("open registration authority");
+    let capabilities = authority.capabilities().expect("registration capabilities");
+    let base_revision = capabilities["currentRevision"]
+        .as_str()
+        .expect("current revision")
+        .to_owned();
+    let service: ServiceConfig =
+        serde_json::from_value(root_service("Registered")).expect("registered service config");
+    let draft = authority
+        .prepare(PrepareRegistration {
+            request_id: "registration-live-test".to_owned(),
+            operation: RegistrationOperation::Register,
+            service_id: "registered".to_owned(),
+            base_revision,
+            service: Some(service),
+        })
+        .expect("prepare registration");
+    authority
+        .approve_fixture(draft.clone())
+        .expect("approve registration fixture");
+    let commit = authority
+        .commit(&draft.draft_id)
+        .expect("commit registration");
+    assert_eq!(
+        commit.registry_reconciliation,
+        RegistrationReconciliationOutcome::Applied
+    );
+    assert_eq!(
+        commit.runtime_active_revision.as_deref(),
+        Some(commit.configuration_revision.as_str())
+    );
+    assert_eq!(
+        commit.runtime_disk_revision.as_deref(),
+        Some(commit.configuration_revision.as_str())
+    );
 }
 
 fn crash_service(restart_policy: &str) -> Value {

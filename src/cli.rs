@@ -18,6 +18,7 @@ Usage:\n\
   aku-supervisor run --config <path>\n\
   aku-supervisor status [--json] [--config <path>]\n\
   aku-supervisor simple-status [--config <path>]\n\
+  aku-supervisor registry-status [--json] [--config <path>]\n\
   aku-supervisor events [--after <sequence>] [--limit <n>] [--json] [--config <path>]\n\
   aku-supervisor logs <service> [--stream <stdout|stderr>] [--tail <n>] [--json] [--config <path>]\n\
   aku-supervisor <start|stop|restart> <service> [--reason <text>] [--actor <user|codex>] [--request-id <id>] [--json] [--config <path>]\n\
@@ -75,6 +76,10 @@ enum RemoteCommand {
     },
     SimpleStatus {
         config: Option<PathBuf>,
+    },
+    RegistryStatus {
+        config: Option<PathBuf>,
+        json: bool,
     },
     Events {
         after: u64,
@@ -197,6 +202,7 @@ fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, Strin
         [registration, rest @ ..] if registration == "registration" => parse_registration(rest),
         [status, rest @ ..] if status == "status" => parse_remote_status(rest),
         [status, rest @ ..] if status == "simple-status" => parse_simple_status(rest),
+        [status, rest @ ..] if status == "registry-status" => parse_registry_status(rest),
         [events, rest @ ..] if events == "events" => parse_remote_events(rest),
         [logs, rest @ ..] if logs == "logs" => parse_remote_logs(rest),
         [bridge, reload, rest @ ..] if bridge == "bridge" && reload == "reload" => {
@@ -434,6 +440,14 @@ fn parse_simple_status(arguments: &[OsString]) -> Result<Command, String> {
         );
     }
     Ok(Command::Remote(RemoteCommand::SimpleStatus { config }))
+}
+
+fn parse_registry_status(arguments: &[OsString]) -> Result<Command, String> {
+    let (config, json) = parse_output_options(arguments)?;
+    Ok(Command::Remote(RemoteCommand::RegistryStatus {
+        config,
+        json,
+    }))
 }
 
 fn parse_bridge_status(arguments: &[OsString]) -> Result<Command, String> {
@@ -947,6 +961,7 @@ fn remote_request(command: RemoteCommand) -> Result<(), String> {
     let explicit_config = match &command {
         RemoteCommand::Status { config, .. }
         | RemoteCommand::SimpleStatus { config }
+        | RemoteCommand::RegistryStatus { config, .. }
         | RemoteCommand::Events { config, .. }
         | RemoteCommand::Logs { config, .. }
         | RemoteCommand::Mutate { config, .. }
@@ -955,6 +970,7 @@ fn remote_request(command: RemoteCommand) -> Result<(), String> {
     };
     let json_output = match &command {
         RemoteCommand::Status { json, .. }
+        | RemoteCommand::RegistryStatus { json, .. }
         | RemoteCommand::Events { json, .. }
         | RemoteCommand::Logs { json, .. }
         | RemoteCommand::Mutate { json, .. }
@@ -1054,6 +1070,9 @@ fn prepare_remote_request(
     match command {
         RemoteCommand::Status { .. } | RemoteCommand::SimpleStatus { .. } => {
             ("GET", "/v1/services".to_owned(), None, None, true)
+        }
+        RemoteCommand::RegistryStatus { .. } => {
+            ("GET", "/v1/registry".to_owned(), None, None, true)
         }
         RemoteCommand::Events { after, limit, .. } => (
             "GET",
@@ -1591,6 +1610,29 @@ mod tests {
         assert!(table.contains("SERVICE              STATE"));
         assert!(table.contains("api                  running"));
         assert!(table.contains("1234,5678"));
+    }
+
+    #[test]
+    fn registry_status_exposes_human_and_machine_output() {
+        assert_eq!(
+            parse(args(&["registry-status"])),
+            Ok(Command::Remote(RemoteCommand::RegistryStatus {
+                config: None,
+                json: false,
+            }))
+        );
+        assert_eq!(
+            parse(args(&[
+                "registry-status",
+                "--json",
+                "--config",
+                "services.json"
+            ])),
+            Ok(Command::Remote(RemoteCommand::RegistryStatus {
+                config: Some(PathBuf::from("services.json")),
+                json: true,
+            }))
+        );
     }
 
     #[test]
