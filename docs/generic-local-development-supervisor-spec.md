@@ -488,12 +488,12 @@ Controls must clearly state that they affect a local development process. The da
 
 The first service profile must:
 
-- run `npm run dev` from the AkuSidecar repository;
+- run `runtime/dev/aku-sidecar.exe` directly from the AkuSidecar repository;
 - inherit the normal user host context;
-- use dashboard-persisted AkuSidecar configuration rather than force `AKU_REASONING_PROVIDER`;
+- use the strict AkuSidecar configuration rather than force provider environment aliases;
 - verify `/api/health` reports the expected version and provider;
-- record both npm launcher and final listener PIDs when discoverable;
-- stop the complete npm/watch/server process tree on hard restart; and
+- record the Go process and listener PIDs when discoverable;
+- stop the complete Sidecar/Codex process tree on hard restart; and
 - preserve SQLite by default.
 
 Database deletion is never part of restart. It requires a separate explicit development operation outside the supervisor v0 control API.
@@ -540,7 +540,7 @@ executing them or treating their success as local service health.
 
 ### 18.2 Windows safety
 
-- Restarting AkuSidecar removes the old Go watcher/server/Codex tree before starting the new tree.
+- Restarting AkuSidecar removes the old Go server/Codex tree before starting the new tree.
 - An unrelated process occupying port 47821 is reported and never killed.
 - An unrelated process remains untouched during every test.
 - Ctrl+C on the supervisor cleanly stops its owned children.
@@ -548,7 +548,7 @@ executing them or treating their success as local service health.
 
 ### 18.3 AkuSidecar
 
-- `/api/health` passes with Go `1.0.0-dev.4`, Bridge Contract v2, and the
+- `/api/health` passes with Go `1.0.0-dev.5`, Bridge Contract v2, and the
   `codex-app-server` provider.
 - A normal restart preserves the current fresh-schema SQLite database.
 - AkuSidecar can perform one real native Codex invocation and record structured
@@ -656,4 +656,4 @@ If these become necessary, first compare the expanded requirement with PM2, Dock
 
 The implementation thread should begin with this bounded objective:
 
-> Build a generic, configuration-driven Windows local development supervisor. The user starts it once in a visible terminal. It owns and audits registered child service process trees and exposes localhost-authenticated start, stop, restart, status, and event operations. Validate it first with AkuSidecar, including the npm/watch/server process chain and preservation of SQLite, then prove portability with one independently runnable Geofu service. Do not add arbitrary command execution, dependency orchestration, background login startup, or database reset.
+> Build a generic, configuration-driven Windows local development supervisor. The user starts it once in a visible terminal. It owns and audits registered child service process trees and exposes localhost-authenticated start, stop, restart, status, and event operations. Validate it first with the direct Go AkuSidecar/Codex process tree and preservation of SQLite, then prove portability with one independently runnable Geofu service. Do not add arbitrary command execution, dependency orchestration, background login startup, or database reset.
