@@ -57,7 +57,7 @@ fn checked_in_akuworkspace_profile_matches_the_typed_contract() {
         Some("http://127.0.0.1:47821")
     );
     assert_eq!(config.control.port, 47_820);
-    assert_eq!(config.services.len(), 5);
+    assert_eq!(config.services.len(), 4);
 
     let sidecar = config
         .services
@@ -161,27 +161,13 @@ fn checked_in_akuworkspace_profile_matches_the_typed_contract() {
         other => panic!("expected HTTP JSON health, got {other:?}"),
     }
 
-    for (service_id, expected_script, expected_port, tcp_health) in [
-        ("geolibre", "geofu:lan", 6_060, true),
-        ("geolibre-locked", "geofu:locked-dev", 6_061, false),
-    ] {
-        assert_geolibre_service(
-            &config,
-            service_id,
-            expected_script,
-            expected_port,
-            tcp_health,
-        );
-    }
+    assert_geolibre_service(&config);
+    assert!(!config.services.contains_key("geolibre-locked"));
 }
 
-fn assert_geolibre_service(
-    config: &SupervisorConfig,
-    service_id: &str,
-    expected_script: &str,
-    expected_port: u16,
-    tcp_health: bool,
-) {
+fn assert_geolibre_service(config: &SupervisorConfig) {
+    let service_id = "geolibre";
+    let expected_port = 6_060;
     let geolibre = config
         .services
         .get(service_id)
@@ -191,7 +177,7 @@ fn assert_geolibre_service(
         PathBuf::from(r"C:\WorkspaceCodex\GeofuWorkspace\GeoLibre")
     );
     assert_eq!(geolibre.command, PathBuf::from(r"C:\nvm4w\nodejs\npm.cmd"));
-    assert_eq!(geolibre.args, ["run", expected_script]);
+    assert_eq!(geolibre.args, ["run", "geofu:lan"]);
     assert_eq!(geolibre.ports, vec![expected_port]);
     assert_eq!(geolibre.restart_policy, RestartPolicy::Manual);
     assert_eq!(geolibre.shutdown_grace_ms, 5_000);
@@ -207,37 +193,18 @@ fn assert_geolibre_service(
             .map(String::as_str),
         Some(expected_port_string.as_str())
     );
-    if tcp_health {
-        match &geolibre.health {
-            HealthCheck::TcpConnect {
-                host,
-                port,
-                startup_deadline_ms,
-                ..
-            } => {
-                assert_eq!(host, "127.0.0.1");
-                assert_eq!(*port, expected_port);
-                assert_eq!(*startup_deadline_ms, 120_000);
-            }
-            other => panic!("expected TCP connect health, got {other:?}"),
+    match &geolibre.health {
+        HealthCheck::TcpConnect {
+            host,
+            port,
+            startup_deadline_ms,
+            ..
+        } => {
+            assert_eq!(host, "127.0.0.1");
+            assert_eq!(*port, expected_port);
+            assert_eq!(*startup_deadline_ms, 120_000);
         }
-    } else {
-        match &geolibre.health {
-            HealthCheck::HttpStatus {
-                url,
-                expected_status,
-                startup_deadline_ms,
-                ..
-            } => {
-                assert_eq!(
-                    url,
-                    &format!("http://127.0.0.1:{expected_port}/favicon.png")
-                );
-                assert_eq!(*expected_status, 200);
-                assert_eq!(*startup_deadline_ms, 120_000);
-            }
-            other => panic!("expected HTTP status health, got {other:?}"),
-        }
+        other => panic!("expected TCP connect health, got {other:?}"),
     }
 }
 

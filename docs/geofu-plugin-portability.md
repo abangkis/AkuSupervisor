@@ -79,6 +79,7 @@ in AkuSupervisor rather than in an otherwise valid managed application.
 This proof covers the plugin-only development server. It does not itself
 validate the GeoLibre Vite/Tauri host, install a plugin into a browser profile,
 or claim Linux/macOS process ownership. The subsequent GeoLibre slice uses the
-live plugin server through LAN HTTPS development and a copied bundled-plugin snapshot
-in locked QA. Their daily and deployment boundaries are defined in
+live plugin server through canonical LAN HTTPS development; a historical proof
+also exercised a copied bundled-plugin snapshot in locked mode. Their daily and
+deployment boundaries are defined in
 [Geofu daily workflows](geofu-daily-workflows.md).

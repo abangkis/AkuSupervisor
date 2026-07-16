@@ -16,7 +16,7 @@ model, but they are not disguised as services or lifecycle hooks.
 | Mode | Long-running services owned by AkuSupervisor | Explicit task outside AkuSupervisor | Important behavior |
 |---|---|---|---|
 | Daily LAN development | `geofu-plugin`, `geolibre`, and optionally `geofu-be` | One-time `npm run geofu:lan:cert -- <LAN-IP>` after the LAN address or certificate changes | GeoLibre serves trusted local HTTPS and proxies the live plugin and catalog through the same LAN origin |
-| Locked QA / production-style development | `geolibre-locked` and optionally `geofu-be` | Run `npm run deploy:geolibre` from Geofu before starting or restarting locked GeoLibre | GeoLibre uses the copied bundled plugin and does not need the live plugin server |
+| Locked production preparation | None | Run `npm run deploy:geolibre` from Geofu, then use `npm run geofu:locked-dev` manually only when that deployment-oriented validation is needed | Uses the copied bundled plugin and remains outside the default development supervisor |
 | BE deployment | None | `./scripts/deploy-be.ps1 -NoVerifySsl`, then `sudo /usr/local/bin/switch-geofu-current` on EC2 | Builds/uploads a release and then changes remote current state; both operations are outside local process supervision |
 | FE deployment | None | `npm run deploy-fe` from Geofu | Copies the plugin, builds locked GeoLibre, uploads assets, and invalidates CloudFront |
 
@@ -71,10 +71,10 @@ independently supervised on ports 8766 and 8765. Inspect all three service
 states with `status`; AkuSupervisor does not collapse that relationship into
 one misleading health value.
 
-## Locked QA development
+## Locked production handoff
 
-Locked mode is deliberately a separate service because it has different plugin
-trust and discovery rules:
+Locked mode has different plugin trust and discovery rules, but it belongs to
+deployment-oriented validation rather than the daily development process set:
 
 ```text
 GeoLibre: npm run geofu:locked-dev
@@ -88,34 +88,19 @@ cd C:\WorkspaceCodex\GeofuWorkspace\Geofu
 npm run deploy:geolibre
 ```
 
-Then start the locked profile:
+If local locked validation is required, run it directly from GeoLibre:
 
 ```powershell
-cd C:\WorkspaceCodex\AkuWorkspace\AkuSupervisor
-.\target\dev\aku-supervisor.exe start geolibre-locked `
-  --reason "locked QA against bundled Geofu plugin"
+cd C:\WorkspaceCodex\GeofuWorkspace\GeoLibre
+npm run geofu:locked-dev
 ```
 
-The repository-native profiles default both modes to port 6060. The canonical
-AkuSupervisor profile keeps daily LAN development on 6060 and explicitly
-maps locked QA to 6061. This preserves the configuration rule that every
-declared port has one owner, avoids an ambiguous duplicate declaration, and
-allows side-by-side comparison when useful. The locked URL under supervision is
-`http://127.0.0.1:6061/`.
-
-For an ordinary mode switch, stop the active mode before starting the other:
-
-```powershell
-.\target\dev\aku-supervisor.exe stop geolibre `
-  --reason "switch to locked QA"
-.\target\dev\aku-supervisor.exe start geolibre-locked `
-  --reason "locked QA against bundled Geofu plugin"
-```
-
-After another plugin change, stop locked GeoLibre, rerun `deploy:geolibre`, and
-start it again so bundled-plugin discovery sees the copied artifact. The copy
-command is not a service: it terminates, mutates generated files in another
-checkout, and has no long-running process for AkuSupervisor to own.
+The canonical AkuSupervisor profile does not register this command. After
+another plugin change, stop the manually launched locked process, rerun
+`deploy:geolibre`, and launch it manually again so bundled-plugin discovery sees
+the copied artifact. The copy command terminates, mutates generated files in
+another checkout, and has no long-running development process for
+AkuSupervisor to own.
 
 ## Production deployment boundary
 
@@ -153,18 +138,17 @@ lifecycle code:
 - a direct Go executable with cooperative shutdown (`geofu-be`);
 - an npm wrapper with a Node HTTP server and Rollup watcher (`geofu-plugin`);
 - nested npm/Node/Vite wrappers with a slower pre-development step (`geolibre`);
-- two repository modes separated into deterministic supervised ports; and
-- a live external plugin versus a copied bundled-plugin snapshot.
+- a live external plugin in the daily supervised workflow; and
+- a documented handoff to the copied bundled-plugin deployment flow.
 
 The 120-second GeoLibre startup deadline accommodates its repository-owned
 certificate loading, `predev` JupyterLite preparation, and Vite dependency
 optimization. `geofu:lan` itself binds `0.0.0.0`, enables HTTPS from the local
 PFX, and constructs the LAN deep link. AkuSupervisor sets only port 6060 and
 uses a loopback TCP readiness check so supervision neither overrides the
-hardening nor needs access to the certificate passphrase. Locked QA retains its
-HTTP static-asset health check on 6061. If any requested startup service still
-fails, the watcher remains active and retains other successful services for
-inspection.
+hardening nor needs access to the certificate passphrase. If any requested
+startup service still fails, the watcher remains active and retains other
+successful services for inspection.
 
 Still deferred are dependency graphs, arbitrary pre/post hooks, one-shot task
 execution, remote deployment control, and automatic production promotion.

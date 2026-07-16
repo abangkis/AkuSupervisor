@@ -64,12 +64,12 @@ C:\WorkspaceCodex\AkuWorkspace\AkuSupervisor\config\akuworkspace.services.json
 ```
 
 It registers `akusidecar`, the built `geofu-be` executable, the `geofu-plugin`
-npm/Rollup watcher, and the `geolibre` unlocked and `geolibre-locked` QA modes
-as independently controlled manual services behind one control API.
-Registration does not start any service implicitly. Unlocked GeoLibre uses port
-6060 through the repository-owned `geofu:lan` HTTPS wrapper and loopback TCP
-readiness; locked QA uses the configured HTTP override 6061. The LAN wrapper
-requires its one-time certificate setup before supervised startup.
+npm/Rollup watcher, and the daily `geolibre` LAN mode as independently
+controlled manual services behind one control API. Registration does not start
+any service implicitly. GeoLibre uses port 6060 through the repository-owned
+`geofu:lan` HTTPS wrapper and loopback TCP readiness. The LAN wrapper requires
+its one-time certificate setup before supervised startup. Locked builds and
+deployment are outside this canonical development profile.
 Startup prints both the absolute selected path and its source, for example:
 
 ```text
@@ -276,14 +276,11 @@ matches the stable `id: geofu` field rather than a release-specific version.
 
 The LAN GeoLibre profile uses `tcp-connect` readiness on 6060 because its Vite
 listener is HTTPS; the probe must not bypass or duplicate GeoLibre's certificate
-policy. Locked QA uses `http-status` against `/favicon.png` on 6061. For a full
-daily-dev check, `geofu-be`, `geofu-plugin`, and `geolibre` must report healthy.
-Validate that the locked profile honors its 6061 override and does not steal the
-LAN listener.
-
-Locked QA additionally requires the operator-run `npm run deploy:geolibre`
-copy before start or restart. Deployment commands are not test services; the
-complete boundary is documented in
+policy. For a full daily-dev check, `geofu-be`, `geofu-plugin`, and `geolibre`
+must report healthy. The historical locked-mode portability proof remains in
+the dedicated document, but `geofu:locked-dev` and its required operator-run
+`npm run deploy:geolibre` copy are not canonical test services. The complete
+deployment boundary is documented in
 [Geofu daily workflows](geofu-daily-workflows.md).
 
 ### Process-exit supervision

@@ -124,30 +124,6 @@
       ],
       "restartPolicy": "manual",
       "shutdownGraceMs": 5000
-    },
-    "geolibre-locked": {
-      "label": "GeoLibre Geofu Locked QA",
-      "cwd": "C:\\WorkspaceCodex\\GeofuWorkspace\\GeoLibre",
-      "command": "C:\\nvm4w\\nodejs\\npm.cmd",
-      "args": [
-        "run",
-        "geofu:locked-dev"
-      ],
-      "environment": {
-        "GEOLIBRE_DEV_PORT": "6061"
-      },
-      "health": {
-        "type": "http-status",
-        "url": "http://127.0.0.1:6061/favicon.png",
-        "expectedStatus": 200,
-        "timeoutMs": 5000,
-        "startupDeadlineMs": 120000
-      },
-      "ports": [
-        6061
-      ],
-      "restartPolicy": "manual",
-      "shutdownGraceMs": 5000
     }
   }
 }

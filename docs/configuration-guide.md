@@ -217,16 +217,14 @@ ordinary five-second control-plane response timeout.
 
 The canonical
 [`config/akuworkspace.services.json`](../config/akuworkspace.services.json)
-contains five services behind one control boundary: Geofu BE is a cooperative
+contains four services behind one control boundary: Geofu BE is a cooperative
 direct executable; AkuSidecar uses a registered Windows command wrapper; the
-Geofu plugin uses an npm wrapper with a long-lived Rollup watcher; and two
-GeoLibre profiles run the same Vite host under LAN HTTPS and locked plugin
-policies. All use bounded health and retained process-tree ownership.
+Geofu plugin uses an npm wrapper with a long-lived Rollup watcher; and GeoLibre
+runs its daily LAN HTTPS Vite host. All use bounded health and retained
+process-tree ownership.
 
-The repository-native GeoLibre profiles both default to port 6060. The
-canonical profile uses the hardened `geofu:lan` HTTPS workflow on 6060 and maps locked QA to
-6061, preserving the one-declared-owner-per-port contract while allowing an
-explicit side-by-side QA comparison. The LAN mode also needs the
+The canonical profile uses the hardened `geofu:lan` HTTPS workflow on 6060.
+The LAN mode also needs the
 independently supervised `geofu-plugin` service for complete workflow
 readiness. See
 [Geofu daily workflows](geofu-daily-workflows.md) for startup order and the
@@ -236,7 +234,8 @@ boundary between long-running services and one-shot deployment tasks.
 proxies for the Geofu plugin and catalog. AkuSupervisor keeps only the explicit
 6060 port override and uses `tcp-connect` against `127.0.0.1:6060`, proving the
 TLS listener is accepting connections without bypassing certificate hardening.
-The locked HTTP profile continues to use a static `/favicon.png` status check.
+`geofu:locked-dev`, plugin copy, and deployment commands are intentionally not
+registered in the default development profile.
 
 ## Run and inspect
 

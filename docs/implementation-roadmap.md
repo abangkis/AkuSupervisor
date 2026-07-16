@@ -672,18 +672,20 @@ Current Geofu plugin slice:
 Current GeoLibre slice:
 
 - [x] repository-native daily workflow tracks the hardened `geofu:lan` HTTPS
-  wrapper, while `geofu:locked-dev` remains the explicit bundled-plugin QA mode;
+  wrapper, while `geofu:locked-dev` remains an explicit deployment-oriented
+  handoff outside the default supervisor;
 - [x] production boundaries recorded: `deploy:geolibre`, `deploy-be.ps1`, the
   EC2 `switch-geofu-current` command, and `deploy-fe` remain explicit tasks
   outside AkuSupervisor;
-- [x] canonical profiles use only generic npm-wrapper, environment, TCP/HTTP
-  readiness, declared-port, ownership, log, journal, and console-event contracts;
-- [x] LAN and locked modes use deterministic ports 6060 and 6061 so the
-  existing one-owner-per-declared-port configuration invariant remains intact;
+- [x] the canonical LAN profile uses only generic npm-wrapper, environment,
+  TCP readiness, declared-port, ownership, log, journal, and console-event
+  contracts;
+- [x] the earlier locked-mode proof used an isolated 6061 override and remains
+  historical genericity evidence rather than a canonical service;
 - [x] LAN composite readiness remains visible as separate service states rather
   than introducing a hidden `geofu-plugin` dependency graph;
 - [x] hardened LAN Vite uses bounded loopback TCP readiness without bypassing
-  its TLS certificate, while locked HTTP Vite uses a static asset;
+  its TLS certificate;
 - [x] one failed requested service no longer tears down the watcher and other
   successfully started services;
 - [x] the focused repository-owned profile/plugin suite passes 74 tests without
@@ -691,11 +693,15 @@ Current GeoLibre slice:
   with two environment-only failures (locale and missing `bash` on `PATH`) and
   one skip;
 - [x] supervised LAN start reaches healthy while `geofu-plugin` is healthy;
-- [x] locked mode honors the 6061 override without stealing the unlocked port;
+- [x] the historical locked proof honored its 6061 override without stealing
+  the unlocked port;
 - [x] LAN stop leaves no listener or owned PID and records shutdown evidence;
-- [x] after an explicit plugin copy, locked start/stop passes the same ownership
-  and cleanup checks; and
-- [x] the canonical profile and daily-workflow documentation are live-validated.
+- [x] after an explicit plugin copy, the historical locked start/stop proof
+  passed the same ownership and cleanup checks;
+- [x] scope correction removed `geolibre-locked` from the canonical and active
+  development profiles while preserving the proof; and
+- [x] the canonical LAN profile and daily-workflow documentation are
+  live-validated.
 
 The proof also fixed a generic client defect: lifecycle responses now use a
 service-derived timeout while ordinary control-plane requests retain the short
@@ -722,17 +728,18 @@ Recipe maintenance and evidence rules are defined in
 The detailed commands and evidence requirements are in
 [Geofu BE portability proof](geofu-be-portability.md) and
 [Geofu plugin portability proof](geofu-plugin-portability.md). Cross-repository
-daily development, locked QA, and production boundaries are in
+daily development and production-oriented locked/deployment boundaries are in
 [Geofu daily workflows](geofu-daily-workflows.md).
 The active host proof and its Windows test baseline are maintained in
 [GeoLibre portability proof](geolibre-portability.md).
 
 After the isolated proof passed, `geofu-be` was merged into the canonical
 `config/akuworkspace.services.json`. AkuSidecar, Geofu BE, the Geofu plugin
-development server, and both GeoLibre modes now share one control listener,
+development server, and the GeoLibre LAN mode now share one control listener,
 token, MCP boundary, and lifecycle journal. The obsolete duplicated Geofu
-profile was removed. Registration remains manual; locked QA is normally an
-explicit mode switch, while its separate port permits deliberate comparison.
+profile and deployment-oriented locked GeoLibre profile were removed.
+Registration remains manual; locked validation is an explicit workflow outside
+the default development supervisor.
 
 ### Phase 9 - Linux and macOS platform adapters
 

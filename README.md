@@ -431,17 +431,18 @@ between Supervisor lifecycle events and managed-service stdout/stderr logs.
 The Windows proof for the npm/Rollup service, including the generic HTTP
 chunked-transfer health fix and graceful owned-tree shutdown evidence, is in
 the [Geofu plugin portability proof](docs/geofu-plugin-portability.md).
-The development, locked-QA, and production deployment boundaries across all
-three Geofu-family repositories are mapped in the
+The development and production deployment boundaries across all three
+Geofu-family repositories are mapped in the
 [Geofu daily workflows](docs/geofu-daily-workflows.md).
 
 The checked-in canonical AkuWorkspace profile is
 [`config/akuworkspace.services.json`](config/akuworkspace.services.json). It
-registers AkuSidecar, Geofu BE, the Geofu plugin development server, and two
-distinct GeoLibre modes behind one control API, runtime token, and
+registers AkuSidecar, Geofu BE, the Geofu plugin development server, and the
+daily GeoLibre LAN mode behind one control API, runtime token, and
 read-only MCP boundary. All services remain `manual`; registration does not
 start any Geofu-family service implicitly. `geolibre` is the hardened LAN HTTPS
-development mode; `geolibre-locked` is the explicit bundled-plugin QA mode.
+development mode. Locked builds and deployment remain explicit workflows
+outside AkuSupervisor.
 AkuSidecar is the Go `1.0.0-dev.5` fresh boundary: the profile starts its Go
 executable directly, requires Bridge v2 plus `codex-app-server`, and uses the new SQLite schema.
 Copy the profile to the default user location for argument-free startup:
