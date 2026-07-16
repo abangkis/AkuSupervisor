@@ -43,7 +43,7 @@ Register the server with:
 
 ```toml
 [mcp_servers.aku_supervisor_registration]
-command = "C:\\path\\to\\AkuSupervisor\\target\\aku-supervisor.exe"
+command = "C:\\path\\to\\AkuSupervisor\\target\\mcp\\aku-supervisor-mcp.exe"
 args = ["registration-mcp"]
 enabled = true
 enabled_tools = [
@@ -55,6 +55,11 @@ enabled_tools = [
   "supervisor_registration_commit_change",
 ]
 ```
+
+Create that dedicated host with `scripts\stage-mcp-host.ps1` after promoting a
+compatible stable build. Both read-only and registration MCP entries should
+point to the same staged file. Core promotion does not replace it, and an MCP
+host update is needed only when MCP behavior changes.
 
 The agent does not need this document during normal registration. Tool
 descriptions, strict input schemas, structured failures, the current revision,

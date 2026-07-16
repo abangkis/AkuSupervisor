@@ -191,6 +191,13 @@ text on stdout and exits if the Supervisor is unavailable. Codex is configured
 with an explicit four-tool allow-list, so the token is not duplicated into
 `config.toml` or an environment variable.
 
+Codex launches both stdio MCP identities from the separately staged
+`target\mcp\aku-supervisor-mcp.exe`. `scripts\stage-mcp-host.ps1` copies and
+verifies a selected stable or development build into that path. Core stable
+promotion never overwrites the MCP host, avoiding a file-lock dependency on a
+long-lived Codex process. Updating MCP behavior remains an explicit maintenance
+operation that requires recycling Codex if the staged host is active.
+
 A newly started Codex task successfully loaded the project-scoped registration
 and used the read-only MCP surface. This user-confirmed live check closes the
 client-registration checkpoint; it does not expand MCP into service lifecycle

@@ -19,12 +19,27 @@ fn stable_promotion_is_core_only_bounded_and_fail_closed() {
     assert!(copy < hash_check);
     assert!(script.contains("Stable is already current; no copy is required."));
     assert!(script.contains("Get-StableExecutableUsers"));
+    assert!(script.contains("target\\mcp"));
+    assert!(script.contains("stage-mcp-host.ps1"));
     assert!(script.contains("function Stop-Promotion"));
     assert!(script.contains("exit 1"));
     assert!(script.contains("AkuWorkspace integration validation is separate and was not run."));
     assert!(script.contains("validate-akuworkspace-integration.ps1"));
     assert!(!script.contains("bridge validate"));
     assert!(!script.contains("$sidecar"));
+}
+
+#[test]
+fn dedicated_mcp_host_is_staged_outside_the_core_promotion_target() {
+    let script = include_str!("../scripts/stage-mcp-host.ps1");
+
+    assert!(script.contains("target\\mcp"));
+    assert!(script.contains("aku-supervisor-mcp.exe"));
+    assert!(script.contains("Get-FileHash"));
+    assert!(script.contains("Dedicated MCP host is in use and was not changed."));
+    assert!(script.contains("Core stable promotion remains independent"));
+    assert!(!script.contains("Stop-Process"));
+    assert!(!script.contains("target\\dev\\shutdown-request"));
 }
 
 #[test]

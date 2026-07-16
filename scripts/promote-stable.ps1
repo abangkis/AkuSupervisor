@@ -55,7 +55,8 @@ function Assert-StableExecutableUnlocked {
             Write-Host "[release] Lock owner candidate: PID $($user.Id) $($user.Path)" -ForegroundColor Yellow
         }
         Write-Host '[release] Stop or recycle only the process using target\aku-supervisor.exe, then rerun promotion.' -ForegroundColor Yellow
-        Write-Host '[release] A long-lived mcp-proxy may use the stable executable; the development watcher uses target\dev.' -ForegroundColor Yellow
+        Write-Host '[release] A correctly staged MCP host uses target\mcp and does not lock stable; this process may be using a legacy MCP configuration.' -ForegroundColor Yellow
+        Write-Host '[release] After promotion, run .\scripts\stage-mcp-host.ps1 only when MCP behavior itself must be updated.' -ForegroundColor Yellow
         Stop-Promotion -Message 'Stable executable is in use and was not changed.'
     } finally {
         if ($null -ne $handle) {

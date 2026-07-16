@@ -224,8 +224,10 @@ latest development build should become normal, use this order:
 Core promotion has no AkuSidecar, AkuBrowser, or AkuBridge dependency. It runs
 a bounded version preflight, skips byte-identical builds, rejects a locked
 stable Windows image, copies the candidate, and verifies the promoted SHA-256.
-If a normal Supervisor or long-lived `mcp-proxy` is using
-`target\aku-supervisor.exe`, recycle only that stable-path process and retry.
+If a normal Supervisor is using `target\aku-supervisor.exe`, recycle only that
+stable-path process and retry. Long-lived Codex MCP processes must use the
+separately staged `target\mcp\aku-supervisor-mcp.exe`, so ordinary core
+promotion never depends on restarting Codex.
 
 The AkuWorkspace-specific cooperative reload gate is deliberately separate:
 
@@ -288,9 +290,17 @@ service ownership, health monitoring, and cleanup unchanged. See
 Codex can use the protected runtime token without copying it into Codex config
 through the stdio compatibility proxy:
 
+```powershell
+.\scripts\stage-mcp-host.ps1
+```
+
+This stages the current stable build as a dedicated long-lived MCP host. Use
+`-Source development` only when intentionally validating an MCP implementation
+that has not been promoted yet.
+
 ```toml
 [mcp_servers.aku_supervisor]
-command = "C:\\WorkspaceCodex\\AkuWorkspace\\AkuSupervisor\\target\\aku-supervisor.exe"
+command = "C:\\WorkspaceCodex\\AkuWorkspace\\AkuSupervisor\\target\\mcp\\aku-supervisor-mcp.exe"
 args = ["mcp-proxy"]
 enabled_tools = [
   "supervisor_list_services",
@@ -304,9 +314,10 @@ The proxy reads newline-delimited MCP from stdin, reads the existing ACL-
 protected token file, and forwards only to the already-running `/mcp` endpoint.
 It never starts AkuSupervisor or a managed service. AkuWorkspace checks this in
 at `.codex/config.toml`; restart Codex or begin a new task after changing MCP
-configuration. During development it may temporarily point at
-`target\dev\aku-supervisor.exe`; after promotion it should return to the stable
-`target\aku-supervisor.exe` shown above.
+configuration. The MCP host is intentionally not overwritten by
+`promote-stable.ps1`. Stage it again only when MCP behavior changes; if the
+existing MCP host is active, close Codex, stage the replacement, and reopen
+Codex. Ordinary core-only changes require no MCP restaging.
 
 Generic service onboarding uses a second MCP identity, `registration-mcp`.
 It self-describes the full schema and workflow, creates revision-bound drafts,
