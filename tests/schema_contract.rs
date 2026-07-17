@@ -89,7 +89,7 @@ fn checked_in_akuworkspace_profile_matches_the_typed_contract() {
             assert_eq!(*startup_deadline_ms, 60_000);
             assert_eq!(
                 expect.get("version"),
-                Some(&serde_json::json!("1.0.0-dev.5"))
+                Some(&serde_json::json!("1.0.0-dev.6"))
             );
             assert_eq!(expect.get("runtime"), Some(&serde_json::json!("go")));
             assert_eq!(

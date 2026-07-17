@@ -476,7 +476,7 @@ read-only MCP boundary. All services remain `manual`; registration does not
 start any Geofu-family service implicitly. `geolibre` is the hardened LAN HTTPS
 development mode. Locked builds and deployment remain explicit workflows
 outside AkuSupervisor.
-AkuSidecar is the Go `1.0.0-dev.5` fresh boundary: the profile starts its Go
+AkuSidecar is the Go `1.0.0-dev.6` fresh boundary: the profile starts its Go
 executable directly, requires Bridge v2 plus `codex-app-server`, and uses the new SQLite schema.
 Copy the profile to the default user location for argument-free startup:
 
