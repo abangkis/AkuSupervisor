@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "control": {
+    "host": "127.0.0.1",
+    "port": 47910,
+    "tokenFile": ".runtime/development-example/control-token",
+    "mcp": {
+      "enabled": false,
+      "allowedOrigins": []
+    }
+  },
+  "observability": {
+    "consoleEvents": "lifecycle"
+  },
+  "cooperativeActions": {
+    "akuBridgeReload": {
+      "sidecarOrigin": "http://127.0.0.1:47911",
+      "timeoutMs": 20000,
+      "pollIntervalMs": 250
+    }
+  },
+  "services": {
+    "example-api": {
+      "label": "Example Cooperative API",
+      "cwd": "C:\\Workspace\\ExampleApi",
+      "command": "C:\\Workspace\\ExampleApi\\example-api.exe",
+      "args": ["--port", "49001"],
+      "environment": {},
+      "health": {
+        "type": "http-json",
+        "url": "http://127.0.0.1:49001/health",
+        "timeoutMs": 5000,
+        "startupDeadlineMs": 30000,
+        "expect": {
+          "status": "ok"
+        }
+      },
+      "ports": [49001],
+      "restartPolicy": "manual",
+      "shutdownGraceMs": 5000
+    },
+    "example-web": {
+      "label": "Example Node Development Server",
+      "cwd": "C:\\Workspace\\ExampleWeb",
+      "command": "C:\\Program Files\\nodejs\\npm.cmd",
+      "args": ["run", "dev"],
+      "environment": {
+        "EXAMPLE_PORT": "49002"
+      },
+      "health": {
+        "type": "tcp-connect",
+        "host": "127.0.0.1",
+        "port": 49002,
+        "timeoutMs": 5000,
+        "startupDeadlineMs": 60000
+      },
+      "ports": [49002],
+      "restartPolicy": "manual",
+      "shutdownGraceMs": 5000
+    }
+  }
+}

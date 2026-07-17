@@ -23,9 +23,10 @@ forced exit for a server that can safely drain HTTP work.
 
 ## Profile
 
-The service is now part of the canonical checked-in profile
-`config/akuworkspace.services.json`. The earlier isolated proof profile was
-removed after validation so service definitions cannot drift between files.
+The service is part of the local AkuWorkspace operational profile at
+`%LOCALAPPDATA%\AkuSupervisor\services.json`. The earlier isolated proof profile
+was removed after validation. No repository copy is maintained: registration
+MCP and the local profile are the single operational source of truth.
 
 - Supervisor control API: `127.0.0.1:47820`
 - Service ID: `geofu-be`
@@ -36,10 +37,9 @@ removed after validation so service definitions cannot drift between files.
 - Restart policy: `manual`
 - Shutdown grace: 5 seconds
 
-The dedicated control port and runtime-token subtree keep this proof isolated
-from the normal AkuWorkspace profile. The profile launches a built executable
-instead of `go run`: a stable process-group root receives the platform shutdown
-signal directly and avoids coupling lifecycle behavior to a toolchain wrapper.
+The profile launches a built executable instead of `go run`: a stable
+process-group root receives the platform shutdown signal directly and avoids
+coupling lifecycle behavior to a toolchain wrapper.
 
 ## Artifact precondition
 
@@ -60,11 +60,11 @@ precondition failure and must not be replaced with an implicit build step.
 The current GoLand-owned server must first be stopped through GoLand so port
 8765 is free. Do not kill it by PID and do not let AkuSupervisor claim it.
 
-Start the canonical Supervisor:
+Start the Supervisor with the default local profile:
 
 ```powershell
 cd C:\WorkspaceCodex\AkuWorkspace\AkuSupervisor
-.\target\aku-supervisor.exe --config .\config\akuworkspace.services.json
+.\target\aku-supervisor.exe
 ```
 
 From a second terminal:
@@ -72,14 +72,11 @@ From a second terminal:
 ```powershell
 .\target\aku-supervisor.exe start geofu-be `
   --actor user `
-  --reason "Geofu BE portability proof" `
-  --config .\config\akuworkspace.services.json
+  --reason "Geofu BE portability proof"
 
-.\target\aku-supervisor.exe status --json `
-  --config .\config\akuworkspace.services.json
+.\target\aku-supervisor.exe status --json
 
-.\target\aku-supervisor.exe logs geofu-be --stream stderr --tail 100 `
-  --config .\config\akuworkspace.services.json
+.\target\aku-supervisor.exe logs geofu-be --stream stderr --tail 100
 ```
 
 Acceptance evidence:
@@ -130,6 +127,6 @@ therefore launches the built Geofu executable. AkuSupervisor remains
 responsible for ownership and fallback; Geofu remains responsible for graceful
 HTTP shutdown.
 
-The service contract is generic, but this checked-in profile contains Windows
-paths. Linux and macOS need native profile files plus the Phase 9 platform
+The service contract is generic, but the current local profile contains Windows
+paths. Linux and macOS need native local profiles plus the Phase 9 platform
 adapters; no support is claimed for those operating systems yet.

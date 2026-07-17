@@ -6,8 +6,8 @@ the second generic Geofu-family slice after the Geofu BE executable proof.
 
 ## Registered contract
 
-The canonical [`akuworkspace.services.json`](../config/akuworkspace.services.json)
-registers `geofu-plugin` with only generic service fields:
+The local AkuWorkspace profile registers `geofu-plugin` with only generic
+service fields:
 
 - working directory `C:\WorkspaceCodex\GeofuWorkspace\Geofu`;
 - command `C:\nvm4w\nodejs\npm.cmd` with arguments `run`, `dev`;

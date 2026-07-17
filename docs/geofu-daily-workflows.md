@@ -41,7 +41,7 @@ Rerun that explicit setup if the workstation LAN IP changes. The generated
 `.certs/geofu-lan.json` and PFX remain GeoLibre-owned local secrets; they are not
 copied into AkuSupervisor configuration or logs.
 
-The canonical profile exposes those processes as `geofu-plugin` and
+The local AkuWorkspace profile exposes those processes as `geofu-plugin` and
 `geolibre`. When starting the watcher, service arguments also express the
 operator's intended startup order without creating a hidden dependency graph:
 

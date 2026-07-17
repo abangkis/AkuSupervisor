@@ -208,15 +208,15 @@ ordinary five-second control-plane response timeout.
 | Runs through a build/toolchain wrapper such as `go run` | No, but signal delivery may stop at the wrapper | Ownership still bounds cleanup; prefer a built executable for reliable graceful behavior |
 | Starts an external OS service or detached daemon that is not retained as a child | Usually needs a different adapter | Do not claim ownership through a mere start command; use a future native service adapter |
 
-The canonical
-[`config/akuworkspace.services.json`](../config/akuworkspace.services.json)
-contains four services behind one control boundary: Geofu BE is a cooperative
-direct executable; AkuSidecar uses a registered Windows command wrapper; the
-Geofu plugin uses an npm wrapper with a long-lived Rollup watcher; and GeoLibre
-runs its daily LAN HTTPS Vite host. All use bounded health and retained
-process-tree ownership.
+The local AkuWorkspace profile commonly contains four services behind one
+control boundary: Geofu BE is a cooperative direct executable; AkuSidecar uses
+a registered Windows command wrapper; the Geofu plugin uses an npm wrapper with
+a long-lived Rollup watcher; and GeoLibre runs its daily LAN HTTPS Vite host.
+All use bounded health and retained process-tree ownership. That operational
+profile lives at `%LOCALAPPDATA%\AkuSupervisor\services.json` and is not tracked
+because paths and application versions are machine state.
 
-The canonical profile uses the hardened `geofu:lan` HTTPS workflow on 6060.
+The local profile uses the hardened `geofu:lan` HTTPS workflow on 6060.
 The LAN mode also needs the
 independently supervised `geofu-plugin` service for complete workflow
 readiness. See
@@ -229,6 +229,11 @@ proxies for the Geofu plugin and catalog. AkuSupervisor keeps only the explicit
 TLS listener is accepting connections without bypassing certificate hardening.
 `geofu:locked-dev`, plugin copy, and deployment commands are intentionally not
 registered in the default development profile.
+
+The tracked
+[`development-workspace.services.json`](../config/examples/development-workspace.services.json)
+is only a stable contract example with illustrative paths. Use the registration
+MCP to prepare and human-approve changes to the operational profile.
 
 ## Run and inspect
 

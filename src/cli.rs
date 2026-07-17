@@ -1526,12 +1526,13 @@ mod tests {
 
     #[test]
     fn lifecycle_timeout_tracks_the_registered_service_budget() {
-        let config =
-            SupervisorConfig::parse_json(include_str!("../config/akuworkspace.services.json"))
-                .expect("canonical AkuWorkspace profile must parse");
+        let config = SupervisorConfig::parse_json(include_str!(
+            "../config/examples/development-workspace.services.json"
+        ))
+        .expect("generic development example must parse");
         let command = |action| RemoteCommand::Mutate {
             action,
-            service_id: "geofu-be".to_owned(),
+            service_id: "example-api".to_owned(),
             reason: "timeout contract".to_owned(),
             actor: ApiActor::User,
             request_id: None,

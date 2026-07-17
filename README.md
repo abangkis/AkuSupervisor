@@ -97,8 +97,8 @@ AkuSupervisor/
     platform-portability.md
     testing-guide.md
   config/
-    akuworkspace.services.json
     examples/
+      development-workspace.services.json
       immutable-windows.services.json
   examples/
     phase2_process_tree_demo.rs
@@ -468,24 +468,25 @@ The development and production deployment boundaries across all three
 Geofu-family repositories are mapped in the
 [Geofu daily workflows](docs/geofu-daily-workflows.md).
 
-The checked-in canonical AkuWorkspace profile is
-[`config/akuworkspace.services.json`](config/akuworkspace.services.json). It
-registers AkuSidecar, Geofu BE, the Geofu plugin development server, and the
-daily GeoLibre LAN mode behind one control API, runtime token, and
-read-only MCP boundary. All services remain `manual`; registration does not
-start any Geofu-family service implicitly. `geolibre` is the hardened LAN HTTPS
-development mode. Locked builds and deployment remain explicit workflows
-outside AkuSupervisor.
-AkuSidecar is the Go `1.0.0-dev.6` fresh boundary: the profile starts its Go
-executable directly, requires Bridge v2 plus `codex-app-server`, and uses the new SQLite schema.
-Copy the profile to the default user location for argument-free startup:
+The operational AkuWorkspace profile is deliberately local at:
 
-```powershell
-New-Item -ItemType Directory -Force "$env:LOCALAPPDATA\AkuSupervisor"
-Copy-Item .\config\akuworkspace.services.json "$env:LOCALAPPDATA\AkuSupervisor\services.json"
+```text
+%LOCALAPPDATA%\AkuSupervisor\services.json
 ```
 
-Keep the service profile's `environment` map empty for normal AkuBrowser use.
+It normally registers AkuSidecar, Geofu BE, the Geofu plugin development
+server, and the daily GeoLibre LAN mode, but their paths and application
+versions belong to the workstation rather than this repository. Use the
+human-gated registration MCP to review and update that file. An optional
+`config\akuworkspace.services.json` working copy is ignored by Git so local
+version changes do not create AkuSupervisor commits.
+
+[`config/examples/development-workspace.services.json`](config/examples/development-workspace.services.json)
+is the tracked, machine-independent contract fixture. It uses illustrative
+paths and stable expectations; it is not an AkuWorkspace runtime profile.
+
+Keep the local service profile's `environment` map empty for normal AkuBrowser
+use.
 Provider, models, efforts, timeout, sources, and bounded engine settings belong
 in the strict Sidecar configuration and AkuBrowser Settings surfaces.
 AkuSidecar no longer accepts legacy environment aliases.

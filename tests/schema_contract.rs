@@ -36,13 +36,14 @@ fn checked_in_schema_is_valid_json_schema_document() {
 }
 
 #[test]
-#[allow(clippy::too_many_lines)] // One end-to-end profile contract is easier to audit in one place.
-fn checked_in_akuworkspace_profile_matches_the_typed_contract() {
-    let config = SupervisorConfig::parse_json(include_str!("../config/akuworkspace.services.json"))
-        .expect("checked-in AkuWorkspace profile must parse");
+fn generic_development_example_matches_the_typed_contract() {
+    let config = SupervisorConfig::parse_json(include_str!(
+        "../config/examples/development-workspace.services.json"
+    ))
+    .expect("generic development example must parse");
 
     assert!(config.cooperative_actions.aku_bridge_reload.is_some());
-    assert!(config.control.mcp.enabled);
+    assert!(!config.control.mcp.enabled);
     assert_eq!(
         config.observability.console_events,
         ConsoleEvents::Lifecycle
@@ -54,146 +55,52 @@ fn checked_in_akuworkspace_profile_matches_the_typed_contract() {
             .aku_bridge_reload
             .as_ref()
             .map(|reload| reload.sidecar_origin.as_str()),
-        Some("http://127.0.0.1:47821")
+        Some("http://127.0.0.1:47911")
     );
-    assert_eq!(config.control.port, 47_820);
-    assert_eq!(config.services.len(), 4);
+    assert_eq!(config.control.port, 47_910);
+    assert_eq!(config.services.len(), 2);
 
-    let sidecar = config
+    let api = config
         .services
-        .get("akusidecar")
-        .expect("AkuSidecar service");
+        .get("example-api")
+        .expect("generic API service");
     assert_eq!(
-        sidecar.command,
-        PathBuf::from(r"C:\WorkspaceCodex\AkuWorkspace\AkuSidecar\runtime\dev\aku-sidecar.exe")
+        api.command,
+        PathBuf::from(r"C:\Workspace\ExampleApi\example-api.exe")
     );
-    assert_eq!(
-        sidecar.args,
-        [
-            "--config",
-            r"C:\WorkspaceCodex\AkuWorkspace\AkuSidecar\config\sidecar.json",
-            "--dev"
-        ]
-    );
-    assert_eq!(sidecar.ports, vec![47_821]);
-    assert_eq!(sidecar.restart_policy, RestartPolicy::Manual);
-    assert_eq!(sidecar.shutdown_grace_ms, 5_000);
-    match &sidecar.health {
+    assert_eq!(api.args, ["--port", "49001"]);
+    assert_eq!(api.ports, vec![49_001]);
+    assert_eq!(api.restart_policy, RestartPolicy::Manual);
+    assert_eq!(api.shutdown_grace_ms, 5_000);
+    match &api.health {
         HealthCheck::HttpJson {
             url,
             startup_deadline_ms,
             expect,
             ..
         } => {
-            assert_eq!(url, "http://127.0.0.1:47821/api/health");
-            assert_eq!(*startup_deadline_ms, 60_000);
-            assert_eq!(
-                expect.get("version"),
-                Some(&serde_json::json!("1.0.0-dev.6"))
-            );
-            assert_eq!(expect.get("runtime"), Some(&serde_json::json!("go")));
-            assert_eq!(
-                expect.get("bridgeContractVersion"),
-                Some(&serde_json::json!("aku-browser.bridge.v2"))
-            );
-            assert_eq!(
-                expect.get("provider"),
-                Some(&serde_json::json!("codex-app-server"))
-            );
-        }
-        other => panic!("expected AkuSidecar HTTP JSON health, got {other:?}"),
-    }
-
-    let service = config.services.get("geofu-be").expect("Geofu BE service");
-    assert_eq!(
-        service.cwd,
-        PathBuf::from(r"C:\WorkspaceCodex\GeofuWorkspace\Geofu_be")
-    );
-    assert_eq!(
-        service.command,
-        PathBuf::from(r"C:\WorkspaceCodex\GeofuWorkspace\Geofu_be\output\geofu-server.exe")
-    );
-    assert_eq!(service.ports, vec![8_765]);
-    assert_eq!(service.restart_policy, RestartPolicy::Manual);
-    assert_eq!(service.shutdown_grace_ms, 5_000);
-    assert_eq!(service.args.first().map(String::as_str), Some("--host"));
-    assert!(service.environment.is_empty());
-
-    match &service.health {
-        HealthCheck::HttpJson {
-            url,
-            startup_deadline_ms,
-            expect,
-            ..
-        } => {
-            assert_eq!(url, "http://127.0.0.1:8765/catalog.json");
+            assert_eq!(url, "http://127.0.0.1:49001/health");
             assert_eq!(*startup_deadline_ms, 30_000);
-            assert_eq!(expect.get("schemaVersion"), Some(&serde_json::json!(1)));
+            assert_eq!(expect.get("status"), Some(&serde_json::json!("ok")));
         }
-        other => panic!("expected HTTP JSON health, got {other:?}"),
+        other => panic!("expected generic HTTP JSON health, got {other:?}"),
     }
 
-    let plugin = config
+    let web = config
         .services
-        .get("geofu-plugin")
-        .expect("Geofu plugin service");
+        .get("example-web")
+        .expect("generic web service");
     assert_eq!(
-        plugin.cwd,
-        PathBuf::from(r"C:\WorkspaceCodex\GeofuWorkspace\Geofu")
+        web.command,
+        PathBuf::from(r"C:\Program Files\nodejs\npm.cmd")
     );
-    assert_eq!(plugin.command, PathBuf::from(r"C:\nvm4w\nodejs\npm.cmd"));
-    assert_eq!(plugin.args, ["run", "dev"]);
-    assert_eq!(plugin.ports, vec![8_766]);
-    assert_eq!(plugin.restart_policy, RestartPolicy::Manual);
-    assert_eq!(plugin.shutdown_grace_ms, 5_000);
-    assert!(plugin.environment.is_empty());
-    match &plugin.health {
-        HealthCheck::HttpJson {
-            url,
-            startup_deadline_ms,
-            expect,
-            ..
-        } => {
-            assert_eq!(url, "http://127.0.0.1:8766/geofu/plugin.json");
-            assert_eq!(*startup_deadline_ms, 30_000);
-            assert_eq!(expect.get("id"), Some(&serde_json::json!("geofu")));
-        }
-        other => panic!("expected HTTP JSON health, got {other:?}"),
-    }
-
-    assert_geolibre_service(&config);
-    assert!(!config.services.contains_key("geolibre-locked"));
-}
-
-fn assert_geolibre_service(config: &SupervisorConfig) {
-    let service_id = "geolibre";
-    let expected_port = 6_060;
-    let geolibre = config
-        .services
-        .get(service_id)
-        .unwrap_or_else(|| panic!("{service_id} service"));
+    assert_eq!(web.args, ["run", "dev"]);
+    assert_eq!(web.ports, vec![49_002]);
     assert_eq!(
-        geolibre.cwd,
-        PathBuf::from(r"C:\WorkspaceCodex\GeofuWorkspace\GeoLibre")
+        web.environment.get("EXAMPLE_PORT").map(String::as_str),
+        Some("49002")
     );
-    assert_eq!(geolibre.command, PathBuf::from(r"C:\nvm4w\nodejs\npm.cmd"));
-    assert_eq!(geolibre.args, ["run", "geofu:lan"]);
-    assert_eq!(geolibre.ports, vec![expected_port]);
-    assert_eq!(geolibre.restart_policy, RestartPolicy::Manual);
-    assert_eq!(geolibre.shutdown_grace_ms, 5_000);
-    assert!(
-        !geolibre.environment.contains_key("GEOLIBRE_DEV_HOST"),
-        "{service_id} must preserve the repository-native host binding"
-    );
-    let expected_port_string = expected_port.to_string();
-    assert_eq!(
-        geolibre
-            .environment
-            .get("GEOLIBRE_DEV_PORT")
-            .map(String::as_str),
-        Some(expected_port_string.as_str())
-    );
-    match &geolibre.health {
+    match &web.health {
         HealthCheck::TcpConnect {
             host,
             port,
@@ -201,10 +108,10 @@ fn assert_geolibre_service(config: &SupervisorConfig) {
             ..
         } => {
             assert_eq!(host, "127.0.0.1");
-            assert_eq!(*port, expected_port);
-            assert_eq!(*startup_deadline_ms, 120_000);
+            assert_eq!(*port, 49_002);
+            assert_eq!(*startup_deadline_ms, 60_000);
         }
-        other => panic!("expected TCP connect health, got {other:?}"),
+        other => panic!("expected generic TCP connect health, got {other:?}"),
     }
 }
 

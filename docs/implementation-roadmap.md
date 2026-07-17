@@ -783,10 +783,13 @@ daily development and production-oriented locked/deployment boundaries are in
 The active host proof and its Windows test baseline are maintained in
 [GeoLibre portability proof](geolibre-portability.md).
 
-After the isolated proof passed, `geofu-be` was merged into the canonical
-`config/akuworkspace.services.json`. AkuSidecar, Geofu BE, the Geofu plugin
-development server, and the GeoLibre LAN mode now share one control listener,
-token, MCP boundary, and lifecycle journal. The obsolete duplicated Geofu
+After the isolated proof passed, `geofu-be` was merged into the local
+AkuWorkspace operational profile. AkuSidecar, Geofu BE, the Geofu plugin
+development server, and the GeoLibre LAN mode share one control listener,
+token, MCP boundary, and lifecycle journal. The operational profile now lives
+only in the user's AkuSupervisor configuration and is not tracked because its
+paths and application versions are workstation state. The repository keeps a
+generic development fixture for contract tests. The obsolete duplicated Geofu
 profile and deployment-oriented locked GeoLibre profile were removed.
 Registration remains manual; locked validation is an explicit workflow outside
 the default development supervisor.

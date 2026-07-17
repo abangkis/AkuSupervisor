@@ -57,10 +57,10 @@ Then startup requires no application arguments:
 cargo run
 ```
 
-For this AkuWorkspace pilot, the source profile is checked in at:
+For this AkuWorkspace pilot, the operational profile is local at:
 
 ```text
-C:\WorkspaceCodex\AkuWorkspace\AkuSupervisor\config\akuworkspace.services.json
+%LOCALAPPDATA%\AkuSupervisor\services.json
 ```
 
 It registers `akusidecar`, the built `geofu-be` executable, the `geofu-plugin`
@@ -69,7 +69,10 @@ controlled manual services behind one control API. Registration does not start
 any service implicitly. GeoLibre uses port 6060 through the repository-owned
 `geofu:lan` HTTPS wrapper and loopback TCP readiness. The LAN wrapper requires
 its one-time certificate setup before supervised startup. Locked builds and
-deployment are outside this canonical development profile.
+deployment are outside this local development profile. Machine paths and
+application versions are intentionally not tracked by AkuSupervisor. The
+tracked `config\examples\development-workspace.services.json` fixture validates
+the portable typed contract without representing the live workspace.
 Startup prints both the absolute selected path and its source, for example:
 
 ```text

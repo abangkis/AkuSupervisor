@@ -40,9 +40,9 @@ proxies the loopback Geofu manifest and catalog behind the trusted LAN HTTPS
 origin. Locked mode disables plugin management and allows only the bundled
 `geofu` plugin.
 
-## Canonical profile and historical proof
+## Local profile and historical proof
 
-The checked-in profile registers only:
+The local AkuWorkspace profile registers only the daily development mode:
 
 - `geolibre`: hardened LAN HTTPS mode on the repository-native
   `0.0.0.0:6060`.
@@ -56,7 +56,7 @@ certificate hardening. It retains a 120-second startup deadline.
 
 The historical proof also launched `geofu:locked-dev` on an isolated 6061
 override and validated HTTP readiness and clean ownership. That result proves
-genericity, but the mode was removed from the canonical profile after its
+genericity, but the mode was removed from the local development profile after its
 deployment-oriented role was clarified.
 
 LAN health proves only that Vite's TLS listener is accepting connections.

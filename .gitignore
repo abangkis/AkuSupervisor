@@ -12,6 +12,7 @@ coverage/
 .env.*
 !.env.example
 local-dev-services.json
+/config/akuworkspace.services.json
 
 # Logs
 *.log
