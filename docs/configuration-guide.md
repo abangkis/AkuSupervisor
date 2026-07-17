@@ -62,25 +62,18 @@ health response. An application with additional in-memory clients may expose a
 per-process epoch so those clients can distinguish recovery to the same
 instance from recovery into a replacement instance.
 
-AkuSidecar 0.6.9 implements this pattern. It creates one random, non-persisted
-value at process construction and returns it from health and bootstrap:
+The current Go AkuSidecar implements this pattern. It creates one random,
+non-persisted value at process construction and returns it from health and
+bootstrap:
 
-```js
-import crypto from "node:crypto";
+```go
+instanceEpoch := domain.NewID("epoch")
 
-const instanceEpoch = crypto.randomUUID();
-
-// GET /api/health
-sendJson(response, 200, { status: "ok", instanceEpoch });
-
-// GET /api/bootstrap
-sendJson(response, 200, {
-  instanceEpoch,
-  // persisted application configuration follows
-});
-
-// Every API response can expose the same value for existing polling clients.
-response.setHeader("X-Aku-Sidecar-Instance-Epoch", instanceEpoch);
+// GET /api/health and GET /api/bootstrap include the same process value.
+writeJSON(response, http.StatusOK, map[string]any{
+    "status":        "ok",
+    "instanceEpoch": instanceEpoch,
+})
 ```
 
 After a development watcher handoff, an existing client compares the new

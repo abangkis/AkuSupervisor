@@ -1,13 +1,13 @@
 # AkuSupervisor Implementation Roadmap
 
-Status: **Active planning control**  
+Status: **Historical implementation record; active behavior is defined by the README, configuration guide, and testing guide**
 Initial scope: **AkuWorkspace on Windows**  
 Implementation language: **Rust**  
 First live service: **AkuSidecar**
 
 ## 1. Purpose
 
-This roadmap controls implementation order and prevents deferred ideas from entering the MVP without an explicit gate decision.
+This roadmap records the implementation order and gate decisions used to reach the MVP. Dated Sidecar providers, versions, Bridge builds, and validation results below are historical evidence, not current AkuWorkspace compatibility targets.
 
 The original product specification remains the detailed source for lifecycle behavior and safety requirements. This roadmap records subsequent decisions that supersede parts of the proposed implementation approach:
 
@@ -32,7 +32,9 @@ The original product specification remains the detailed source for lifecycle beh
 Cross-component readiness remains layered on this lifecycle core. A managed
 application may publish a per-process epoch so its existing clients can recover
 after replacement, but the epoch is not interpreted by AkuSupervisor and does
-not create a dependency graph. AkuSidecar 0.6.9 is the reference example.
+not create a dependency graph. The original Node Sidecar 0.6.9 was the reference
+example when this roadmap was written; the current Go Sidecar preserves the
+same application-owned invariant.
 
 ## 3. Target architecture
 

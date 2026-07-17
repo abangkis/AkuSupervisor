@@ -156,24 +156,17 @@ Reliability evidence on the same date:
   `78830120-c3ac-4a53-bf87-506d612016a4`; and
 - post-command health remained `healthy` with a 1,025 ms heartbeat age.
 
-## Current operational checkpoint
+## Current operational boundary
 
-The historical Gate 5 evidence above records the build that introduced the
-reload protocol. The current AkuWorkspace compatibility target is AkuBridge
-`0.5.33`, runtime `source-fidelity-v35`, with `x-dom-v13` and
-`linkedin-dom-v10`. AkuSidecar also requires the `report_capture_quality`
-capability. Component package versions are otherwise independent.
+The historical Gate 5 evidence above records the builds that introduced and
+validated the reload protocol. The exact current AkuBridge version, runtime
+revision, adapter tuple, build ID, and Bridge contract are deliberately defined
+once in `AkuBrowser/contracts/bridge-contract-v2.md`; AkuBrowser's workspace
+check verifies those identities against AkuBridge and AkuSidecar code.
 
-On 2026-07-14, `bridge validate` again completed the ordered
-`requested -> relay_created -> delivered -> accepted -> heartbeat_observed -> completed`
-audit and observed `aku-bridge-0.5.29-source-fidelity-v31` with no zombie
-operation. Subsequent LinkedIn capture from a long-backgrounded source tab
-completed with bounded scroll restoration. Chrome's page-timer throttling is
-handled inside AkuBridge and does not change AkuSupervisor's cooperative reload
-authority.
-
-The later request `quality-architecture-20260714-2121` completed in one second
-and observed exactly `aku-bridge-0.5.33-source-fidelity-v35`. The subsequent
-signed-in unified X + LinkedIn run completed both sources with the new generic
-quality-report and Sidecar-admission contract. This confirms cooperative reload
-can deploy a capability/version boundary change without browser control.
+The current protocol also carries generic quality reports, managed capture
+surface lifecycle, source freshness, and item-scoped media recapture. Those
+capabilities do not expand AkuSupervisor's authority: cooperative reload still
+performs only `reload_self`, preserves Chrome and signed-in source tabs, and
+completes only after Sidecar observes the exact heartbeat required by the
+canonical Bridge contract.

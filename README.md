@@ -55,16 +55,18 @@ AkuSupervisor's differentiators are therefore the combination of:
 
 The AkuSupervisor development watcher is not the same as placing a managed
 service under an in-process file watcher. It rebuilds AkuSupervisor itself into
-a staging target and performs a bounded service-aware handoff. AkuSidecar now
-runs without Node file watching; backend changes are restarted explicitly
-through AkuSupervisor, while Vite retains frontend HMR.
+a staging target and performs a bounded service-aware handoff. The current Go
+AkuSidecar has no component watcher, Node process, or Vite development server;
+its embedded UI and backend are rebuilt together, then restarted explicitly
+through AkuSupervisor.
 
-The handoff intentionally replaces the Sidecar process. AkuSidecar 0.6.9 is a
-worked example of how a managed application can make that boundary safe: it
-publishes a new `instanceEpoch` on every start, allowing its browser client to
-discard stale in-memory Bridge readiness and re-handshake without asking
-AkuSupervisor to understand Chrome. This is application-level recovery layered
-on top of Supervisor lifecycle ownership, not a service dependency graph.
+The handoff intentionally replaces the Sidecar process. The current Go
+AkuSidecar preserves the application-level safety pattern introduced by the
+earlier Sidecar: it publishes a new `instanceEpoch` on every start, allowing its
+browser client to discard stale in-memory Bridge readiness and re-handshake
+without asking AkuSupervisor to understand Chrome. This is application-level
+recovery layered on top of Supervisor lifecycle ownership, not a service
+dependency graph.
 
 Audit identity distinguishes these paths without changing cleanup:
 
