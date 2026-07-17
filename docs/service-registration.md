@@ -39,7 +39,16 @@ bound to that proposal hash and expires with the draft after 30 minutes.
 
 ## Self-describing MCP workflow
 
-Register the server with:
+Install both the registration server and read-only server with:
+
+```powershell
+.\scripts\install-codex-mcp.ps1
+```
+
+This first produces a bounded plan showing the exact two target sections and an
+approval command. Apply requires that hash-bound code, preserves unrelated
+Codex configuration, stages the dedicated MCP host, and reports whether Codex
+must be restarted. The resulting registration section is:
 
 ```toml
 [mcp_servers.aku_supervisor_registration]
@@ -56,10 +65,11 @@ enabled_tools = [
 ]
 ```
 
-Create that dedicated host with `scripts\stage-mcp-host.ps1` after promoting a
-compatible stable build. Both read-only and registration MCP entries should
-point to the same staged file. Core promotion does not replace it, and an MCP
-host update is needed only when MCP behavior changes.
+Both read-only and registration MCP entries point to the same staged file. Core
+promotion does not replace it, and an MCP host update is needed only when MCP
+behavior changes. A workspace-level `.codex\config.toml` serves all Codex
+tasks/agents in that workspace. Initial MCP discovery cannot install itself, so
+each new workspace needs this one explicit bootstrap and human approval.
 
 The agent does not need this document during normal registration. Tool
 descriptions, strict input schemas, structured failures, the current revision,

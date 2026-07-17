@@ -288,15 +288,31 @@ service ownership, health monitoring, and cleanup unchanged. See
 [MCP integration notes](docs/mcp-integration-notes.md).
 
 Codex can use the protected runtime token without copying it into Codex config
-through the stdio compatibility proxy:
+through the stdio compatibility proxy. Bootstrap both MCP identities from the
+AkuSupervisor repository with:
 
 ```powershell
-.\scripts\stage-mcp-host.ps1
+.\scripts\install-codex-mcp.ps1
 ```
 
-This stages the current stable build as a dedicated long-lived MCP host. Use
-`-Source development` only when intentionally validating an MCP implementation
-that has not been promoted yet.
+The default invocation is **plan-only**: it writes nothing, prints only the two
+AkuSupervisor target sections (not unrelated configuration that may contain
+secrets), and returns an exact approval command. The approval code is bound to
+the current and proposed config hashes, source executable hash, config path,
+and dedicated host path. Review the proposal, then run that exact command. A
+stale approval fails closed. Apply preserves all unrelated TOML entries, stages
+and hash-verifies the dedicated host, and atomically replaces the config. It
+tells you whether a Codex restart is actually required.
+
+By default the script targets the parent AkuWorkspace `.codex\config.toml` and
+the current stable build. Use `-CodexConfigPath <path>` for another workspace,
+or `-Source development` only when intentionally validating MCP behavior that
+has not been promoted yet. MCP cannot bootstrap its own initial registration:
+this explicit host-level approval is the one-time trust boundary. Once present,
+the workspace config is available to every Codex task/agent opened in that
+workspace; it is not configured separately per agent.
+
+The resulting target sections are:
 
 ```toml
 [mcp_servers.aku_supervisor]
@@ -315,9 +331,11 @@ protected token file, and forwards only to the already-running `/mcp` endpoint.
 It never starts AkuSupervisor or a managed service. AkuWorkspace checks this in
 at `.codex/config.toml`; restart Codex or begin a new task after changing MCP
 configuration. The MCP host is intentionally not overwritten by
-`promote-stable.ps1`. Stage it again only when MCP behavior changes; if the
-existing MCP host is active, close Codex, stage the replacement, and reopen
-Codex. Ordinary core-only changes require no MCP restaging.
+`promote-stable.ps1`. Rerun `install-codex-mcp.ps1` when MCP behavior changes;
+if the existing MCP host is active and its bytes differ, close Codex, apply the
+fresh plan, and reopen Codex. `stage-mcp-host.ps1` remains the lower-level
+maintenance primitive when config registration is already known to be correct.
+Ordinary core-only changes require no MCP restaging.
 
 Generic service onboarding uses a second MCP identity, `registration-mcp`.
 It self-describes the full schema and workflow, creates revision-bound drafts,

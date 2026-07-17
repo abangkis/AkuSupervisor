@@ -1,20 +1,32 @@
 [CmdletBinding()]
 param(
     [ValidateSet('stable', 'development')]
-    [string] $Source = 'stable'
+    [string] $Source = 'stable',
+
+    [string] $SourcePath,
+
+    [string] $DestinationPath,
+
+    [string] $ExpectedSourceHash
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $repository = Split-Path -Parent $PSScriptRoot
-$sourceExecutable = if ($Source -eq 'development') {
+$sourceExecutable = if (-not [string]::IsNullOrWhiteSpace($SourcePath)) {
+    [System.IO.Path]::GetFullPath($SourcePath)
+} elseif ($Source -eq 'development') {
     Join-Path $repository 'target\dev\aku-supervisor.exe'
 } else {
     Join-Path $repository 'target\aku-supervisor.exe'
 }
-$hostDirectory = Join-Path $repository 'target\mcp'
-$hostExecutable = Join-Path $hostDirectory 'aku-supervisor-mcp.exe'
+$hostExecutable = if (-not [string]::IsNullOrWhiteSpace($DestinationPath)) {
+    [System.IO.Path]::GetFullPath($DestinationPath)
+} else {
+    Join-Path $repository 'target\mcp\aku-supervisor-mcp.exe'
+}
+$hostDirectory = Split-Path -Parent $hostExecutable
 
 function Stop-Staging {
     param([Parameter(Mandatory)] [string] $Message)
@@ -45,12 +57,18 @@ if (-not (Test-Path -LiteralPath $sourceExecutable -PathType Leaf)) {
     Stop-Staging -Message "Source executable not found: $sourceExecutable"
 }
 
-Write-Host "[mcp-host] Checking $Source source executable..." -ForegroundColor Cyan
+Write-Host "[mcp-host] Checking source executable: $sourceExecutable" -ForegroundColor Cyan
 $versionOutput = (& $sourceExecutable --version | Out-String).Trim()
 if ($LASTEXITCODE -ne 0 -or $versionOutput -notmatch '^aku-supervisor\s+\S+$') {
     Stop-Staging -Message 'Source executable failed its bounded version preflight.'
 }
 $sourceHash = (Get-FileHash -LiteralPath $sourceExecutable -Algorithm SHA256).Hash
+if (-not [string]::IsNullOrWhiteSpace($ExpectedSourceHash)) {
+    $normalizedExpectedHash = $ExpectedSourceHash.Replace('sha256:', '').ToUpperInvariant()
+    if (-not [System.StringComparer]::Ordinal.Equals($sourceHash, $normalizedExpectedHash)) {
+        Stop-Staging -Message 'Source executable hash no longer matches the approved proposal.'
+    }
+}
 
 New-Item -ItemType Directory -Path $hostDirectory -Force | Out-Null
 if (Test-Path -LiteralPath $hostExecutable -PathType Leaf) {

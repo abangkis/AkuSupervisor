@@ -489,6 +489,9 @@ Current checkpoint:
 - [x] adapter isolation from the lifecycle and platform layers; and
 - [x] bounded stdio proxy and project-scoped Codex registration without copying
   the bearer token into Codex config or environment; and
+- [x] explicit plan/apply Codex bootstrap for both MCP identities, with a
+  hash-bound approval code, unrelated-config preservation, verified dedicated
+  host staging, atomic config replacement, and temporary integration fixture;
 - [x] live tool invocation from a newly started Codex task.
 
 Live validation used the active development Supervisor at

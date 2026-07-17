@@ -198,6 +198,16 @@ promotion never overwrites the MCP host, avoiding a file-lock dependency on a
 long-lived Codex process. Updating MCP behavior remains an explicit maintenance
 operation that requires recycling Codex if the staged host is active.
 
+`scripts\install-codex-mcp.ps1` is the supported bootstrap above that staging
+primitive. Its default mode is read-only planning. It exposes only the current
+and proposed AkuSupervisor MCP sections, binds a short approval code to both
+config hashes plus the source hash and paths, rejects stale approval, preserves
+unrelated TOML entries, and replaces the selected Codex config atomically. Its
+integration fixture uses temporary config and host paths, including a simulated
+concurrent edit, so verification never mutates the active Codex configuration.
+This is deliberately a host/workspace operation rather than an MCP tool: an MCP
+server cannot be trusted or discovered before the host has registered it.
+
 A newly started Codex task successfully loaded the project-scoped registration
 and used the read-only MCP surface. This user-confirmed live check closes the
 client-registration checkpoint; it does not expand MCP into service lifecycle

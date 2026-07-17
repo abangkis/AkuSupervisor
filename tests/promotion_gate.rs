@@ -43,6 +43,24 @@ fn dedicated_mcp_host_is_staged_outside_the_core_promotion_target() {
 }
 
 #[test]
+fn codex_mcp_bootstrap_requires_a_hash_bound_preview_before_atomic_apply() {
+    let installer = include_str!("../scripts/install-codex-mcp.ps1");
+    let staging = include_str!("../scripts/stage-mcp-host.ps1");
+
+    assert!(installer.contains("PLAN ONLY: no files were changed."));
+    assert!(installer.contains("APPLY CODEX MCP"));
+    assert!(installer.contains("$currentHash"));
+    assert!(installer.contains("$proposedHash"));
+    assert!(installer.contains("$sourceHash"));
+    assert!(installer.contains("Codex configuration changed after approval validation"));
+    assert!(installer.contains("[System.IO.File]::Replace"));
+    assert!(installer.contains("stage-mcp-host.ps1"));
+    assert!(installer.contains("ExpectedSourceHash = $sourceHash"));
+    assert!(!installer.contains("Stop-Process"));
+    assert!(staging.contains("Source executable hash no longer matches the approved proposal."));
+}
+
+#[test]
 fn akuworkspace_integration_gate_is_explicit_and_never_promotes() {
     let script = include_str!("../scripts/validate-akuworkspace-integration.ps1");
     let status_preflight = script

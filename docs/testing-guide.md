@@ -160,6 +160,23 @@ initialize and tools/list as newline-delimited stdio messages, and verifies the
 same four-tool response. The proxy test proves compatibility without granting
 the restricted child any service-ownership or bootstrap role.
 
+### Codex MCP bootstrap contract
+
+Preview the workspace registration without changing any file:
+
+```powershell
+.\scripts\install-codex-mcp.ps1
+```
+
+The output must say `PLAN ONLY`, show only the two AkuSupervisor MCP sections,
+and provide an exact approval command. Do not substitute a code from an older
+plan: it is bound to the current config, proposal, source executable, and paths.
+The automated `codex_mcp_bootstrap` integration test performs plan, stale-code
+rejection after a concurrent edit, approved apply, byte-for-byte host staging,
+unrelated TOML preservation, and an idempotent second run. It uses only a unique
+temporary config and host; the active workspace `.codex\config.toml` is never
+written by the test.
+
 For AkuBridge reload, the CLI waits for the terminal heartbeat by default:
 
 ```powershell
