@@ -289,6 +289,12 @@ between reads even when no lifecycle command is issued. HTTP health is still a
 transport/contract check; AkuSidecar's real Codex reasoning invocation remains
 an application-level readiness validation.
 
+For `http-json`, deliberately change a `diagnosticExpect` version while leaving
+the required `expect` fields intact. The snapshot must stay `healthy` and place
+the version mismatch in `health.detail`. Changing a required field must still
+produce `unhealthy`. Lifecycle failures persist the bounded single-line detail
+as `errorDetail` in `supervisor.jsonl`; configured secrets must be redacted.
+
 The HTTP adapter also decodes bounded `Transfer-Encoding: chunked` responses.
 The canonical `geofu-plugin` service exercises this path through Node's native
 HTTP server at `http://127.0.0.1:8766/geofu/plugin.json`; its health expectation
@@ -314,6 +320,12 @@ owned descendant remains. Once the complete tree is empty, AkuSupervisor:
 3. records a `process_exit` journal event before recovery;
 4. leaves `manual` services available for an authenticated start; and
 5. performs at most one `on-failure` recovery per unstable episode.
+
+The slow forced-cleanup fixture also verifies the asynchronous edge: a stop or
+restart may return `termination_pending` with retained PIDs after forced
+termination was accepted. No replacement may spawn until a later monitor pass
+proves the old tree empty. That completion is a successful `process_exit`
+follow-up; a deferred restart then starts exactly one replacement.
 
 Use `status --json` and inspect `desiredState`, `startedAtUnixMs`,
 `lastExitCode`, `lastExitAtUnixMs`, and `restartCount`. The deterministic crash

@@ -15,6 +15,7 @@ pub enum StartOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StopOutcome {
     Stopped,
+    TerminationPending,
     AlreadyStopped,
 }
 
@@ -22,7 +23,16 @@ pub enum StopOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RestartOutcome {
     Restarted,
+    TerminationPending,
     Started,
+}
+
+/// Whether a platform stop completed synchronously or remains ownership-bound
+/// while the operating system finishes forced termination.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopProgress {
+    Complete,
+    TerminationPending,
 }
 
 /// Per-service process owner and lifecycle serialization boundary.
@@ -140,7 +150,12 @@ impl<Process> ServiceRuntime<Process> {
         };
 
         inner.process = None;
-        if inner.lifecycle != LifecycleState::Failed {
+        if inner.lifecycle == LifecycleState::TerminationPending {
+            inner.lifecycle = inner
+                .lifecycle
+                .transition_to(LifecycleState::Stopped)
+                .map_err(ServiceRuntimeError::Transition)?;
+        } else if inner.lifecycle != LifecycleState::Failed {
             inner.lifecycle = inner
                 .lifecycle
                 .transition_to(LifecycleState::Failed)
@@ -203,7 +218,7 @@ impl<Process> ServiceRuntime<Process> {
     /// poisoned-lock error.
     pub fn stop_with<Error>(
         &self,
-        stop: impl FnOnce(&mut Process) -> Result<(), Error>,
+        stop: impl FnOnce(&mut Process) -> Result<StopProgress, Error>,
     ) -> Result<StopOutcome, ServiceRuntimeError<Error>> {
         let mut inner = self.lock()?;
         if inner.process.is_none() {
@@ -220,13 +235,20 @@ impl<Process> ServiceRuntime<Process> {
             None => return Ok(StopOutcome::AlreadyStopped),
         };
         match stop_result {
-            Ok(()) => {
+            Ok(StopProgress::Complete) => {
                 inner.process = None;
                 inner.lifecycle = inner
                     .lifecycle
                     .transition_to(LifecycleState::Stopped)
                     .map_err(ServiceRuntimeError::Transition)?;
                 Ok(StopOutcome::Stopped)
+            }
+            Ok(StopProgress::TerminationPending) => {
+                inner.lifecycle = inner
+                    .lifecycle
+                    .transition_to(LifecycleState::TerminationPending)
+                    .map_err(ServiceRuntimeError::Transition)?;
+                Ok(StopOutcome::TerminationPending)
             }
             Err(error) => {
                 inner.lifecycle = inner
@@ -250,7 +272,7 @@ impl<Process> ServiceRuntime<Process> {
     /// poisoned-lock error.
     pub fn restart_with<Error>(
         &self,
-        stop: impl FnOnce(&mut Process) -> Result<(), Error>,
+        stop: impl FnOnce(&mut Process) -> Result<StopProgress, Error>,
         spawn: impl FnOnce() -> Result<Process, Error>,
     ) -> Result<RestartOutcome, ServiceRuntimeError<Error>> {
         let mut inner = self.lock()?;
@@ -265,12 +287,22 @@ impl<Process> ServiceRuntime<Process> {
                 Some(process) => stop(process),
                 None => return Err(ServiceRuntimeError::Poisoned),
             };
-            if let Err(error) = stop_result {
-                inner.lifecycle = inner
-                    .lifecycle
-                    .transition_to(LifecycleState::Failed)
-                    .map_err(ServiceRuntimeError::Transition)?;
-                return Err(ServiceRuntimeError::Stop(error));
+            match stop_result {
+                Ok(StopProgress::Complete) => {}
+                Ok(StopProgress::TerminationPending) => {
+                    inner.lifecycle = inner
+                        .lifecycle
+                        .transition_to(LifecycleState::TerminationPending)
+                        .map_err(ServiceRuntimeError::Transition)?;
+                    return Ok(RestartOutcome::TerminationPending);
+                }
+                Err(error) => {
+                    inner.lifecycle = inner
+                        .lifecycle
+                        .transition_to(LifecycleState::Failed)
+                        .map_err(ServiceRuntimeError::Transition)?;
+                    return Err(ServiceRuntimeError::Stop(error));
+                }
             }
             inner.process = None;
             inner.lifecycle = inner
@@ -365,7 +397,10 @@ mod tests {
 
     use crate::domain::LifecycleState;
 
-    use super::{RestartOutcome, ServiceRuntime, ServiceRuntimeError, StartOutcome, StopOutcome};
+    use super::{
+        RestartOutcome, ServiceRuntime, ServiceRuntimeError, StartOutcome, StopOutcome,
+        StopProgress,
+    };
 
     const CONCURRENT_REQUESTS: usize = 16;
 
@@ -433,13 +468,13 @@ mod tests {
             Ok(StartOutcome::Started)
         );
 
-        let failed = runtime.stop_with(|_| Err::<(), _>("fixture refuses first stop"));
+        let failed = runtime.stop_with(|_| Err::<StopProgress, _>("fixture refuses first stop"));
         assert!(matches!(failed, Err(ServiceRuntimeError::Stop(_))));
         assert_eq!(runtime.has_process(), Ok(true));
         assert_eq!(runtime.lifecycle(), Ok(LifecycleState::Failed));
 
         assert_eq!(
-            runtime.stop_with(|_| Ok::<_, &'static str>(())),
+            runtime.stop_with(|_| Ok::<_, &'static str>(StopProgress::Complete)),
             Ok(StopOutcome::Stopped)
         );
         assert_eq!(runtime.has_process(), Ok(false));
@@ -456,7 +491,7 @@ mod tests {
         let outcome = runtime.restart_with(
             |process| {
                 assert_eq!(*process, 7);
-                Ok::<_, &'static str>(())
+                Ok::<_, &'static str>(StopProgress::Complete)
             },
             || Ok::<_, &'static str>(8_u32),
         );
@@ -466,6 +501,27 @@ mod tests {
             runtime.inspect_with(|state, process| Ok::<_, &'static str>((state, process.copied()))),
             Ok((LifecycleState::Running, Some(8)))
         );
+    }
+
+    #[test]
+    fn pending_termination_retains_owner_until_terminal_observation() {
+        let runtime = ServiceRuntime::new();
+        runtime
+            .start_with(|| Ok::<_, &'static str>(7_u32))
+            .expect("initial start");
+
+        assert_eq!(
+            runtime.stop_with(|_| { Ok::<_, &'static str>(StopProgress::TerminationPending) }),
+            Ok(StopOutcome::TerminationPending)
+        );
+        assert_eq!(runtime.has_process(), Ok(true));
+        assert_eq!(runtime.lifecycle(), Ok(LifecycleState::TerminationPending));
+
+        runtime
+            .reconcile_exit_with(|_| Ok::<_, &'static str>(Some(exit_status(1))))
+            .expect("terminal observation");
+        assert_eq!(runtime.has_process(), Ok(false));
+        assert_eq!(runtime.lifecycle(), Ok(LifecycleState::Stopped));
     }
 
     #[test]

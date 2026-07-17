@@ -15,6 +15,7 @@ use crate::application::{
 use crate::domain::{Actor, LifecycleState, Reason};
 
 const MAX_EVENT_LIMIT: usize = 200;
+const MAX_ERROR_DETAIL_BYTES: usize = 512;
 
 /// Canonical lifecycle operation result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,26 +72,42 @@ pub struct JournalRecord {
     pub result: JournalResult,
     pub error_category: Option<ErrorCategory>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub automatic_restart_planned: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deferred_restart_planned: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shutdown: Option<TreeStopReport>,
     pub config_fingerprint: String,
 }
 
 impl JournalRecord {
+    fn sanitized(&self, known_secrets: &[&str]) -> Self {
+        let mut redacted = self.clone();
+        let reason = bounded_text(
+            &redact_known_secrets(redacted.reason.as_str(), known_secrets),
+            Reason::MAX_BYTES,
+        );
+        redacted.reason = Reason::new(reason).unwrap_or_else(|_| {
+            Reason::new("[REDACTED]").expect("static fallback reason is valid")
+        });
+        redacted.error_detail = redacted
+            .error_detail
+            .as_deref()
+            .map(|detail| bounded_error_detail(&redact_known_secrets(detail, known_secrets)));
+        redacted
+    }
+
     /// Serializes exactly one newline-terminated JSONL record.
     ///
     /// # Errors
     ///
     /// Returns the underlying JSON serialization error.
     pub fn to_json_line(&self, known_secrets: &[&str]) -> Result<String, serde_json::Error> {
-        let mut redacted = self.clone();
-        let reason = redact_known_secrets(redacted.reason.as_str(), known_secrets);
-        if let Ok(reason) = Reason::new(reason) {
-            redacted.reason = reason;
-        }
+        let redacted = self.sanitized(known_secrets);
         let mut line = serde_json::to_string(&redacted)?;
         line.push('\n');
         Ok(line)
@@ -105,6 +122,28 @@ pub fn redact_known_secrets(value: &str, known_secrets: &[&str]) -> String {
         .fold(value.to_owned(), |text, secret| {
             text.replace(secret, "[REDACTED]")
         })
+}
+
+fn bounded_error_detail(value: &str) -> String {
+    let single_line = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    bounded_text(&single_line, MAX_ERROR_DETAIL_BYTES)
+}
+
+fn bounded_text(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_owned();
+    }
+    let suffix = "...";
+    let limit = max_bytes.saturating_sub(suffix.len());
+    let boundary = value
+        .char_indices()
+        .map(|(index, _)| index)
+        .take_while(|index| *index <= limit)
+        .last()
+        .unwrap_or(0);
+    let mut bounded = value[..boundary].trim_end().to_owned();
+    bounded.push_str(suffix);
+    bounded
 }
 
 /// Append-only JSONL persistence with a sequence that survives supervisor
@@ -183,8 +222,9 @@ impl FileJournal {
             .iter()
             .map(String::as_str)
             .collect::<Vec<_>>();
+        let record = record.sanitized(&secrets);
         let line = record
-            .to_json_line(&secrets)
+            .to_json_line(&[])
             .map_err(FileJournalError::Serialize)?;
         let mut file = OpenOptions::new()
             .append(true)
@@ -325,7 +365,9 @@ impl AuditedControl {
             || "without a numeric exit code".to_owned(),
             |code| format!("with code {code}"),
         );
-        let recovery = if event.automatic_restart_planned {
+        let recovery = if event.deferred_restart_planned {
+            "deferred restart planned after termination completes"
+        } else if event.automatic_restart_planned {
             "automatic on-failure restart planned"
         } else {
             "no automatic restart planned"
@@ -337,6 +379,7 @@ impl AuditedControl {
             .event_publication
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let termination_completed = event.previous_state == LifecycleState::TerminationPending;
         let record = self
             .journal
             .append(JournalRecord {
@@ -348,13 +391,24 @@ impl AuditedControl {
                 actor: Actor::Recovery,
                 reason,
                 previous_state: event.previous_state,
-                resulting_state: LifecycleState::Failed,
+                resulting_state: if termination_completed {
+                    LifecycleState::Stopped
+                } else {
+                    LifecycleState::Failed
+                },
                 owned_pids_before: event.owned_pids_before.clone(),
                 owned_pids_after: Vec::new(),
-                result: JournalResult::Failure,
-                error_category: Some(ErrorCategory::ProcessExited),
+                result: if termination_completed {
+                    JournalResult::Success
+                } else {
+                    JournalResult::Failure
+                },
+                error_category: (!termination_completed).then_some(ErrorCategory::ProcessExited),
+                error_detail: (!termination_completed)
+                    .then(|| bounded_error_detail(&format!("owned process tree exited {exit}"))),
                 exit_code: event.exit_code,
                 automatic_restart_planned: Some(event.automatic_restart_planned),
+                deferred_restart_planned: Some(event.deferred_restart_planned),
                 shutdown: None,
                 config_fingerprint: self.config_fingerprint(),
             })
@@ -446,8 +500,13 @@ impl SupervisorControl for AuditedControl {
                 .map_or_else(Vec::new, |snapshot| snapshot.owned_pids.clone()),
             result,
             error_category,
+            error_detail: outcome
+                .as_ref()
+                .err()
+                .map(|error| bounded_error_detail(error.message())),
             exit_code: None,
             automatic_restart_planned: None,
+            deferred_restart_planned: None,
             shutdown: outcome
                 .as_ref()
                 .ok()
@@ -508,6 +567,9 @@ fn format_console_event(record: &JournalRecord, mode: ConsoleEvents) -> Option<S
     ];
     if let Some(category) = record.error_category {
         details.push(format!("category={}", error_category_label(category)));
+    }
+    if let Some(detail) = &record.error_detail {
+        details.push(format!("detail={detail:?}"));
     }
     if let Some(shutdown) = &record.shutdown {
         details.push(format!(
@@ -634,6 +696,7 @@ const fn lifecycle_state_label(state: LifecycleState) -> &'static str {
         LifecycleState::Starting => "starting",
         LifecycleState::Running => "running",
         LifecycleState::Stopping => "stopping",
+        LifecycleState::TerminationPending => "termination_pending",
         LifecycleState::Unhealthy => "unhealthy",
         LifecycleState::Failed => "failed",
     }
@@ -751,7 +814,7 @@ mod tests {
 
     use super::{
         ErrorCategory, FileJournal, JournalAction, JournalRecord, JournalResult,
-        format_console_event, format_unix_milliseconds_utc,
+        MAX_ERROR_DETAIL_BYTES, format_console_event, format_unix_milliseconds_utc,
     };
 
     fn record(reason: &str) -> JournalRecord {
@@ -769,8 +832,10 @@ mod tests {
             owned_pids_after: vec![200, 201],
             result: JournalResult::Success,
             error_category: None,
+            error_detail: None,
             exit_code: None,
             automatic_restart_planned: None,
+            deferred_restart_planned: None,
             shutdown: None,
             config_fingerprint: "sha256:abc".to_owned(),
         }
@@ -882,6 +947,29 @@ mod tests {
     }
 
     #[test]
+    fn failure_detail_is_single_line_bounded_and_redacted() {
+        let mut failed = record("health probe failed");
+        failed.result = JournalResult::Failure;
+        failed.error_category = Some(ErrorCategory::HealthFailed);
+        failed.error_detail = Some(format!(
+            "HTTP JSON mismatch:\nAuthorization secret-value {}",
+            "x".repeat(700)
+        ));
+
+        let line = failed
+            .to_json_line(&["secret-value"])
+            .expect("record should serialize");
+        let parsed: serde_json::Value = serde_json::from_str(line.trim()).expect("valid JSON");
+        let detail = parsed["errorDetail"].as_str().expect("error detail");
+
+        assert!(!detail.contains('\n'));
+        assert!(!detail.contains("secret-value"));
+        assert!(detail.contains("[REDACTED]"));
+        assert!(detail.len() <= MAX_ERROR_DETAIL_BYTES);
+        assert!(detail.ends_with("..."));
+    }
+
+    #[test]
     fn failure_category_uses_stable_snake_case_value() {
         let mut record = record("startup failed");
         record.result = JournalResult::Failure;
@@ -897,6 +985,7 @@ mod tests {
         exit_record.action = JournalAction::ProcessExit;
         exit_record.exit_code = Some(17);
         exit_record.automatic_restart_planned = Some(true);
+        exit_record.deferred_restart_planned = Some(false);
         exit_record.error_category = Some(ErrorCategory::ProcessExited);
         let line = exit_record
             .to_json_line(&[])
@@ -905,12 +994,15 @@ mod tests {
         assert!(line.contains("\"action\":\"process_exit\""));
         assert!(line.contains("\"exitCode\":17"));
         assert!(line.contains("\"automaticRestartPlanned\":true"));
+        assert!(line.contains("\"deferredRestartPlanned\":false"));
         assert!(line.contains("\"errorCategory\":\"process_exited\""));
         let legacy = record("legacy lifecycle event")
             .to_json_line(&[])
             .expect("legacy-shaped record");
         assert!(!legacy.contains("exitCode"));
         assert!(!legacy.contains("automaticRestartPlanned"));
+        assert!(!legacy.contains("deferredRestartPlanned"));
+        assert!(!legacy.contains("errorDetail"));
     }
 
     #[test]
@@ -947,6 +1039,7 @@ mod tests {
             .append(record("restart after secret-value changed"))
             .expect("append first record");
         assert_eq!(first.sequence, 1);
+        assert!(!first.reason.as_str().contains("secret-value"));
         drop(journal);
 
         let reopened =

@@ -24,6 +24,7 @@ pub enum ControlMutationOutcome {
     Started,
     AlreadyRunning,
     Stopped,
+    TerminationPending,
     AlreadyStopped,
     Restarted,
 }
@@ -154,6 +155,9 @@ where
                     ControlMutationResult::new(
                         match result.outcome {
                             StopOutcome::Stopped => ControlMutationOutcome::Stopped,
+                            StopOutcome::TerminationPending => {
+                                ControlMutationOutcome::TerminationPending
+                            }
                             StopOutcome::AlreadyStopped => ControlMutationOutcome::AlreadyStopped,
                         },
                         result.shutdown,
@@ -166,6 +170,9 @@ where
                     ControlMutationResult::new(
                         match result.outcome {
                             RestartOutcome::Restarted => ControlMutationOutcome::Restarted,
+                            RestartOutcome::TerminationPending => {
+                                ControlMutationOutcome::TerminationPending
+                            }
                             RestartOutcome::Started => ControlMutationOutcome::Started,
                         },
                         result.shutdown,

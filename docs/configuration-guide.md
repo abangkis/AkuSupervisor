@@ -190,10 +190,23 @@ Use shallow HTTP JSON matching for a stronger existing contract:
   "startupDeadlineMs": 20000,
   "expect": {
     "status": "ok",
-    "schemaVersion": 1
+    "runtime": "go",
+    "bridgeContractVersion": 2,
+    "provider": "openai"
+  },
+  "diagnosticExpect": {
+    "version": "1.0.0-dev.8"
   }
 }
 ```
+
+Fields in `expect` are readiness requirements: any mismatch makes the service
+`unhealthy` and can fail start/restart. Optional `diagnosticExpect` fields are
+volatile identity assertions. Their mismatch is retained in health detail but
+does not fail readiness. Keep runtime, protocol/bridge contract, provider, and
+other compatibility requirements in `expect`; use `diagnosticExpect` for a
+development build/version that changes frequently. A field may not appear in
+both maps.
 
 `startupDeadlineMs` is also the lifecycle budget used by the CLI while waiting
 for start/restart. A slow but valid startup therefore does not inherit the
@@ -205,6 +218,7 @@ ordinary five-second control-plane response timeout.
 |---|---|---|
 | Handles the native signal and exits within grace | No, when already supported | `gracefulSignalSent: true`, `forced: false` |
 | Ignores or does not implement the signal | No | Wait for grace, then terminate only the owned tree; `forced: true` |
+| Windows accepts forced termination but Job Object membership drains slowly | No | Return `termination_pending`, retain ownership, and reconcile to `stopped`; a requested restart starts only after the old tree is empty |
 | Runs through a build/toolchain wrapper such as `go run` | No, but signal delivery may stop at the wrapper | Ownership still bounds cleanup; prefer a built executable for reliable graceful behavior |
 | Starts an external OS service or detached daemon that is not retained as a child | Usually needs a different adapter | Do not claim ownership through a mere start command; use a future native service adapter |
 

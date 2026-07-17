@@ -356,9 +356,10 @@ impl OwnedProcessTree {
     ///
     /// # Errors
     ///
-    /// Returns a Job Object query or termination error, or
-    /// [`ProcessTreeError::ShutdownTimeout`] if owned PIDs remain after forced
-    /// termination.
+    /// Returns a Job Object query or termination error. If Windows has accepted
+    /// forced termination but Job Object membership is still draining after
+    /// the bounded confirmation window, the report retains those PIDs so the
+    /// application can preserve ownership and reconcile completion later.
     pub fn stop(&mut self, grace: Duration) -> Result<TreeStopReport, ProcessTreeError> {
         let owned_pids_before = self.owned_pids()?;
         if owned_pids_before.is_empty() {
@@ -381,18 +382,17 @@ impl OwnedProcessTree {
             if unsafe { TerminateJobObject(self.job.raw(), FORCE_EXIT_CODE) } == 0 {
                 return Err(ProcessTreeError::TerminateJob(io::Error::last_os_error()));
             }
-            if !self.wait_until_empty(FORCED_SHUTDOWN_CONFIRMATION)? {
-                return Err(ProcessTreeError::ShutdownTimeout {
-                    remaining_pids: self.owned_pids()?,
-                });
-            }
+            self.wait_until_empty(FORCED_SHUTDOWN_CONFIRMATION)?;
         }
 
-        self.child.try_wait().map_err(ProcessTreeError::Wait)?;
-        self.finish_log_threads()?;
+        let owned_pids_after = self.owned_pids()?;
+        if owned_pids_after.is_empty() {
+            self.child.try_wait().map_err(ProcessTreeError::Wait)?;
+            self.finish_log_threads()?;
+        }
         Ok(TreeStopReport {
             owned_pids_before,
-            owned_pids_after: self.owned_pids()?,
+            owned_pids_after,
             graceful_signal_sent,
             graceful_signal_error,
             forced,

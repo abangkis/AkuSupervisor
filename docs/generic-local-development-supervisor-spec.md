@@ -328,6 +328,13 @@ attempted. If that journal write fails, recovery fails closed. Any explicit
 desired state of `stopped` suppresses a pending recovery, including a stop that
 races with the exit monitor.
 
+If the native platform accepts forced termination but cannot prove the owned
+tree empty inside its bounded confirmation window, the lifecycle becomes
+`termination_pending` rather than reporting a final `shutdown_timeout`.
+Ownership remains retained. The monitor later records completion and moves the
+service to `stopped`. For a restart request, the replacement is deferred until
+that terminal observation, preventing old/new process-tree overlap.
+
 File watching remains the responsibility of the service command, such as Node `--watch` or Vite. The supervisor does not duplicate source-file watching.
 
 ## 12. Control interface
@@ -403,7 +410,9 @@ Supported v0 health types:
 
 - `process`: owned root or descendant process is alive;
 - `http-status`: endpoint returns the configured status;
-- `http-json`: endpoint returns JSON matching a shallow set of expected fields.
+- `http-json`: endpoint returns JSON matching a shallow set of required fields,
+  plus optional diagnostic identity fields whose mismatch does not fail
+  readiness.
 
 Service status distinguishes:
 
@@ -418,6 +427,11 @@ Start and restart retry health until `startupDeadlineMs`. After startup, a
 bounded periodic monitor refreshes health independently of status reads. A
 spawned process that fails health remains owned and transitions to `unhealthy`;
 a later passing observation returns it to `running`.
+
+For `http-json`, `expect` is the hard readiness contract.
+`diagnosticExpect` is for volatile development identity such as a build
+version. Diagnostic mismatches remain visible in `health.detail` while status
+stays `healthy`; keys must not overlap the hard contract.
 
 The loopback HTTP adapter accepts bounded HTTP/1.1 responses with either a
 direct body or standard chunked transfer framing. Chunk sizes and terminators
@@ -450,7 +464,9 @@ Every lifecycle event contains:
 - reason;
 - previous and resulting state;
 - owned PIDs before and after;
-- result and structured error category; and
+- result and structured error category;
+- a bounded, single-line, known-secret-redacted error detail when a mutation
+  fails; and
 - configuration fingerprint.
 
 The durable journal is mandatory. An optional platform-neutral observability

@@ -95,6 +95,14 @@ pub struct TreeStopReport {
     pub forced: bool,
 }
 
+impl TreeStopReport {
+    /// Returns whether the platform has confirmed that the owned tree is empty.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.owned_pids_after.is_empty()
+    }
+}
+
 /// An operating-system-owned process tree used by lifecycle application code.
 pub trait ManagedProcessTree: Debug + Send {
     type Error: std::error::Error + Send + Sync + 'static;
@@ -119,7 +127,10 @@ pub trait ManagedProcessTree: Debug + Send {
     ///
     /// # Errors
     ///
-    /// Returns a platform error if cleanup cannot be completed or confirmed.
+    /// Returns a platform error if cleanup could not be requested safely. A
+    /// successful report may retain `owned_pids_after`, which means forced
+    /// termination is still being confirmed asynchronously and ownership must
+    /// be preserved.
     fn stop(&mut self, grace: Duration) -> Result<TreeStopReport, Self::Error>;
 
     /// Checks current ownership evidence for one process ID.

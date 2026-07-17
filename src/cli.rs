@@ -1378,7 +1378,7 @@ fn format_simple_status(response: &serde_json::Value) -> Result<String, String> 
         }
     }
     lines.push(
-        "SERVICE              STATE       DESIRED     HEALTH      ROOT PID   OWNED PIDS       HOLD"
+        "SERVICE              STATE                DESIRED     HEALTH      ROOT PID   OWNED PIDS       HOLD"
             .to_owned(),
     );
     for service in services {
@@ -1410,7 +1410,7 @@ fn format_simple_status(response: &serde_json::Value) -> Result<String, String> 
             .and_then(serde_json::Value::as_str)
             .unwrap_or("-");
         lines.push(format!(
-            "{:<20} {:<11} {:<11} {:<11} {:<10} {:<16} {}",
+            "{:<20} {:<20} {:<11} {:<11} {:<10} {:<16} {}",
             text("id"),
             text("lifecycle"),
             text("desiredState"),

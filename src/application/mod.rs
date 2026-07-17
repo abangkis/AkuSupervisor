@@ -43,5 +43,5 @@ pub use service_registry::{
     ServiceStopResult,
 };
 pub use service_runtime::{
-    RestartOutcome, ServiceRuntime, ServiceRuntimeError, StartOutcome, StopOutcome,
+    RestartOutcome, ServiceRuntime, ServiceRuntimeError, StartOutcome, StopOutcome, StopProgress,
 };

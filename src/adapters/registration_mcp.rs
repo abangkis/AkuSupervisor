@@ -510,5 +510,16 @@ mod tests {
                 .map(Vec::len),
             Some(4)
         );
+        let http_json = &schema["properties"]["health"]["oneOf"][3];
+        assert!(
+            http_json["properties"]["expect"]["description"]
+                .as_str()
+                .is_some_and(|description| description.contains("fails health"))
+        );
+        assert!(
+            http_json["properties"]["diagnosticExpect"]["description"]
+                .as_str()
+                .is_some_and(|description| description.contains("remain healthy"))
+        );
     }
 }

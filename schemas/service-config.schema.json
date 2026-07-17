@@ -280,6 +280,14 @@
               "additionalProperties": {
                 "type": ["string", "number", "integer", "boolean", "null"]
               }
+            },
+            "diagnosticExpect": {
+              "description": "Optional volatile identity fields. Mismatches are reported in health detail but do not fail readiness.",
+              "type": "object",
+              "minProperties": 1,
+              "additionalProperties": {
+                "type": ["string", "number", "integer", "boolean", "null"]
+              }
             }
           }
         }

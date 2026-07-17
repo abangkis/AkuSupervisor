@@ -14,7 +14,7 @@ use crate::domain::{
 use super::{
     HealthCheckSpec, HealthProbe, HealthSnapshot, LaunchSpec, ManagedProcessTree, PortInspector,
     PortOccupant, ProcessTreeSpawner, RestartOutcome, ServiceRuntime, ServiceRuntimeError,
-    StartOutcome, StopOutcome, TreeStopReport,
+    StartOutcome, StopOutcome, StopProgress, TreeStopReport,
 };
 
 const DEFAULT_RESTART_STABILITY_WINDOW: Duration = Duration::from_mins(1);
@@ -35,6 +35,7 @@ pub struct ProcessExitEvent {
     pub exit_code: Option<i32>,
     pub successful: bool,
     pub automatic_restart_planned: bool,
+    pub deferred_restart_planned: bool,
 }
 
 /// Result of one periodic service reconciliation.
@@ -413,12 +414,27 @@ where
                 let report = process
                     .stop(grace)
                     .map_err(BackendOperationError::Process)?;
+                let progress = if report.is_complete() {
+                    StopProgress::Complete
+                } else {
+                    StopProgress::TerminationPending
+                };
                 shutdown = Some(report);
-                Ok(())
+                Ok(progress)
             })
             .map_err(RegistryError::Runtime)?;
-        if outcome == StopOutcome::Stopped {
+        if matches!(
+            outcome,
+            StopOutcome::Stopped | StopOutcome::TerminationPending
+        ) {
             *lock(&entry.health)? = HealthSnapshot::unknown();
+        }
+        if outcome == StopOutcome::TerminationPending
+            && let Some(report) = shutdown.as_ref()
+        {
+            lock(&entry.supervision)?
+                .last_owned_pids
+                .clone_from(&report.owned_pids_before);
         }
         Ok(ServiceStopResult { outcome, shutdown })
     }
@@ -479,8 +495,13 @@ where
                     let report = process
                         .stop(grace)
                         .map_err(BackendOperationError::Process)?;
+                    let progress = if report.is_complete() {
+                        StopProgress::Complete
+                    } else {
+                        StopProgress::TerminationPending
+                    };
                     shutdown = Some(report);
-                    Ok(())
+                    Ok(progress)
                 },
                 || {
                     self.ensure_ports_available(&entry.registration.ports)?;
@@ -490,8 +511,20 @@ where
                 },
             )
             .map_err(RegistryError::Runtime)?;
-        lock(&entry.supervision)?.record_started(LifecycleAction::Restart);
-        self.wait_until_healthy(entry)?;
+        if outcome == RestartOutcome::TerminationPending {
+            let mut supervision = lock(&entry.supervision)?;
+            supervision.defer_restart_after_termination();
+            if let Some(report) = shutdown.as_ref() {
+                supervision
+                    .last_owned_pids
+                    .clone_from(&report.owned_pids_before);
+            }
+            drop(supervision);
+            *lock(&entry.health)? = HealthSnapshot::unknown();
+        } else {
+            lock(&entry.supervision)?.record_started(LifecycleAction::Restart);
+            self.wait_until_healthy(entry)?;
+        }
         Ok(ServiceRestartResult { outcome, shutdown })
     }
 
@@ -609,25 +642,29 @@ where
 
         let operator_hold = lock(&entry.control)?.policy.operator_hold();
         let mut supervision = lock(&entry.supervision)?;
-        let automatic_restart_planned = supervision.record_exit(
+        let (automatic_restart_planned, deferred_restart_planned) = supervision.record_exit(
             status,
             entry.registration.restart_policy,
             operator_hold,
             self.restart_stability_window,
         );
-        let health = HealthSnapshot::unhealthy(
-            false,
-            match entry.registration.health {
-                HealthCheckSpec::Process => None,
-                _ => Some(false),
-            },
-            format!(
-                "owned process tree exited{}",
-                status
-                    .code()
-                    .map_or_else(String::new, |code| format!(" with code {code}"))
-            ),
-        );
+        let health = if previous_state == LifecycleState::TerminationPending {
+            HealthSnapshot::unknown()
+        } else {
+            HealthSnapshot::unhealthy(
+                false,
+                match entry.registration.health {
+                    HealthCheckSpec::Process => None,
+                    _ => Some(false),
+                },
+                format!(
+                    "owned process tree exited{}",
+                    status
+                        .code()
+                        .map_or_else(String::new, |code| format!(" with code {code}"))
+                ),
+            )
+        };
         *lock(&entry.health)? = health;
 
         Ok(Some(ProcessExitEvent {
@@ -637,6 +674,7 @@ where
             exit_code: status.code(),
             successful: status.success(),
             automatic_restart_planned,
+            deferred_restart_planned,
         }))
     }
 
@@ -837,6 +875,7 @@ struct SupervisionState {
     last_exit_at_unix_ms: Option<u64>,
     restart_count: u32,
     automatic_restarts_in_episode: u32,
+    restart_after_termination: bool,
     last_owned_pids: Vec<u32>,
 }
 
@@ -850,12 +889,14 @@ impl SupervisionState {
             last_exit_at_unix_ms: None,
             restart_count: 0,
             automatic_restarts_in_episode: 0,
+            restart_after_termination: false,
             last_owned_pids: Vec::new(),
         }
     }
 
     fn request_running(&mut self, actor: Actor) {
         self.desired_state = DesiredState::Running;
+        self.restart_after_termination = false;
         if actor != Actor::Recovery {
             self.automatic_restarts_in_episode = 0;
         }
@@ -866,6 +907,7 @@ impl SupervisionState {
         self.started_at = None;
         self.started_at_unix_ms = None;
         self.automatic_restarts_in_episode = 0;
+        self.restart_after_termination = false;
         self.last_owned_pids.clear();
     }
 
@@ -873,9 +915,14 @@ impl SupervisionState {
         self.started_at = Some(Instant::now());
         self.started_at_unix_ms = Some(unix_milliseconds());
         self.last_owned_pids.clear();
+        self.restart_after_termination = false;
         if action == LifecycleAction::Restart {
             self.restart_count = self.restart_count.saturating_add(1);
         }
+    }
+
+    fn defer_restart_after_termination(&mut self) {
+        self.restart_after_termination = true;
     }
 
     fn record_exit(
@@ -884,7 +931,7 @@ impl SupervisionState {
         restart_policy: ServiceRestartPolicy,
         operator_hold: OperatorHold,
         stability_window: Duration,
-    ) -> bool {
+    ) -> (bool, bool) {
         if self
             .started_at
             .is_some_and(|started| started.elapsed() >= stability_window)
@@ -896,7 +943,12 @@ impl SupervisionState {
         self.last_exit_code = status.code();
         self.last_exit_at_unix_ms = Some(unix_milliseconds());
 
-        let automatic_restart_planned = restart_policy == ServiceRestartPolicy::OnFailure
+        let deferred_restart_planned = self.restart_after_termination
+            && self.desired_state == DesiredState::Running
+            && operator_hold != OperatorHold::Stopped;
+        self.restart_after_termination = false;
+        let automatic_restart_planned = !deferred_restart_planned
+            && restart_policy == ServiceRestartPolicy::OnFailure
             && !status.success()
             && self.desired_state == DesiredState::Running
             && operator_hold != OperatorHold::Stopped
@@ -904,7 +956,7 @@ impl SupervisionState {
         if automatic_restart_planned {
             self.automatic_restarts_in_episode = 1;
         }
-        automatic_restart_planned
+        (automatic_restart_planned, deferred_restart_planned)
     }
 }
 
@@ -1154,6 +1206,7 @@ mod tests {
         owned_pids: Arc<Mutex<Vec<u32>>>,
         exit_code: Arc<AtomicI32>,
         try_wait_count: Arc<AtomicU32>,
+        defer_stop_completion: Arc<AtomicBool>,
     }
 
     impl ProcessControl {
@@ -1165,6 +1218,10 @@ mod tests {
         fn tree_exited(&self, code: i32) {
             self.exit_code.store(code, Ordering::SeqCst);
             self.owned_pids.lock().expect("control lock").clear();
+        }
+
+        fn defer_stop_completion(&self) {
+            self.defer_stop_completion.store(true, Ordering::SeqCst);
         }
     }
 
@@ -1202,17 +1259,20 @@ mod tests {
 
         fn stop(&mut self, _grace: Duration) -> Result<TreeStopReport, Self::Error> {
             let before = self.owned_pids()?;
-            self.control
-                .owned_pids
-                .lock()
-                .map_err(|_| FakeError)?
-                .clear();
+            if !self.control.defer_stop_completion.load(Ordering::SeqCst) {
+                self.control
+                    .owned_pids
+                    .lock()
+                    .map_err(|_| FakeError)?
+                    .clear();
+            }
+            let after = self.owned_pids()?;
             Ok(TreeStopReport {
                 owned_pids_before: before,
-                owned_pids_after: Vec::new(),
+                owned_pids_after: after,
                 graceful_signal_sent: true,
                 graceful_signal_error: None,
-                forced: false,
+                forced: self.control.defer_stop_completion.load(Ordering::SeqCst),
             })
         }
     }
@@ -1239,6 +1299,10 @@ mod tests {
                 .expect("spawned control")
                 .clone()
         }
+
+        fn spawn_count(&self) -> usize {
+            self.controls.lock().expect("controls lock").len()
+        }
     }
 
     impl ProcessTreeSpawner for ControllableSpawner {
@@ -1250,6 +1314,7 @@ mod tests {
                 owned_pids: Arc::new(Mutex::new(vec![pid])),
                 exit_code: Arc::new(AtomicI32::new(0)),
                 try_wait_count: Arc::new(AtomicU32::new(0)),
+                defer_stop_completion: Arc::new(AtomicBool::new(false)),
             };
             self.controls
                 .lock()
@@ -1691,6 +1756,76 @@ mod tests {
         assert_eq!(
             registry.snapshots().expect("stopped snapshot")[0].desired_state,
             crate::domain::DesiredState::Stopped
+        );
+    }
+
+    #[test]
+    fn deferred_restart_waits_for_owned_tree_to_be_empty() {
+        let spawner = ControllableSpawner::new();
+        let registry = ServiceRegistry::new(
+            [registration(Vec::new())],
+            spawner.clone(),
+            FakePortInspector { occupied: false },
+            Arc::new(FakeHealthProbe),
+        )
+        .expect("valid registry");
+        registry
+            .start("fixture", Actor::UserCli, reason("initial start"))
+            .expect("start fixture");
+        let old_tree = spawner.latest();
+        old_tree.defer_stop_completion();
+
+        let outcome = registry
+            .restart("fixture", Actor::UserCli, reason("replace slow tree"))
+            .expect("restart accepted");
+
+        assert_eq!(outcome, super::RestartOutcome::TerminationPending);
+        assert_eq!(
+            spawner.spawn_count(),
+            1,
+            "replacement must not overlap old tree"
+        );
+        let pending = &registry.snapshots().expect("pending snapshot")[0];
+        assert_eq!(
+            pending.lifecycle,
+            crate::domain::LifecycleState::TerminationPending
+        );
+        assert_eq!(pending.desired_state, crate::domain::DesiredState::Running);
+
+        old_tree.tree_exited(1);
+        let event = registry
+            .refresh_services()
+            .expect("reconcile terminal tree")
+            .remove(0)
+            .process_exit
+            .expect("completion event");
+        assert!(event.deferred_restart_planned);
+        assert!(!event.automatic_restart_planned);
+        assert_eq!(
+            event.previous_state,
+            crate::domain::LifecycleState::TerminationPending
+        );
+        let completed = &registry.snapshots().expect("completed snapshot")[0];
+        assert_eq!(completed.lifecycle, crate::domain::LifecycleState::Stopped);
+        assert_eq!(
+            completed.health.status,
+            crate::application::HealthStatus::Unknown
+        );
+
+        assert_eq!(
+            registry
+                .restart(
+                    "fixture",
+                    Actor::Recovery,
+                    reason("deferred restart after termination")
+                )
+                .expect("start replacement"),
+            super::RestartOutcome::Started
+        );
+        assert_eq!(spawner.spawn_count(), 2);
+        assert_eq!(
+            registry.snapshots().expect("replacement snapshot")[0].lifecycle,
+            crate::domain::LifecycleState::Running
         );
     }
 

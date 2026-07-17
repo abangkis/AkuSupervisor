@@ -475,18 +475,25 @@ impl ServiceMonitor {
                         {
                             if let Err(error) = audited.record_process_exit(&process_exit) {
                                 eprintln!(
-                                    "process exit audit failed for {}: {error}; automatic restart suppressed",
+                                    "process exit audit failed for {}: {error}; planned restart suppressed",
                                     process_exit.service_id
                                 );
                                 continue;
                             }
-                            if process_exit.automatic_restart_planned {
+                            if process_exit.automatic_restart_planned
+                                || process_exit.deferred_restart_planned
+                            {
                                 let exit = process_exit.exit_code.map_or_else(
                                     || "without a numeric exit code".to_owned(),
                                     |code| format!("with code {code}"),
                                 );
+                                let restart_kind = if process_exit.deferred_restart_planned {
+                                    "deferred restart after forced termination completed"
+                                } else {
+                                    "automatic on-failure restart"
+                                };
                                 let reason = Reason::new(format!(
-                                    "automatic on-failure restart after process tree exited {exit}"
+                                    "{restart_kind} after process tree exited {exit}"
                                 ))
                                 .expect("bounded automatic restart reason");
                                 if let Err(error) = audited.mutate(
@@ -687,6 +694,9 @@ fn handle_line(control: &dyn SupervisorControl, line: &str) -> bool {
                     ControlMutationOutcome::AlreadyRunning => {
                         println!("already running: {service_id}");
                     }
+                    ControlMutationOutcome::TerminationPending => println!(
+                        "termination pending for {service_id}; ownership is retained until cleanup completes"
+                    ),
                     outcome => println!("start completed for {service_id}: {outcome:?}"),
                 },
                 Err(error) => eprintln!("start failed for {service_id}: {error}"),
@@ -700,6 +710,9 @@ fn handle_line(control: &dyn SupervisorControl, line: &str) -> bool {
                         ControlMutationOutcome::AlreadyStopped => {
                             println!("already stopped: {service_id}");
                         }
+                        ControlMutationOutcome::TerminationPending => println!(
+                            "termination pending for {service_id}; ownership is retained until cleanup completes"
+                        ),
                         outcome => println!("stop completed for {service_id}: {outcome:?}"),
                     }
                     print_shutdown_report(result.shutdown.as_ref());
@@ -740,7 +753,7 @@ fn print_status(control: &dyn SupervisorControl) {
         Ok(snapshots) => {
             println!();
             println!(
-                "SERVICE              STATE       DESIRED     HEALTH      ROOT PID   OWNED PIDS       HOLD"
+                "SERVICE              STATE                DESIRED     HEALTH      ROOT PID   OWNED PIDS       HOLD"
             );
             for snapshot in snapshots {
                 print_snapshot(&snapshot);
@@ -766,7 +779,7 @@ fn print_snapshot(snapshot: &ServiceSnapshot) {
             .join(",")
     };
     println!(
-        "{:<20} {:<11} {:<11} {:<11} {:<10} {:<16} {:?}",
+        "{:<20} {:<20} {:<11} {:<11} {:<10} {:<16} {:?}",
         snapshot.id,
         format!("{:?}", snapshot.lifecycle).to_lowercase(),
         format!("{:?}", snapshot.desired_state).to_lowercase(),

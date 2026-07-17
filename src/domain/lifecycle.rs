@@ -10,6 +10,7 @@ pub enum LifecycleState {
     Starting,
     Running,
     Stopping,
+    TerminationPending,
     Unhealthy,
     Failed,
 }
@@ -34,7 +35,14 @@ impl LifecycleState {
                     Self::Unhealthy,
                     Self::Running | Self::Stopping | Self::Failed
                 )
-                | (Self::Stopping, Self::Stopped | Self::Failed)
+                | (
+                    Self::Stopping,
+                    Self::Stopped | Self::TerminationPending | Self::Failed
+                )
+                | (
+                    Self::TerminationPending,
+                    Self::Stopping | Self::Stopped | Self::Failed
+                )
         )
     }
 
@@ -117,6 +125,21 @@ mod tests {
         );
         assert!(
             LifecycleState::Unhealthy
+                .transition_to(LifecycleState::Stopping)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn forced_cleanup_can_complete_asynchronously() {
+        let state = LifecycleState::Running
+            .transition_to(LifecycleState::Stopping)
+            .and_then(|state| state.transition_to(LifecycleState::TerminationPending))
+            .and_then(|state| state.transition_to(LifecycleState::Stopped));
+
+        assert_eq!(state, Ok(LifecycleState::Stopped));
+        assert!(
+            LifecycleState::TerminationPending
                 .transition_to(LifecycleState::Stopping)
                 .is_ok()
         );

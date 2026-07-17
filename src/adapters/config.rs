@@ -159,6 +159,8 @@ pub enum HealthCheck {
         #[serde(rename = "startupDeadlineMs")]
         startup_deadline_ms: u64,
         expect: BTreeMap<String, serde_json::Value>,
+        #[serde(default, rename = "diagnosticExpect")]
+        diagnostic_expect: BTreeMap<String, serde_json::Value>,
     },
 }
 
@@ -213,11 +215,13 @@ impl HealthCheck {
                 timeout_ms,
                 startup_deadline_ms,
                 expect,
+                diagnostic_expect,
             } => HealthCheckSpec::HttpJson {
                 url: url.clone(),
                 timeout: Duration::from_millis(*timeout_ms),
                 startup_deadline: Duration::from_millis(*startup_deadline_ms),
                 expect: expect.clone(),
+                diagnostic_expect: diagnostic_expect.clone(),
             },
         }
     }
@@ -542,6 +546,7 @@ fn validate_health(health: &HealthCheck, prefix: &str, issues: &mut Vec<ConfigIs
             timeout_ms,
             startup_deadline_ms,
             expect,
+            diagnostic_expect,
         } => {
             validate_http_fields(url, *timeout_ms, *startup_deadline_ms, prefix, issues);
             if expect.is_empty() {
@@ -553,12 +558,28 @@ fn validate_health(health: &HealthCheck, prefix: &str, issues: &mut Vec<ConfigIs
             }
             if expect
                 .values()
+                .chain(diagnostic_expect.values())
                 .any(|value| value.is_array() || value.is_object())
             {
                 issues.push(ConfigIssue::new(
                     format!("{prefix}.health.expect"),
                     "health_expect_not_shallow",
-                    "HTTP JSON expectations support shallow scalar fields only",
+                    "HTTP JSON required and diagnostic expectations support shallow scalar fields only",
+                ));
+            }
+            let overlapping = expect
+                .keys()
+                .filter(|key| diagnostic_expect.contains_key(*key))
+                .cloned()
+                .collect::<Vec<_>>();
+            if !overlapping.is_empty() {
+                issues.push(ConfigIssue::new(
+                    format!("{prefix}.health.diagnosticExpect"),
+                    "health_expect_overlap",
+                    format!(
+                        "diagnostic fields must not duplicate required fields: {}",
+                        overlapping.join(", ")
+                    ),
                 ));
             }
         }
@@ -896,6 +917,46 @@ mod tests {
         assert!(codes.contains(&"health_host_invalid".to_owned()));
         assert!(codes.contains(&"health_port_invalid".to_owned()));
         assert!(codes.contains(&"health_timeout_invalid".to_owned()));
+    }
+
+    #[test]
+    fn http_json_diagnostic_expect_is_optional_for_legacy_configs() {
+        let health: HealthCheck = serde_json::from_value(json!({
+            "type": "http-json",
+            "url": "http://127.0.0.1:49001/health",
+            "timeoutMs": 1000,
+            "startupDeadlineMs": 5000,
+            "expect": {"status": "ok"}
+        }))
+        .expect("legacy HTTP JSON health must parse");
+
+        match health {
+            HealthCheck::HttpJson {
+                diagnostic_expect, ..
+            } => assert!(diagnostic_expect.is_empty()),
+            other => panic!("expected HTTP JSON health, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn http_json_rejects_required_and_diagnostic_key_overlap() {
+        let (_directory, mut config) = valid_config();
+        let service = config.services.get_mut("fixture").expect("fixture service");
+        service.health = HealthCheck::HttpJson {
+            url: "http://127.0.0.1:49001/health".to_owned(),
+            timeout_ms: 1_000,
+            startup_deadline_ms: 5_000,
+            expect: BTreeMap::from([("status".to_owned(), json!("ok"))]),
+            diagnostic_expect: BTreeMap::from([("status".to_owned(), json!("stale"))]),
+        };
+
+        let codes = config
+            .validation_issues()
+            .into_iter()
+            .map(|issue| issue.code)
+            .collect::<Vec<_>>();
+
+        assert!(codes.contains(&"health_expect_overlap".to_owned()));
     }
 
     #[test]

@@ -498,6 +498,11 @@ starts successfully but misses its health contract remains Supervisor-owned and
 enters `unhealthy`, distinct from `spawn_failed`. A later successful probe
 returns it to `running`.
 
+Shallow `http-json` health separates stable readiness from volatile identity.
+`expect` fields are mandatory and fail health; optional `diagnosticExpect`
+fields (for example a frequently changing development version) only annotate
+health detail when they differ.
+
 The same monitor reconciles unexpected process-tree exits. It releases an owner
 only after the complete owned tree is empty and the launcher exit status is
 available; a launcher that exits while a watcher/server descendant remains is
@@ -516,6 +521,13 @@ object. It exposes `ownedPidsBefore`, `ownedPidsAfter`,
 object is persisted on the lifecycle journal record, so operators and MCP
 clients can distinguish cooperative shutdown from the bounded forced fallback
 without inferring it from elapsed time or service logs.
+
+If Windows accepts forced cleanup but the Job Object is still draining after
+the bounded confirmation interval, the action returns `termination_pending`
+instead of a false final failure. AkuSupervisor keeps the owner, records the
+later terminal completion, and for restart waits to spawn the replacement
+until the old tree is proven empty. Failed lifecycle records include a bounded,
+single-line, known-secret-redacted `errorDetail`.
 
 ## Project documents
 

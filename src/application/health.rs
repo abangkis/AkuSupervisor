@@ -25,6 +25,7 @@ pub enum HealthCheckSpec {
         timeout: Duration,
         startup_deadline: Duration,
         expect: BTreeMap<String, serde_json::Value>,
+        diagnostic_expect: BTreeMap<String, serde_json::Value>,
     },
 }
 

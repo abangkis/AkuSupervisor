@@ -794,6 +794,18 @@ profile and deployment-oriented locked GeoLibre profile were removed.
 Registration remains manual; locked validation is an explicit workflow outside
 the default development supervisor.
 
+#### 2026-07-17 incident hardening
+
+- [x] classify an accepted forced termination whose Job Object is still
+  draining as `termination_pending`, retain the native owner, and finalize it
+  from the monitor instead of returning a false terminal timeout;
+- [x] defer an explicit restart until the prior owned tree is proven empty;
+- [x] persist bounded, single-line, known-secret-redacted lifecycle failure
+  detail in the journal; and
+- [x] separate stable HTTP JSON readiness (`expect`) from optional volatile
+  development identity (`diagnosticExpect`) without weakening the hard
+  contract.
+
 ### Phase 9 - Linux and macOS platform adapters
 
 Status: **Boundary prepared; implementation deferred until the Windows MVP is stable**
