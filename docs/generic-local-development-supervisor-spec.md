@@ -410,9 +410,10 @@ Supported v0 health types:
 
 - `process`: owned root or descendant process is alive;
 - `http-status`: endpoint returns the configured status;
-- `http-json`: endpoint returns JSON matching a shallow set of required fields,
-  plus optional diagnostic identity fields whose mismatch does not fail
-  readiness.
+- `http-json`: endpoint returns JSON matching required fields using either the
+  backward-compatible shallow top-level scalar mode or explicit RFC 6901 JSON
+  Pointer paths; optional diagnostic identity fields use the same selected
+  lookup mode and their mismatch does not fail readiness.
 
 Service status distinguishes:
 
@@ -431,7 +432,12 @@ a later passing observation returns it to `running`.
 For `http-json`, `expect` is the hard readiness contract.
 `diagnosticExpect` is for volatile development identity such as a build
 version. Diagnostic mismatches remain visible in `health.detail` while status
-stays `healthy`; keys must not overlap the hard contract.
+stays `healthy`; keys must not overlap the hard contract. Omitted `pathMode`
+means `shallow`. `pathMode: "json-pointer"` supports nested scalar, array, and
+object comparisons without requiring source changes in the supervised
+application. Semantic HTTP checks remain restricted to explicit loopback
+`http://` URLs; HTTPS-only services use TCP readiness or a separate loopback
+health endpoint.
 
 The loopback HTTP adapter accepts bounded HTTP/1.1 responses with either a
 direct body or standard chunked transfer framing. Chunk sizes and terminators

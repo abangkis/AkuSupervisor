@@ -1,5 +1,8 @@
 //! Operating-system integration boundary.
 
+#[cfg(windows)]
+pub mod host;
+
 #[cfg(target_os = "linux")]
 pub mod linux;
 #[cfg(target_os = "macos")]

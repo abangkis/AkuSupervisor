@@ -498,10 +498,15 @@ starts successfully but misses its health contract remains Supervisor-owned and
 enters `unhealthy`, distinct from `spawn_failed`. A later successful probe
 returns it to `running`.
 
-Shallow `http-json` health separates stable readiness from volatile identity.
-`expect` fields are mandatory and fail health; optional `diagnosticExpect`
-fields (for example a frequently changing development version) only annotate
-health detail when they differ.
+`http-json` health separates stable readiness from volatile identity. Its
+default `pathMode` is `shallow`, preserving the original top-level scalar
+contract. Set `pathMode` to `json-pointer` when an existing application exposes
+readiness under nested JSON paths. `expect` entries are mandatory and fail
+health; optional `diagnosticExpect` entries (for example a frequently changing
+development version) only annotate health detail when they differ. The current
+semantic HTTP probes accept loopback `http://` endpoints; use `tcp-connect` or
+expose a separate loopback HTTP health endpoint for an HTTPS-only development
+server.
 
 The same monitor reconciles unexpected process-tree exits. It releases an owner
 only after the complete owned tree is empty and the launcher exit status is

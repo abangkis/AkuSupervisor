@@ -180,7 +180,8 @@ Use HTTP status when an existing endpoint is available without source changes:
 }
 ```
 
-Use shallow HTTP JSON matching for a stronger existing contract:
+Use shallow HTTP JSON matching for a stronger existing contract. Omitting
+`pathMode` preserves this backward-compatible top-level scalar behavior:
 
 ```json
 {
@@ -207,6 +208,41 @@ does not fail readiness. Keep runtime, protocol/bridge contract, provider, and
 other compatibility requirements in `expect`; use `diagnosticExpect` for a
 development build/version that changes frequently. A field may not appear in
 both maps.
+
+When an application already exposes nested health JSON, select RFC 6901 JSON
+Pointer lookup instead of modifying its codebase solely for AkuSupervisor:
+
+```json
+{
+  "type": "http-json",
+  "url": "http://127.0.0.1:8090/health",
+  "timeoutMs": 3000,
+  "startupDeadlineMs": 20000,
+  "pathMode": "json-pointer",
+  "expect": {
+    "/status/ready": true,
+    "/runtime/name": "go",
+    "/contracts/bridge": {
+      "major": 2,
+      "compatible": true
+    }
+  },
+  "diagnosticExpect": {
+    "/build/version": "1.0.0-dev.8"
+  }
+}
+```
+
+An empty JSON Pointer selects the entire response document; every non-empty
+pointer must begin with `/`. Use `~1` for a literal `/` and `~0` for a literal
+`~` in an object key. Pointer mode may compare scalar, array, or object values.
+Shallow mode intentionally accepts only top-level scalar values, so an existing
+configuration cannot silently change meaning.
+
+Semantic HTTP probes currently accept explicit loopback `http://` URLs only.
+For an HTTPS-only development server, use `tcp-connect` to prove listener
+readiness or expose a separate loopback HTTP health endpoint. AkuSupervisor
+does not weaken TLS verification as a health-check convenience.
 
 `startupDeadlineMs` is also the lifecycle budget used by the CLI while waiting
 for start/restart. A slow but valid startup therefore does not inherit the

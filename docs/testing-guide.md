@@ -271,10 +271,12 @@ active file and bounds output to 1,000 lines.
 
 ## 6. Runtime health
 
-AkuSupervisor supports `process`, `http-status`, and shallow `http-json`
-checks. HTTP health URLs must use an explicit loopback IP and port. Start and
-restart retry until `startupDeadlineMs`; a one-second background monitor then
-updates lifecycle and cached health independently of `status` reads.
+AkuSupervisor supports `process`, `http-status`, and `http-json` checks. HTTP
+health URLs must use an explicit loopback IP and port. `http-json` defaults to
+shallow top-level scalar matching; opt-in `pathMode: "json-pointer"` uses RFC
+6901 paths and can compare nested JSON values. Start and restart retry until
+`startupDeadlineMs`; a one-second background monitor then updates lifecycle
+and cached health independently of `status` reads.
 
 Verify the live snapshot from a second terminal:
 
@@ -294,6 +296,9 @@ the required `expect` fields intact. The snapshot must stay `healthy` and place
 the version mismatch in `health.detail`. Changing a required field must still
 produce `unhealthy`. Lifecycle failures persist the bounded single-line detail
 as `errorDetail` in `supervisor.jsonl`; configured secrets must be redacted.
+Repeat the contract in JSON Pointer mode with a nested object, the empty root
+pointer, and a key that uses `~0` or `~1`; invalid pointers and shallow nested
+values must fail configuration validation before a process is started.
 
 The HTTP adapter also decodes bounded `Transfer-Encoding: chunked` responses.
 The canonical `geofu-plugin` service exercises this path through Node's native

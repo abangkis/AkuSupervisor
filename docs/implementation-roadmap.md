@@ -421,8 +421,9 @@ promotion.
 
 Status: **Completed and live-validated on 2026-07-14**
 
-- [x] `process`, loopback `http-status`, and shallow `http-json` checks map to a
-  platform-neutral health contract;
+- [x] `process`, loopback `http-status`, and `http-json` checks map to a
+  platform-neutral health contract; `http-json` preserves shallow scalar
+  matching by default and supports opt-in RFC 6901 nested lookup;
 - [x] start and restart wait up to `startupDeadlineMs` and report
   `health_failed` separately from `spawn_failed`;
 - [x] an unhealthy process remains inside the authoritative ownership boundary;
@@ -739,7 +740,9 @@ ownership remains valid when the resulting shutdown evidence reports
 Application integration recipes:
 
 - [x] Go `net/http` graceful shutdown is documented, application-tested, and
-  live-validated on Windows; Linux amd64 and macOS arm64 are compile-checked;
+  live-validated on Windows; the independent Rust-based Conformance runner now
+  repeats the full native gate and observes Ctrl+Break as Go `SIGINT` /
+  `os.Interrupt`; Linux amd64 and macOS arm64 are compile-checked;
 - [x] finalize the Node classification and candidate contract: distinguish an
   application-owned server from a tool-owned development server and one-shot
   build, handle Windows `SIGBREAK` plus POSIX `SIGTERM`, and require
@@ -752,7 +755,11 @@ Application integration recipes:
   complete cleanup evidence, no forced fallback, listener release, and
   unrelated-process preservation; Linux and macOS remain separate future
   adapter tuples;
-- [ ] certify a reusable Rust managed-application recipe; and
+- [x] certify a reusable Rust managed-application recipe independently of
+  AkuSupervisor internals; the Rust-based Conformance runner builds a direct
+  standard-library fixture, whose deterministic and native Windows gates pass
+  with observed `CTRL_BREAK_EVENT`, complete cleanup evidence, no forced
+  fallback, listener release, and unrelated-process preservation; and
 - [ ] certify Kotlin/JVM shutdown-hook and Windows console behavior.
 
 Recipe maintenance and evidence rules are defined in
@@ -804,7 +811,9 @@ the default development supervisor.
   detail in the journal; and
 - [x] separate stable HTTP JSON readiness (`expect`) from optional volatile
   development identity (`diagnosticExpect`) without weakening the hard
-  contract.
+  contract; and
+- [x] add opt-in RFC 6901 JSON Pointer matching for nested existing health
+  responses while preserving shallow scalar matching as the default.
 
 ### Phase 9 - Linux and macOS platform adapters
 
@@ -815,8 +824,9 @@ The shared contracts and proposed adapter strategies are maintained in
 
 Deliverables:
 
-- extract the shared foreground interaction/API loop from the concrete Windows
-  registry and console-shutdown composition before adding a second backend;
+- [x] extract the shared foreground interaction/API loop from the concrete
+  Windows registry, console-shutdown, secure-entropy, and token-permission
+  composition before adding a second backend;
 - implement Linux and macOS process ownership behind `ProcessTreeSpawner` and
   `ManagedProcessTree` without changing lifecycle application code;
 - implement platform-native port diagnostics and shutdown signals;

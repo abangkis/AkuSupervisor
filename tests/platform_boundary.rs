@@ -26,6 +26,7 @@ fn shared_control_plane_does_not_import_windows_implementation_details() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     for relative in [
         "src/adapters/control_http.rs",
+        "src/adapters/foreground.rs",
         "src/adapters/runtime_token.rs",
         "src/application/control_api.rs",
         "src/cli.rs",
@@ -44,6 +45,20 @@ fn shared_control_plane_does_not_import_windows_implementation_details() {
                 path.display()
             );
         }
+    }
+}
+
+#[test]
+fn foreground_host_does_not_construct_product_specific_cooperative_adapters() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let path = root.join("src/adapters/foreground.rs");
+    let source = fs::read_to_string(&path).expect("read foreground host source");
+    for forbidden in ["AkuBridgeReloadClient", "adapters::aku_bridge_reload"] {
+        assert!(
+            !source.contains(forbidden),
+            "{} imports product-specific adapter {forbidden}",
+            path.display()
+        );
     }
 }
 

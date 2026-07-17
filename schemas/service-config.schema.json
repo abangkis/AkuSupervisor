@@ -231,7 +231,7 @@
             },
             "url": {
               "type": "string",
-              "pattern": "^https?://"
+              "pattern": "^http://"
             },
             "expectedStatus": {
               "type": "integer",
@@ -264,7 +264,7 @@
             },
             "url": {
               "type": "string",
-              "pattern": "^https?://"
+              "pattern": "^http://"
             },
             "timeoutMs": {
               "type": "integer",
@@ -274,20 +274,19 @@
               "type": "integer",
               "minimum": 1
             },
+            "pathMode": {
+              "description": "Omit for backward-compatible shallow scalar fields, or use json-pointer for RFC 6901 nested lookup.",
+              "default": "shallow",
+              "enum": ["shallow", "json-pointer"]
+            },
             "expect": {
               "type": "object",
-              "minProperties": 1,
-              "additionalProperties": {
-                "type": ["string", "number", "integer", "boolean", "null"]
-              }
+              "minProperties": 1
             },
             "diagnosticExpect": {
               "description": "Optional volatile identity fields. Mismatches are reported in health detail but do not fail readiness.",
               "type": "object",
-              "minProperties": 1,
-              "additionalProperties": {
-                "type": ["string", "number", "integer", "boolean", "null"]
-              }
+              "minProperties": 1
             }
           }
         }

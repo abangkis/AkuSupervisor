@@ -24,9 +24,28 @@ pub enum HealthCheckSpec {
         url: String,
         timeout: Duration,
         startup_deadline: Duration,
+        path_mode: JsonPathMode,
         expect: BTreeMap<String, serde_json::Value>,
         diagnostic_expect: BTreeMap<String, serde_json::Value>,
     },
+}
+
+/// How keys in an HTTP JSON expectation map locate an observed value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum JsonPathMode {
+    /// Backward-compatible lookup of one top-level object field.
+    #[default]
+    Shallow,
+    /// RFC 6901 JSON Pointer lookup, such as `/runtime/version`.
+    JsonPointer,
+}
+
+impl JsonPathMode {
+    #[must_use]
+    pub const fn is_shallow(&self) -> bool {
+        matches!(self, Self::Shallow)
+    }
 }
 
 impl HealthCheckSpec {

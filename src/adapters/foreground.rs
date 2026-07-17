@@ -9,10 +9,10 @@ use std::thread;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use crate::adapters::aku_bridge_reload::AkuBridgeReloadClient;
 use crate::adapters::config::{ConfigError, SupervisorConfig};
 use crate::adapters::config_path::ResolvedConfigPath;
 use crate::adapters::control_http::{ControlHttpError, ControlHttpServer};
+use crate::adapters::cooperative_extensions::build as build_cooperative_extensions;
 use crate::adapters::development_shutdown::{DevelopmentShutdown, DevelopmentShutdownError};
 use crate::adapters::http_health::LoopbackTransportHealthProbe;
 use crate::adapters::journal::{AuditedControl, FileJournal, FileJournalError};
@@ -20,13 +20,13 @@ use crate::adapters::registration_events::RegistrationAuditTail;
 use crate::adapters::runtime_token::{RuntimeToken, RuntimeTokenError, resolve_token_path};
 use crate::adapters::service_logs::ServiceLogStore;
 use crate::application::{
-    ControlAction, ControlMutationOutcome, CooperativeActionControl, CooperativeActionError,
-    RegistryBuildError, RegistryReconciliationStatus, ServiceRegistry, ServiceSnapshot,
-    SupervisorControl,
+    ControlAction, ControlMutationOutcome, CooperativeActionError, RegistryBuildError,
+    RegistryReconciliationStatus, ServiceSnapshot, SupervisorControl,
 };
 use crate::domain::{Actor, Reason};
-use crate::platform::windows::{
-    ConsoleShutdown, ConsoleShutdownError, WindowsPortInspector, WindowsProcessSpawner,
+use crate::platform::host::{
+    HostRegistry, HostShutdown, HostShutdownError, HostTokenPermissionError, create_registry,
+    generate_control_token, harden_runtime_token_permissions, install_shutdown,
 };
 
 const INPUT_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -39,8 +39,6 @@ const INTERACTIVE_HELP: &str = "Commands:\n\
   restart <service> [reason]\n\
   help\n\
   quit";
-
-type WindowsRegistry = ServiceRegistry<WindowsProcessSpawner, WindowsPortInspector>;
 
 /// Runs the user-visible foreground supervisor until quit, EOF, or Ctrl+C.
 ///
@@ -58,13 +56,9 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
     config.validate().map_err(ForegroundError::Config)?;
     let fingerprint = config.fingerprint().map_err(ForegroundError::Config)?;
     let token_path = resolve_token_path(config_path, &config.control.token_file);
-    let token = RuntimeToken::load_or_create(
-        &token_path,
-        crate::platform::windows::generate_control_token,
-    )
-    .map_err(ForegroundError::RuntimeToken)?;
-    crate::platform::windows::harden_runtime_token_permissions(&token_path)
-        .map_err(ForegroundError::TokenPermissions)?;
+    let token = RuntimeToken::load_or_create(&token_path, generate_control_token)
+        .map_err(ForegroundError::RuntimeToken)?;
+    harden_runtime_token_permissions(&token_path).map_err(ForegroundError::TokenPermissions)?;
     let runtime_directory = token_path
         .parent()
         .ok_or_else(|| ForegroundError::RuntimeLayout(token_path.clone()))?;
@@ -78,15 +72,13 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
         .map_err(ForegroundError::Journal)?,
     );
     let registry = Arc::new(
-        WindowsRegistry::new(
+        create_registry(
             config.service_registrations_with_logs(&runtime_services_directory),
-            WindowsProcessSpawner,
-            WindowsPortInspector,
             Arc::new(LoopbackTransportHealthProbe),
         )
         .map_err(ForegroundError::RegistryBuild)?,
     );
-    let shutdown = ConsoleShutdown::install().map_err(ForegroundError::Console)?;
+    let shutdown = install_shutdown().map_err(ForegroundError::Console)?;
     let development_shutdown =
         DevelopmentShutdown::from_environment().map_err(ForegroundError::DevelopmentShutdown)?;
     let registry_control: Arc<dyn SupervisorControl> = registry.clone();
@@ -99,8 +91,10 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
         &runtime_services_directory,
         config.services.keys().cloned(),
     ));
-    let (cooperative, cooperative_audit_path) =
-        build_cooperative_control(&config, runtime_directory, &fingerprint)?;
+    let cooperative_extensions =
+        build_cooperative_extensions(&config, runtime_directory, &fingerprint)
+            .map_err(ForegroundError::CooperativeAction)?;
+    let cooperative_audit_path = cooperative_extensions.audit_path;
     let reconciliation = Arc::new(RegistryReconciliationStatus::new(fingerprint.clone()));
     let mut control_server = ControlHttpServer::start(
         &config.control.host,
@@ -108,7 +102,7 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
         token,
         config.control.mcp.clone(),
         Arc::clone(&control),
-        cooperative,
+        cooperative_extensions.control,
         journal,
         Arc::clone(&logs),
         Arc::clone(&reconciliation),
@@ -167,7 +161,7 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
 
 #[allow(clippy::too_many_arguments)]
 fn start_runtime_monitors(
-    registry: &Arc<WindowsRegistry>,
+    registry: &Arc<HostRegistry>,
     audited: Arc<AuditedControl>,
     logs: Arc<ServiceLogStore>,
     config_path: &std::path::Path,
@@ -264,7 +258,7 @@ struct ConfigMonitor {
 impl ConfigMonitor {
     #[allow(clippy::too_many_arguments)]
     fn start(
-        registry: Arc<WindowsRegistry>,
+        registry: Arc<HostRegistry>,
         audited: Arc<AuditedControl>,
         logs: Arc<ServiceLogStore>,
         config_path: PathBuf,
@@ -360,7 +354,7 @@ impl Drop for ConfigMonitor {
 
 #[allow(clippy::too_many_arguments)]
 fn reconcile_configuration(
-    registry: &WindowsRegistry,
+    registry: &HostRegistry,
     audited: &AuditedControl,
     logs: &ServiceLogStore,
     config_path: &std::path::Path,
@@ -460,7 +454,7 @@ struct ServiceMonitor {
 }
 
 impl ServiceMonitor {
-    fn start(registry: Arc<WindowsRegistry>, audited: Arc<AuditedControl>) -> Self {
+    fn start(registry: Arc<HostRegistry>, audited: Arc<AuditedControl>) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
         let worker = thread::spawn(move || {
@@ -548,7 +542,7 @@ impl Drop for ServiceMonitor {
 
 fn wait_for_shutdown(
     control: &dyn SupervisorControl,
-    shutdown: &ConsoleShutdown,
+    shutdown: &HostShutdown,
     development_shutdown: &DevelopmentShutdown,
 ) -> Result<ShutdownCause, ForegroundError> {
     let input_receiver = if development_shutdown.request_path().is_none() {
@@ -639,31 +633,6 @@ fn print_startup(
         println!("Development watcher signal: {}", path.display());
     }
     println!("Mode: visible interactive supervisor (Phase 5 cooperative-action checkpoint)");
-}
-
-fn build_cooperative_control(
-    config: &SupervisorConfig,
-    runtime_directory: &std::path::Path,
-    fingerprint: &str,
-) -> Result<(Option<Arc<dyn CooperativeActionControl>>, PathBuf), ForegroundError> {
-    let audit_path = runtime_directory.join("cooperative-actions.jsonl");
-    let control = config
-        .cooperative_actions
-        .aku_bridge_reload
-        .as_ref()
-        .map(|reload| {
-            AkuBridgeReloadClient::new(
-                &reload.sidecar_origin,
-                Duration::from_millis(reload.timeout_ms),
-                Duration::from_millis(reload.poll_interval_ms),
-                &audit_path,
-                fingerprint.to_owned(),
-            )
-            .map(|client| Arc::new(client) as Arc<dyn CooperativeActionControl>)
-        })
-        .transpose()
-        .map_err(ForegroundError::CooperativeAction)?;
-    Ok((control, audit_path))
 }
 
 fn read_input(sender: &mpsc::Sender<InputEvent>) {
@@ -952,11 +921,11 @@ pub enum ForegroundError {
     Config(ConfigError),
     RegistryBuild(RegistryBuildError),
     RuntimeToken(RuntimeTokenError),
-    TokenPermissions(crate::platform::windows::TokenPermissionError),
+    TokenPermissions(HostTokenPermissionError),
     Journal(FileJournalError),
     CooperativeAction(CooperativeActionError),
     ControlApi(ControlHttpError),
-    Console(ConsoleShutdownError),
+    Console(HostShutdownError),
     DevelopmentShutdown(DevelopmentShutdownError),
     Input(io::Error),
     Cleanup(Vec<String>),

@@ -5,7 +5,7 @@ use std::net::{IpAddr, SocketAddr, TcpStream};
 use crate::adapters::http_response::decode_chunked_body;
 use crate::adapters::http_response::{HttpResponse, parse_response};
 
-use crate::application::{HealthCheckSpec, HealthProbe, TransportHealth};
+use crate::application::{HealthCheckSpec, HealthProbe, JsonPathMode, TransportHealth};
 
 const MAX_RESPONSE_BYTES: u64 = 1024 * 1024;
 
@@ -52,6 +52,7 @@ impl HealthProbe for LoopbackTransportHealthProbe {
             },
             HealthCheckSpec::HttpJson {
                 url,
+                path_mode,
                 expect,
                 diagnostic_expect,
                 ..
@@ -68,7 +69,9 @@ impl HealthProbe for LoopbackTransportHealthProbe {
                         };
                     }
                     match serde_json::from_slice::<serde_json::Value>(&response.body) {
-                        Ok(body) => evaluate_json_body(&body, expect, diagnostic_expect),
+                        Ok(body) => {
+                            evaluate_json_body(&body, *path_mode, expect, diagnostic_expect)
+                        }
                         Err(error) => TransportHealth {
                             transport_ready: true,
                             healthy: false,
@@ -84,11 +87,12 @@ impl HealthProbe for LoopbackTransportHealthProbe {
 
 fn evaluate_json_body(
     body: &serde_json::Value,
+    path_mode: JsonPathMode,
     expect: &std::collections::BTreeMap<String, serde_json::Value>,
     diagnostic_expect: &std::collections::BTreeMap<String, serde_json::Value>,
 ) -> TransportHealth {
-    let mismatches = json_mismatches(body, expect);
-    let diagnostic_mismatches = json_mismatches(body, diagnostic_expect);
+    let mismatches = json_mismatches(body, path_mode, expect);
+    let diagnostic_mismatches = json_mismatches(body, path_mode, diagnostic_expect);
     TransportHealth {
         transport_ready: true,
         healthy: mismatches.is_empty(),
@@ -125,12 +129,16 @@ fn evaluate_json_body(
 
 fn json_mismatches(
     body: &serde_json::Value,
+    path_mode: JsonPathMode,
     expectations: &std::collections::BTreeMap<String, serde_json::Value>,
 ) -> Vec<String> {
     expectations
         .iter()
         .filter_map(|(key, expected)| {
-            let observed = body.get(key);
+            let observed = match path_mode {
+                JsonPathMode::Shallow => body.get(key),
+                JsonPathMode::JsonPointer => body.pointer(key),
+            };
             (observed != Some(expected)).then(|| match observed {
                 Some(_) => format!("{key}: value did not match"),
                 None => format!("{key}: field was missing"),
@@ -227,7 +235,7 @@ mod tests {
     use std::net::TcpListener;
     use std::time::Duration;
 
-    use crate::application::{HealthCheckSpec, HealthProbe};
+    use crate::application::{HealthCheckSpec, HealthProbe, JsonPathMode};
 
     use super::{
         LoopbackTransportHealthProbe, connect_tcp, decode_chunked_body, evaluate_json_body,
@@ -305,7 +313,7 @@ mod tests {
         ]);
         let diagnostic = BTreeMap::from([("version".to_owned(), serde_json::json!("1.0.0-dev.8"))]);
 
-        let result = evaluate_json_body(&body, &required, &diagnostic);
+        let result = evaluate_json_body(&body, JsonPathMode::Shallow, &required, &diagnostic);
 
         assert!(result.transport_ready);
         assert!(result.healthy);
@@ -321,12 +329,38 @@ mod tests {
         let required = BTreeMap::from([("status".to_owned(), serde_json::json!("ok"))]);
         let diagnostic = BTreeMap::from([("version".to_owned(), serde_json::json!("dev.8"))]);
 
-        let result = evaluate_json_body(&body, &required, &diagnostic);
+        let result = evaluate_json_body(&body, JsonPathMode::Shallow, &required, &diagnostic);
 
         assert!(!result.healthy);
         assert_eq!(
             result.detail,
             "HTTP JSON required mismatch: status: value did not match; diagnostic mismatch: version: value did not match"
         );
+    }
+
+    #[test]
+    fn json_pointer_mode_matches_nested_objects_and_escaped_tokens() {
+        let body = serde_json::json!({
+            "runtime": {"version": {"major": 1}},
+            "bridge/status": "ready"
+        });
+        let required = BTreeMap::from([
+            (String::new(), body.clone()),
+            (
+                "/runtime/version".to_owned(),
+                serde_json::json!({"major": 1}),
+            ),
+            ("/bridge~1status".to_owned(), serde_json::json!("ready")),
+        ]);
+
+        let result = evaluate_json_body(
+            &body,
+            JsonPathMode::JsonPointer,
+            &required,
+            &BTreeMap::new(),
+        );
+
+        assert!(result.healthy);
+        assert_eq!(result.detail, "HTTP JSON matched 3 expected field(s)");
     }
 }

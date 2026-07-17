@@ -28,7 +28,9 @@ pub use cooperative_operations::{
     CooperativeOperationError, CooperativeOperationManager, CooperativeOperationSnapshot,
     CooperativeOperationStatus,
 };
-pub use health::{HealthCheckSpec, HealthProbe, HealthSnapshot, HealthStatus, TransportHealth};
+pub use health::{
+    HealthCheckSpec, HealthProbe, HealthSnapshot, HealthStatus, JsonPathMode, TransportHealth,
+};
 pub use platform_ports::{
     LaunchSpec, ManagedProcessTree, NetworkFamily, PortDiagnostic, PortInspector, PortOccupant,
     ProcessTreeSpawner, ShutdownSignal, TreeStopReport,

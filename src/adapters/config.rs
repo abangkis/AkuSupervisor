@@ -8,7 +8,9 @@ use serde::de::{MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::application::{HealthCheckSpec, LaunchSpec, ServiceRegistration, ServiceRestartPolicy};
+use crate::application::{
+    HealthCheckSpec, JsonPathMode, LaunchSpec, ServiceRegistration, ServiceRestartPolicy,
+};
 
 pub const CONFIG_VERSION: u32 = 1;
 
@@ -158,6 +160,12 @@ pub enum HealthCheck {
         timeout_ms: u64,
         #[serde(rename = "startupDeadlineMs")]
         startup_deadline_ms: u64,
+        #[serde(
+            default,
+            rename = "pathMode",
+            skip_serializing_if = "JsonPathMode::is_shallow"
+        )]
+        path_mode: JsonPathMode,
         expect: BTreeMap<String, serde_json::Value>,
         #[serde(default, rename = "diagnosticExpect")]
         diagnostic_expect: BTreeMap<String, serde_json::Value>,
@@ -214,12 +222,14 @@ impl HealthCheck {
                 url,
                 timeout_ms,
                 startup_deadline_ms,
+                path_mode,
                 expect,
                 diagnostic_expect,
             } => HealthCheckSpec::HttpJson {
                 url: url.clone(),
                 timeout: Duration::from_millis(*timeout_ms),
                 startup_deadline: Duration::from_millis(*startup_deadline_ms),
+                path_mode: *path_mode,
                 expect: expect.clone(),
                 diagnostic_expect: diagnostic_expect.clone(),
             },
@@ -545,17 +555,32 @@ fn validate_health(health: &HealthCheck, prefix: &str, issues: &mut Vec<ConfigIs
             url,
             timeout_ms,
             startup_deadline_ms,
+            path_mode,
             expect,
             diagnostic_expect,
         } => {
             validate_http_fields(url, *timeout_ms, *startup_deadline_ms, prefix, issues);
-            if expect.is_empty() {
-                issues.push(ConfigIssue::new(
-                    format!("{prefix}.health.expect"),
-                    "health_expect_empty",
-                    "HTTP JSON health expectations must not be empty",
-                ));
-            }
+            validate_http_json_expectations(*path_mode, expect, diagnostic_expect, prefix, issues);
+        }
+    }
+}
+
+fn validate_http_json_expectations(
+    path_mode: JsonPathMode,
+    expect: &BTreeMap<String, serde_json::Value>,
+    diagnostic_expect: &BTreeMap<String, serde_json::Value>,
+    prefix: &str,
+    issues: &mut Vec<ConfigIssue>,
+) {
+    if expect.is_empty() {
+        issues.push(ConfigIssue::new(
+            format!("{prefix}.health.expect"),
+            "health_expect_empty",
+            "HTTP JSON health expectations must not be empty",
+        ));
+    }
+    match path_mode {
+        JsonPathMode::Shallow => {
             if expect
                 .values()
                 .chain(diagnostic_expect.values())
@@ -564,26 +589,62 @@ fn validate_health(health: &HealthCheck, prefix: &str, issues: &mut Vec<ConfigIs
                 issues.push(ConfigIssue::new(
                     format!("{prefix}.health.expect"),
                     "health_expect_not_shallow",
-                    "HTTP JSON required and diagnostic expectations support shallow scalar fields only",
-                ));
-            }
-            let overlapping = expect
-                .keys()
-                .filter(|key| diagnostic_expect.contains_key(*key))
-                .cloned()
-                .collect::<Vec<_>>();
-            if !overlapping.is_empty() {
-                issues.push(ConfigIssue::new(
-                    format!("{prefix}.health.diagnosticExpect"),
-                    "health_expect_overlap",
-                    format!(
-                        "diagnostic fields must not duplicate required fields: {}",
-                        overlapping.join(", ")
-                    ),
+                    "shallow HTTP JSON expectations support scalar fields only",
                 ));
             }
         }
+        JsonPathMode::JsonPointer => {
+            for (field, expectations) in
+                [("expect", expect), ("diagnosticExpect", diagnostic_expect)]
+            {
+                for pointer in expectations.keys() {
+                    if !valid_json_pointer(pointer) {
+                        issues.push(ConfigIssue::new(
+                            format!("{prefix}.health.{field}"),
+                            "health_json_pointer_invalid",
+                            format!("invalid RFC 6901 JSON Pointer: {pointer}"),
+                        ));
+                    }
+                }
+            }
+        }
     }
+    let overlapping = expect
+        .keys()
+        .filter(|key| diagnostic_expect.contains_key(*key))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !overlapping.is_empty() {
+        issues.push(ConfigIssue::new(
+            format!("{prefix}.health.diagnosticExpect"),
+            "health_expect_overlap",
+            format!(
+                "diagnostic fields must not duplicate required fields: {}",
+                overlapping.join(", ")
+            ),
+        ));
+    }
+}
+
+fn valid_json_pointer(pointer: &str) -> bool {
+    if pointer.is_empty() {
+        return true;
+    }
+    if !pointer.starts_with('/') {
+        return false;
+    }
+    let bytes = pointer.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'~' {
+            index += 1;
+            if index >= bytes.len() || !matches!(bytes[index], b'0' | b'1') {
+                return false;
+            }
+        }
+        index += 1;
+    }
+    true
 }
 
 fn validate_http_fields(
@@ -750,6 +811,8 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use serde_json::json;
+
+    use crate::application::JsonPathMode;
 
     use super::{
         CONFIG_VERSION, ConfigError, ConfigIssue, ConsoleEvents, ControlConfig,
@@ -946,6 +1009,7 @@ mod tests {
             url: "http://127.0.0.1:49001/health".to_owned(),
             timeout_ms: 1_000,
             startup_deadline_ms: 5_000,
+            path_mode: JsonPathMode::Shallow,
             expect: BTreeMap::from([("status".to_owned(), json!("ok"))]),
             diagnostic_expect: BTreeMap::from([("status".to_owned(), json!("stale"))]),
         };
@@ -957,6 +1021,40 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert!(codes.contains(&"health_expect_overlap".to_owned()));
+    }
+
+    #[test]
+    fn http_json_pointer_accepts_nested_values_and_rejects_invalid_escape() {
+        let (_directory, mut config) = valid_config();
+        let service = config.services.get_mut("fixture").expect("fixture service");
+        service.health = HealthCheck::HttpJson {
+            url: "http://127.0.0.1:49001/health".to_owned(),
+            timeout_ms: 1_000,
+            startup_deadline_ms: 5_000,
+            path_mode: JsonPathMode::JsonPointer,
+            expect: BTreeMap::from([("/runtime/version".to_owned(), json!({"major": 1}))]),
+            diagnostic_expect: BTreeMap::new(),
+        };
+        assert!(config.validation_issues().is_empty());
+
+        let service = config.services.get_mut("fixture").expect("fixture service");
+        let HealthCheck::HttpJson { expect, .. } = &mut service.health else {
+            panic!("expected HTTP JSON health");
+        };
+        expect.insert(String::new(), json!({"status": "ok"}));
+        assert!(config.validation_issues().is_empty());
+
+        let service = config.services.get_mut("fixture").expect("fixture service");
+        let HealthCheck::HttpJson { expect, .. } = &mut service.health else {
+            panic!("expected HTTP JSON health");
+        };
+        expect.insert("/runtime/~2invalid".to_owned(), json!(true));
+        assert!(
+            config
+                .validation_issues()
+                .iter()
+                .any(|issue| issue.code == "health_json_pointer_invalid")
+        );
     }
 
     #[test]

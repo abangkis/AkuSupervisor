@@ -24,9 +24,9 @@ install the runtimes represented by its fixtures.
 
 | Language/runtime | Direct executable supervision | Maintained cooperative recipe | Validation status |
 |---|---|---|---|
-| Go | Supported by the generic command contract | Yes, below | Windows live-validated; Linux amd64 and macOS arm64 compile-checked |
+| Go | Supported by the generic command contract | Yes for the current Windows adapter, below | Independent fixture, deterministic test, and Windows native gate pass in AkuSupervisorConformance with application-observed `SIGINT`, complete cleanup events, no forced fallback, and an empty owned tree; Linux amd64 and macOS arm64 remain compile coverage only |
 | Node.js | Supported, including registered `.cmd` launchers | Yes for the current Windows adapter, below | Independent fixture, deterministic test, and Windows native gate pass in AkuSupervisorConformance with application-observed `SIGBREAK`, complete cleanup events, no forced fallback, and an empty owned tree |
-| Rust | Supported by the generic command contract | Planned | AkuSupervisor itself uses Rust, but a reusable managed-application recipe is not yet certified |
+| Rust | Supported by the generic command contract | Yes for the current Windows adapter, below | Independent managed-application fixture, deterministic test, and Windows native gate pass with application-observed `CTRL_BREAK_EVENT`, complete cleanup events, no forced fallback, and an empty owned tree |
 | Kotlin/JVM | Supported when launched as an owned Java process | Planned | Signal/JVM shutdown-hook behavior still requires native live validation |
 | Other executables | Supported when the process remains inside the native ownership boundary | Not yet maintained | Use the immutable-program contract and expect forced fallback when the target does not cooperate |
 
@@ -36,9 +36,12 @@ cross-platform evidence gate.
 
 ## Go `net/http` recipe
 
-This is the reusable shape validated with Geofu BE. On Windows, Go maps console
-Ctrl+Break to `syscall.SIGTERM`; on Linux and macOS the same registration covers
-ordinary SIGTERM, while `os.Interrupt` covers the interactive interrupt path.
+This is the reusable shape validated with Geofu BE and the independent Go
+fixture. On Windows, Go maps console Ctrl+C and Ctrl+Break to `os.Interrupt`
+(runtime SIGINT). Console close, logoff, and shutdown notifications use the
+distinct `syscall.SIGTERM` path. On Linux and macOS, `syscall.SIGTERM` covers
+ordinary Supervisor termination while `os.Interrupt` covers the interactive
+interrupt path.
 
 ```go
 package main
@@ -410,6 +413,38 @@ The passing application evidence includes readiness, application-observed
 tree, listener release, and preservation of an unrelated process. The recipe
 is therefore maintained for the current Windows adapter. Linux and macOS remain
 separate future compatibility tuples rather than implied support.
+
+## Rust application-owned server recipe
+
+Rust applications are supervised as direct built executables; do not register
+`cargo run`, because the Cargo wrapper is not the application that must observe
+the native signal. Rust's standard library does not expose one portable
+cross-platform termination subscription, so keep signal reception behind a
+small application adapter:
+
+- Windows installs a console handler and treats `CTRL_BREAK_EVENT` as the
+  Supervisor shutdown request;
+- future Linux and macOS variants should subscribe to `SIGTERM`; and
+- both variants must feed the same application-owned shutdown coordinator.
+
+That coordinator should make readiness false, stop accepting new work, drain
+active requests within an application deadline shorter than
+`shutdownGraceMs`, cancel and join background workers, close resources, flush
+evidence, and return naturally. Repeated or concurrent requests must converge
+on the same completion rather than execute cleanup twice.
+
+The maintained reference is
+`AkuSupervisorConformance/fixtures/rust-application-owned`. It uses only the
+Rust standard library, is independent of AkuSupervisor internals, and proves
+request drain, idempotent cleanup, worker completion, listener release, and the
+four application evidence events. Its native Windows gate observes
+`CTRL_BREAK_EVENT`, `gracefulSignalSent: true`, `forced: false`, an empty owned
+tree, matching journal evidence, and an unrelated process that remains alive.
+
+This certification is scoped to Windows. A Rust program without a cooperative
+handler can still be owned today, but its stop may correctly report forced
+fallback. Linux and macOS become separate maintained tuples only after their
+AkuSupervisor platform adapters and native conformance gates exist.
 
 ## Live acceptance gate for every recipe
 

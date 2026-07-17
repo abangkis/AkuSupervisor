@@ -110,13 +110,14 @@ it is considered supported.
 | Configuration discovery | Per-OS default paths already separated | Add native path tests and native service profiles |
 | Process ownership and port observation | Correctly isolated, Windows only | Implement and prove each native ownership backend |
 | Live service-registry reconciliation | Portable `RwLock` topology swap plus typed configuration adapter; unchanged runtime entries are retained | Run the same PID-preservation and active-target rejection fixtures on native CI |
-| Foreground host composition | Partially portable; shared interaction code is currently compiled with concrete `WindowsRegistry` and `ConsoleShutdown` types | Extract a generic foreground host driven by platform-neutral registry, shutdown, and runtime-secret ports before implementing the second OS |
+| Foreground host composition | Compile-time host composition is extracted; the shared foreground imports only `platform::host`, whose active Windows backend supplies registry, shutdown, secure entropy, and token permissions | Implement the same host-facing constructors and aliases for a second OS without copying the foreground loop |
 | Checked-in AkuWorkspace profile | Intentionally Windows-specific data, not core logic | Supply separate profiles; do not add path rewriting to the core |
-| Development watcher | Portable Rust file-signal adapter; Windows PowerShell orchestration | Add a native runner that preserves build-first, graceful handoff, and service restoration | Add a native runner that preserves build-first, graceful handoff, and service restoration |
+| Development watcher | Portable Rust file-signal adapter; Windows PowerShell orchestration | Add a native runner that preserves build-first, graceful handoff, and service restoration |
 
-The foreground-host extraction is deliberately scheduled before the second OS,
-not after duplicating the Windows loop. Linux or macOS support must not copy the
-interactive/API lifecycle logic into a parallel platform file.
+The foreground-host extraction now precedes the second OS implementation.
+Linux or macOS support must populate the compile-time `platform::host`
+composition and must not copy the interactive/API lifecycle logic into a
+parallel platform file.
 
 The development watcher follows the same boundary. The opt-in
 `development_shutdown` adapter uses portable `std::fs` APIs and accepts only a
@@ -145,6 +146,7 @@ src/
     service_runtime.rs     # serialized lifecycle owner
   adapters/                # config, journal, future CLI and HTTP
   platform/
+    host.rs                # compile-time active host composition
     windows/               # implemented Win32 adapter
     linux/                 # reserved Linux adapter boundary
     macos/                 # reserved macOS adapter boundary

@@ -521,5 +521,11 @@ mod tests {
                 .as_str()
                 .is_some_and(|description| description.contains("remain healthy"))
         );
+        assert_eq!(http_json["properties"]["pathMode"]["default"], "shallow");
+        assert!(
+            http_json["properties"]["pathMode"]["description"]
+                .as_str()
+                .is_some_and(|description| description.contains("RFC 6901"))
+        );
     }
 }
