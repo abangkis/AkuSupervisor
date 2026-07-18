@@ -936,7 +936,7 @@ mod tests {
             "shutdownGraceMs": 1000
         });
         let input = format!(
-            r#"{{"version":1,"control":{{"host":"127.0.0.1","port":47820,"tokenFile":".runtime/control-token"}},"services":{{"fixture":{service},"fixture":{service}}}}}"#
+            r#"{{"version":1,"control":{{"host":"127.0.0.1","port":11121,"tokenFile":".runtime/control-token"}},"services":{{"fixture":{service},"fixture":{service}}}}}"#
         );
 
         let error = SupervisorConfig::parse_json(&input).expect_err("duplicate ID must fail");

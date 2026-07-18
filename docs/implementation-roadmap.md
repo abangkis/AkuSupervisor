@@ -239,7 +239,7 @@ Status: **Completed - Gate 4 passed on 2026-07-14**
 Live evidence:
 
 - AkuSidecar `0.5.13` started under the authenticated local client;
-- its port `47821` listener PID was a member of the supervisor-owned Job Object;
+- its port `11122` listener PID was a member of the supervisor-owned Job Object;
 - `/api/health` returned `status=ok` and `provider=codex-sdk`;
 - a synthetic bounded run completed a real `candidate_evaluation` with
   `gpt-5.6-terra` at high reasoning effort;
@@ -498,7 +498,7 @@ Current checkpoint:
 - [x] live tool invocation from a newly started Codex task.
 
 Live validation used the active development Supervisor at
-`http://127.0.0.1:47820/mcp`. It negotiated protocol `2025-11-25`, exposed the
+`http://127.0.0.1:11121/mcp`. It negotiated protocol `2025-11-25`, exposed the
 exact four read-only tools, read AkuSidecar as `stopped / unknown`, exposed no
 mutation tool, and rejected an untrusted Origin with HTTP `403`. A split-packet
 integration test also proved that Windows request headers and bodies may arrive

@@ -624,10 +624,10 @@ mod tests {
 
     #[test]
     fn relay_accepts_only_pathless_loopback_http_origins() {
-        assert!(parse_loopback_origin("http://127.0.0.1:47821").is_ok());
-        assert!(parse_loopback_origin("http://127.0.0.1:47821/path").is_err());
-        assert!(parse_loopback_origin("https://127.0.0.1:47821").is_err());
-        assert!(parse_loopback_origin("http://192.168.1.2:47821").is_err());
+        assert!(parse_loopback_origin("http://127.0.0.1:11122").is_ok());
+        assert!(parse_loopback_origin("http://127.0.0.1:11122/path").is_err());
+        assert!(parse_loopback_origin("https://127.0.0.1:11122").is_err());
+        assert!(parse_loopback_origin("http://192.168.1.2:11122").is_err());
     }
 
     #[test]

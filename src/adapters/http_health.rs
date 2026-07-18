@@ -264,9 +264,9 @@ mod tests {
     #[test]
     fn loopback_url_parser_keeps_query_and_path() {
         let (address, authority, path) =
-            parse_loopback_url("http://127.0.0.1:47821/api/health?full=1").expect("valid URL");
+            parse_loopback_url("http://127.0.0.1:11122/api/health?full=1").expect("valid URL");
         assert!(address.ip().is_loopback());
-        assert_eq!(authority, "127.0.0.1:47821");
+        assert_eq!(authority, "127.0.0.1:11122");
         assert_eq!(path, "/api/health?full=1");
         assert!(parse_loopback_url("http://192.0.2.1:80/health").is_err());
         assert!(parse_loopback_url("https://127.0.0.1:443/health").is_err());

@@ -28,7 +28,7 @@ The service is part of the local AkuWorkspace operational profile at
 was removed after validation. No repository copy is maintained: registration
 MCP and the local profile are the single operational source of truth.
 
-- Supervisor control API: `127.0.0.1:47820`
+- Supervisor control API: `127.0.0.1:11121`
 - Service ID: `geofu-be`
 - Working directory: `C:\WorkspaceCodex\GeofuWorkspace\Geofu_be`
 - Command: `Geofu_be\output\geofu-server.exe`

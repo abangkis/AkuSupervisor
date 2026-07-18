@@ -168,11 +168,21 @@ For live AkuSupervisor development, stop any normally running instance with
 
 The default starts only AkuSupervisor. To start one or more configured services
 as soon as the development Supervisor is ready, pass their service IDs as
-positional arguments. For the current AkuWorkspace profile use:
+positional arguments.
+
+For the current AkuWorkspace profile, use the workspace bootstrap entrypoint:
 
 ```powershell
-.\scripts\dev.ps1 akusidecar
+.\scripts\dev-akuworkspace.ps1 akusidecar
 ```
+
+`dev-akuworkspace.ps1` rebuilds the generated, Git-ignored
+`AkuSidecar\runtime\dev\aku-sidecar.exe` first and then delegates process
+ownership to the generic development watcher. This makes a clean or completely
+deleted Sidecar `runtime` directory recoverable with one command. The Go build
+is incremental, so the same entrypoint is also safe when the binary already
+exists. Use `dev.ps1` directly only when every configured service executable
+has already been provisioned.
 
 `AkuSupervisor` is not a managed service ID: it is always the process launched
 by this script. Unknown service IDs fail before the build and list the IDs

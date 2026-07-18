@@ -82,7 +82,7 @@ fn akuworkspace_integration_gate_is_explicit_and_never_promotes() {
     assert!(script.contains("$sidecar.health.status -ne 'healthy'"));
     assert!(script.contains("function Stop-IntegrationValidation"));
     assert!(script.contains("$category -eq 'relay_page_stale'"));
-    assert!(script.contains("Reload only the existing http://127.0.0.1:47821 AkuBrowser tab"));
+    assert!(script.contains("Reload only the existing http://127.0.0.1:11122 AkuBrowser tab"));
     assert!(script.contains("AkuWorkspace integration validation passed."));
     assert!(!script.contains("Copy-Item"));
     assert!(!script.contains("target\\aku-supervisor.exe"));

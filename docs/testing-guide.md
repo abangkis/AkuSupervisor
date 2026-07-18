@@ -78,7 +78,7 @@ Startup prints both the absolute selected path and its source, for example:
 ```text
 Configuration: C:\Users\Force\AppData\Local\AkuSupervisor\services.json
 Configuration source: default user configuration
-Control API: http://127.0.0.1:47820
+Control API: http://127.0.0.1:11121
 Control token: C:\Users\Force\AppData\Local\AkuSupervisor\.runtime\control-token
 ```
 
@@ -510,7 +510,7 @@ the machine-readable `bridge validate` command.
 For that optional gate, `relay_page_stale` means Sidecar remained healthy but no open AkuBrowser page
 requested the queued cooperative action before its deadline. Keep the watcher
 and services running, reload only the existing
-`http://127.0.0.1:47821` tab, wait for both ready indicators, and rerun
+`http://127.0.0.1:11122` tab, wait for both ready indicators, and rerun
 integration validation. Do not stop Chrome, reload the extension manually, or
 close the watcher.
 

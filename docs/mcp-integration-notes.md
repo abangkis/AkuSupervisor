@@ -148,7 +148,7 @@ AkuSupervisor does not need MCP prompts or sampling. It is a deterministic local
 The preferred MCP transport is Streamable HTTP on the already-running loopback control server, for example:
 
 ```text
-http://127.0.0.1:47820/mcp
+http://127.0.0.1:11121/mcp
 ```
 
 This preserves the independent, user-visible supervisor process. The MCP endpoint must:

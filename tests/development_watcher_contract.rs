@@ -61,3 +61,21 @@ fn watcher_requires_executable_release_without_force_killing_an_owner() {
     assert!(!script.contains("Stop-Process"));
     assert!(!script.contains(".Kill("));
 }
+
+#[test]
+fn akuworkspace_entrypoint_bootstraps_sidecar_before_generic_supervision() {
+    let script = include_str!("../scripts/dev-akuworkspace.ps1");
+
+    assert!(script.contains("AkuSidecar\\scripts\\build-dev.ps1"));
+    assert!(script.contains("'akusidecar' -in $requestedServices"));
+    assert!(script.contains("& $sidecarBuildScript"));
+    assert!(script.contains("& $supervisorDevScript @requestedServices @devParameters"));
+
+    let sidecar_build = script
+        .find("& $sidecarBuildScript")
+        .expect("workspace entrypoint must build the Sidecar");
+    let supervisor_start = script
+        .find("& $supervisorDevScript")
+        .expect("workspace entrypoint must delegate to the generic watcher");
+    assert!(sidecar_build < supervisor_start);
+}

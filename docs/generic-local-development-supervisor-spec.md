@@ -70,7 +70,7 @@ cargo run -- --config C:\path\to\local-dev-services.json
 The terminal prints:
 
 ```text
-Local Development Supervisor listening on 127.0.0.1:47820
+Local Development Supervisor listening on 127.0.0.1:11121
 Configuration: C:\path\to\local-dev-services.json
 Control token: loaded from local runtime file
 
@@ -594,7 +594,7 @@ executing them or treating their success as local service health.
 ### 18.2 Windows safety
 
 - Restarting AkuSidecar removes the old Go server/Codex tree before starting the new tree.
-- An unrelated process occupying port 47821 is reported and never killed.
+- An unrelated process occupying port 11122 is reported and never killed.
 - An unrelated process remains untouched during every test.
 - Ctrl+C on the supervisor cleanly stops its owned children.
 - A stale recorded PID that has been reused by another process is not killed without matching current ownership evidence.

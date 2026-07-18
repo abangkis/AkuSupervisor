@@ -94,7 +94,7 @@ if ($validationExitCode -ne 0 -or $validation.validation.status -ne 'passed') {
     }
     if ($category -eq 'relay_page_stale') {
         Write-Host '[integration] AkuSidecar is healthy, but the open AkuBrowser page is not polling the cooperative relay.' -ForegroundColor Yellow
-        Write-Host '[integration] Reload only the existing http://127.0.0.1:47821 AkuBrowser tab.' -ForegroundColor Yellow
+        Write-Host '[integration] Reload only the existing http://127.0.0.1:11122 AkuBrowser tab.' -ForegroundColor Yellow
         Write-Host '[integration] Wait until the page shows AkuSidecar ready and AkuBridge ready, then retry.' -ForegroundColor Yellow
     }
     if ($message) {
