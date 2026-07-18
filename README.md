@@ -2,6 +2,10 @@
 
 AkuSupervisor is a generic, configuration-driven supervisor for local development services.
 
+The `v0.7.0-preview.1` tag marks the AkuWorkspace-compatible preview checkpoint.
+AkuSupervisor remains Windows development tooling and is not included in the
+`0.7.0-preview.1` end-user bundle.
+
 Roadmap Gates 0 through 4 are complete, making this the first usable
 AkuWorkspace MVP. The visible foreground supervisor provides validated
 configuration, status, start, stop, restart, operator holds, exit cleanup,
