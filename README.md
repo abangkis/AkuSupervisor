@@ -21,6 +21,22 @@ initial AkuWorkspace pilot. Platform-neutral application ports and separate
 Windows, Linux, and macOS adapter boundaries keep future OS ports isolated from
 the lifecycle core. Only the Windows adapter is implemented today.
 
+## OpenAI Build Week role
+
+AkuSupervisor is optional development tooling rather than part of the current
+AkuBrowser portable preview. During Build Week it provided visible lifecycle
+ownership, health monitoring, bounded logs, authenticated and idempotent
+control, complete Windows process-tree cleanup, and cooperative AkuBridge
+reload. This reduced repeated manual computer interaction while preserving an
+auditable boundary around agent-assisted development.
+
+The current runtime MCP surface is intentionally read-only: Codex can inspect
+registered services, recent events, and bounded logs, but MCP cannot start,
+stop, restart, reload, or bootstrap services. Those mutations remain
+authenticated CLI/HTTP operations. See the
+[final project story](https://github.com/abangkis/AkuBrowser/blob/main/docs/openai-build-week-submission.md)
+and [Build Week evidence](https://github.com/abangkis/AkuBrowser/blob/main/BUILD_WEEK.md).
+
 ## Why AkuSupervisor instead of a generic watcher
 
 AkuSupervisor exists for a narrower problem than a general production process
