@@ -45,7 +45,8 @@ use windows_sys::Win32::System::Threading::{
 
 use crate::application::{ManagedProcessTree, TreeStopReport};
 
-const MAX_OWNED_PROCESSES: usize = 4_096;
+const INITIAL_OWNED_PROCESS_CAPACITY: usize = 256;
+const MAX_OWNED_PROCESSES: usize = 65_536;
 const FORCE_EXIT_CODE: u32 = 1;
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 const FORCED_SHUTDOWN_CONFIRMATION: Duration = Duration::from_secs(5);
@@ -726,7 +727,13 @@ impl ManagedProcessTree for OwnedProcessTree {
 
 impl Drop for OwnedProcessTree {
     fn drop(&mut self) {
-        if self.owned_pids().is_ok_and(|pids| !pids.is_empty()) {
+        let must_terminate = match self.owned_pids() {
+            Ok(pids) => !pids.is_empty(),
+            // The Job Object is the ownership proof. A failed observation must
+            // never turn Drop into a cleanup bypass.
+            Err(_) => true,
+        };
+        if must_terminate {
             unsafe {
                 TerminateJobObject(self.job.raw(), FORCE_EXIT_CODE);
             }
@@ -1114,42 +1121,66 @@ fn resume_first_suspended_candidate<T, E>(
 
 fn query_job_pids(job: HANDLE) -> Result<Vec<u32>, ProcessTreeError> {
     let header_words = size_of::<JOBOBJECT_BASIC_PROCESS_ID_LIST>().div_ceil(size_of::<usize>());
-    let mut buffer = vec![0usize; header_words + MAX_OWNED_PROCESSES];
-    let byte_length = u32::try_from(buffer.len() * size_of::<usize>())
-        .expect("bounded Job Object PID buffer fits u32");
-    let success = unsafe {
-        QueryInformationJobObject(
-            job,
-            JobObjectBasicProcessIdList,
-            buffer.as_mut_ptr().cast(),
-            byte_length,
-            ptr::null_mut(),
-        )
-    };
-    if success == 0 {
-        return Err(ProcessTreeError::QueryJob(io::Error::last_os_error()));
-    }
+    let mut capacity = INITIAL_OWNED_PROCESS_CAPACITY;
+    loop {
+        let mut buffer = vec![0usize; header_words + capacity];
+        let byte_length = u32::try_from(buffer.len() * size_of::<usize>())
+            .expect("bounded Job Object PID buffer fits u32");
+        let success = unsafe {
+            QueryInformationJobObject(
+                job,
+                JobObjectBasicProcessIdList,
+                buffer.as_mut_ptr().cast(),
+                byte_length,
+                ptr::null_mut(),
+            )
+        };
+        if success == 0 {
+            return Err(ProcessTreeError::QueryJob(io::Error::last_os_error()));
+        }
 
-    let info = buffer.as_ptr().cast::<JOBOBJECT_BASIC_PROCESS_ID_LIST>();
-    let assigned = unsafe { (*info).NumberOfAssignedProcesses as usize };
-    let listed = unsafe { (*info).NumberOfProcessIdsInList as usize };
-    if assigned > MAX_OWNED_PROCESSES || listed > MAX_OWNED_PROCESSES || listed < assigned {
-        return Err(ProcessTreeError::TooManyOwnedProcesses {
-            assigned,
-            capacity: MAX_OWNED_PROCESSES,
-        });
-    }
-    let process_ids = unsafe { ptr::addr_of!((*info).ProcessIdList).cast::<usize>() };
-    let slice = unsafe { std::slice::from_raw_parts(process_ids, listed) };
-    slice
-        .iter()
-        .map(|pid| {
-            u32::try_from(*pid).map_err(|_| ProcessTreeError::TooManyOwnedProcesses {
+        let info = buffer.as_ptr().cast::<JOBOBJECT_BASIC_PROCESS_ID_LIST>();
+        let assigned = unsafe { (*info).NumberOfAssignedProcesses as usize };
+        let listed = unsafe { (*info).NumberOfProcessIdsInList as usize };
+        if listed > capacity || assigned > MAX_OWNED_PROCESSES {
+            return Err(ProcessTreeError::TooManyOwnedProcesses {
                 assigned,
                 capacity: MAX_OWNED_PROCESSES,
+            });
+        }
+        if listed < assigned {
+            capacity = expanded_job_pid_capacity(capacity, assigned).ok_or(
+                ProcessTreeError::TooManyOwnedProcesses {
+                    assigned,
+                    capacity: MAX_OWNED_PROCESSES,
+                },
+            )?;
+            continue;
+        }
+
+        let process_ids = unsafe { ptr::addr_of!((*info).ProcessIdList).cast::<usize>() };
+        let slice = unsafe { std::slice::from_raw_parts(process_ids, listed) };
+        return slice
+            .iter()
+            .map(|pid| {
+                u32::try_from(*pid).map_err(|_| ProcessTreeError::TooManyOwnedProcesses {
+                    assigned,
+                    capacity: MAX_OWNED_PROCESSES,
+                })
             })
-        })
-        .collect()
+            .collect();
+    }
+}
+
+fn expanded_job_pid_capacity(current: usize, assigned: usize) -> Option<usize> {
+    if assigned > MAX_OWNED_PROCESSES || current >= MAX_OWNED_PROCESSES {
+        return None;
+    }
+    Some(
+        assigned
+            .max(current.saturating_mul(2))
+            .min(MAX_OWNED_PROCESSES),
+    )
 }
 
 fn send_ctrl_break(process_group_id: u32) -> Result<(), ProcessTreeError> {
@@ -1173,7 +1204,8 @@ mod tests {
     use std::process::Command;
 
     use super::{
-        MAX_LOG_BYTES, RotatingLogWriter, build_command_line, generation_path, is_batch_program,
+        MAX_LOG_BYTES, MAX_OWNED_PROCESSES, RotatingLogWriter, build_command_line,
+        expanded_job_pid_capacity, generation_path, is_batch_program,
         resume_first_suspended_candidate,
     };
 
@@ -1226,6 +1258,20 @@ mod tests {
         assert!(
             !resume_first_suspended_candidate(&mut suspend_counts, resume_count)
                 .expect("infallible fake resume")
+        );
+    }
+
+    #[test]
+    fn job_pid_capacity_grows_to_observed_process_count() {
+        assert_eq!(expanded_job_pid_capacity(256, 300), Some(512));
+        assert_eq!(expanded_job_pid_capacity(256, 700), Some(700));
+        assert_eq!(
+            expanded_job_pid_capacity(MAX_OWNED_PROCESSES / 2, MAX_OWNED_PROCESSES),
+            Some(MAX_OWNED_PROCESSES)
+        );
+        assert_eq!(
+            expanded_job_pid_capacity(MAX_OWNED_PROCESSES, MAX_OWNED_PROCESSES + 1),
+            None
         );
     }
 
