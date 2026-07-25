@@ -846,6 +846,33 @@ Gate 9:
 - CNG, POSIX permission bits, and other native secret-storage details remain
   outside the shared control plane.
 
+### Phase 10 - Native live service logs
+
+Status: **Core and Windows capture implemented**
+
+- [x] add platform-neutral `ServiceLogSink` and `LiveLogHub`;
+- [x] persist each captured byte chunk before publishing it to live viewers;
+- [x] merge stdout and stderr under one monotonically increasing observed
+  sequence while retaining per-event stream identity;
+- [x] keep replay rings and per-viewer channels bounded, with explicit gap
+  events for slow consumers;
+- [x] expose an authenticated long-lived NDJSON endpoint without blocking
+  lifecycle requests;
+- [x] add `live-logs <service>`, defaulting to both streams and an initial
+  50-line tail;
+- [x] keep subscriptions alive while a service is stopped or restarted and
+  preserve them across unrelated registry reconciliation; and
+- [ ] connect future Linux and macOS pipe-capture adapters to the unchanged
+  `ServiceLogSink` and run the same conformance tests natively.
+
+Gate 10:
+
+- durable rotating files remain authoritative;
+- viewer backpressure cannot block a child pipe or file writer;
+- Ctrl+C affects only the viewer process;
+- an open stream does not block `status`, `start`, `stop`, or `restart`; and
+- no Windows type appears in the hub, protocol, or CLI implementation.
+
 ## 5. Cross-phase testing strategy
 
 Every phase must preserve:

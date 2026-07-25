@@ -71,10 +71,15 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
         )
         .map_err(ForegroundError::Journal)?,
     );
+    let logs = Arc::new(ServiceLogStore::new(
+        &runtime_services_directory,
+        config.services.keys().cloned(),
+    ));
     let registry = Arc::new(
         create_registry(
             config.service_registrations_with_logs(&runtime_services_directory),
             Arc::new(LoopbackTransportHealthProbe),
+            logs.clone(),
         )
         .map_err(ForegroundError::RegistryBuild)?,
     );
@@ -87,10 +92,6 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
             .with_console_events(config.observability.console_events),
     );
     let control: Arc<dyn SupervisorControl> = audited.clone();
-    let logs = Arc::new(ServiceLogStore::new(
-        &runtime_services_directory,
-        config.services.keys().cloned(),
-    ));
     let cooperative_extensions =
         build_cooperative_extensions(&config, runtime_directory, &fingerprint)
             .map_err(ForegroundError::CooperativeAction)?;

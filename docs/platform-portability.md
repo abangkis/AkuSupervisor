@@ -35,6 +35,10 @@ The current contracts are:
 - `HealthCheckSpec` and `HealthProbe`: keep lifecycle health evaluation
   independent of process ownership and operating-system APIs; and
 - `ShutdownSignal`: exposes a read-only shutdown request to the lifecycle loop.
+- `ServiceLogSink`: receives already-persisted stdout/stderr bytes through a
+  bounded platform-neutral contract; and
+- `LiveLogHub`: assembles lines, keeps a bounded replay ring, and fans out to
+  bounded subscribers without importing native process APIs.
 
 An architecture test enforces the import boundary.
 
@@ -92,6 +96,7 @@ not considered a portable guarantee.
 | HTTP control/client | shared `std::net` adapter | same shared adapter | same shared adapter |
 | Loopback HTTP health | shared `std::net` adapter | same shared adapter | same shared adapter |
 | Development reload request | bounded local file signal plus PowerShell runner | same file-signal contract plus future native runner | same file-signal contract plus future native runner |
+| Live service logs | Windows pipe pump persists then publishes to shared `LiveLogHub` | Unix pipe pump uses the same `ServiceLogSink` | Unix pipe pump uses the same `ServiceLogSink` |
 
 The Linux and macOS entries are design candidates, not implemented promises.
 Each backend must independently pass the same ownership safety contract before
@@ -113,6 +118,7 @@ it is considered supported.
 | Foreground host composition | Compile-time host composition is extracted; the shared foreground imports only `platform::host`, whose active Windows backend supplies registry, shutdown, secure entropy, and token permissions | Implement the same host-facing constructors and aliases for a second OS without copying the foreground loop |
 | Checked-in AkuWorkspace profile | Intentionally Windows-specific data, not core logic | Supply separate profiles; do not add path rewriting to the core |
 | Development watcher | Portable Rust file-signal adapter; Windows PowerShell orchestration | Add a native runner that preserves build-first, graceful handoff, and service restoration |
+| Live-log hub and NDJSON protocol | Portable standard-library implementation; only pipe capture is native | Connect the native process spawner to the existing `ServiceLogSink`; do not fork the protocol |
 
 The foreground-host extraction now precedes the second OS implementation.
 Linux or macOS support must populate the compile-time `platform::host`

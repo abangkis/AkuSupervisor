@@ -6,6 +6,7 @@ use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use aku_supervisor::adapters::service_logs::LiveLogSelection;
 use aku_supervisor::application::{LaunchSpec, ProcessTreeSpawner};
 use aku_supervisor::platform::windows::{OwnedProcessTree, WindowsProcessSpawner};
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
@@ -99,8 +100,14 @@ impl Drop for WaitHandle {
 
 #[test]
 fn owned_tree_contains_root_and_descendant_then_stops_completely() {
-    let mut tree = WindowsProcessSpawner
-        .spawn(&fixture_launch("--root"))
+    let log_store = std::sync::Arc::new(
+        aku_supervisor::adapters::service_logs::ServiceLogStore::new(
+            &std::env::temp_dir(),
+            ["fixture".to_owned()],
+        ),
+    );
+    let mut tree = WindowsProcessSpawner::new(log_store)
+        .spawn("fixture", &fixture_launch("--root"))
         .expect("owned fixture tree should start");
     let observed = wait_for_tree(&tree, 2);
 
@@ -176,8 +183,17 @@ fn native_launch_preserves_arguments_environment_logs_and_noninteractive_stdin()
         [("AKU_SUPERVISOR_FIXTURE_ENV", "forwarded value")],
     )
     .with_log_files(&stdout, &stderr);
-    let mut tree = WindowsProcessSpawner
-        .spawn(&launch)
+    let log_store = std::sync::Arc::new(
+        aku_supervisor::adapters::service_logs::ServiceLogStore::new(
+            &directory,
+            ["fixture".to_owned()],
+        ),
+    );
+    let live = log_store
+        .subscribe("fixture", LiveLogSelection::Both, 0, None)
+        .expect("subscribe before native launch");
+    let mut tree = WindowsProcessSpawner::new(log_store)
+        .spawn("fixture", &launch)
         .expect("native launch should start");
 
     let deadline = Instant::now() + STARTUP_TIMEOUT;
@@ -205,6 +221,14 @@ fn native_launch_preserves_arguments_environment_logs_and_noninteractive_stdin()
         fs::read_to_string(&stdout)
             .expect("stdout log should be readable")
             .contains("launch captured")
+    );
+    assert!(
+        live.receiver
+            .recv_timeout(STARTUP_TIMEOUT)
+            .expect("persisted output should reach LiveLogHub")
+            .text
+            .as_deref()
+            .is_some_and(|line| line.contains("launch captured"))
     );
     assert!(tree.owned_pids().expect("final ownership query").is_empty());
 

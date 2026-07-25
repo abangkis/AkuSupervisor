@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use crate::VERSION;
 use crate::adapters::control_http::ApiActor;
-use crate::adapters::service_logs::LogStream;
+use crate::adapters::service_logs::{LiveLogEventKind, LiveLogSelection, LogStream};
 use crate::application::ControlAction;
 
 const HELP: &str = "AkuSupervisor - local development service supervisor\n\n\
@@ -21,6 +21,7 @@ Usage:\n\
   aku-supervisor registry-status [--json] [--config <path>]\n\
   aku-supervisor events [--after <sequence>] [--limit <n>] [--json] [--config <path>]\n\
   aku-supervisor logs <service> [--stream <stdout|stderr>] [--tail <n>] [--json] [--config <path>]\n\
+  aku-supervisor live-logs <service> [--stream <both|stdout|stderr>] [--tail <n>] [--json] [--config <path>]\n\
   aku-supervisor <start|stop|restart> <service> [--reason <text>] [--actor <user|codex>] [--request-id <id>] [--json] [--config <path>]\n\
   aku-supervisor bridge reload --reason <text> --request-id <id> [--actor <user|codex>] [--wait|--no-wait] [--json] [--config <path>]\n\
   aku-supervisor bridge status --request-id <id> [--json] [--config <path>]\n\
@@ -65,6 +66,13 @@ enum Command {
         draft_id: String,
         config: Option<PathBuf>,
         commit: bool,
+    },
+    LiveLogs {
+        service_id: String,
+        stream: LiveLogSelection,
+        tail: usize,
+        config: Option<PathBuf>,
+        json: bool,
     },
     Remote(RemoteCommand),
 }
@@ -165,6 +173,13 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
             config,
             commit,
         }) => run_registration_approve(config, &draft_id, commit),
+        Ok(Command::LiveLogs {
+            service_id,
+            stream,
+            tail,
+            config,
+            json,
+        }) => run_live_logs(&service_id, stream, tail, config, json),
         Ok(Command::Remote(command)) => run_remote(command),
         Err(message) => {
             eprintln!("error: {message}\n\n{HELP}");
@@ -208,6 +223,7 @@ fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, Strin
         [status, rest @ ..] if status == "registry-status" => parse_registry_status(rest),
         [events, rest @ ..] if events == "events" => parse_remote_events(rest),
         [logs, rest @ ..] if logs == "logs" => parse_remote_logs(rest),
+        [logs, rest @ ..] if logs == "live-logs" => parse_live_logs(rest),
         [bridge, reload, rest @ ..] if bridge == "bridge" && reload == "reload" => {
             parse_bridge_reload(rest)
         }
@@ -660,6 +676,65 @@ fn parse_remote_logs(arguments: &[OsString]) -> Result<Command, String> {
     }))
 }
 
+fn parse_live_logs(arguments: &[OsString]) -> Result<Command, String> {
+    let service_id = arguments
+        .first()
+        .and_then(|value| value.to_str())
+        .filter(|value| {
+            !value.is_empty()
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        })
+        .ok_or_else(|| "valid service ID is required".to_owned())?
+        .to_owned();
+    let mut stream = LiveLogSelection::Both;
+    let mut tail = 50_usize;
+    let mut config = None;
+    let mut json = false;
+    let mut index = 1;
+    while index < arguments.len() {
+        let flag = &arguments[index];
+        match flag.to_str() {
+            Some("--json") if !json => {
+                json = true;
+                index += 1;
+                continue;
+            }
+            Some("--stream") => {
+                let value = option_value(arguments, index)?;
+                stream = value
+                    .to_str()
+                    .and_then(LiveLogSelection::parse)
+                    .ok_or_else(|| "--stream must be both, stdout, or stderr".to_owned())?;
+            }
+            Some("--tail") => {
+                let value = option_value(arguments, index)?;
+                tail = value
+                    .to_str()
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .filter(|value| *value <= 1_000)
+                    .ok_or_else(|| "--tail must be between 0 and 1000".to_owned())?;
+            }
+            Some("--config") if config.is_none() => {
+                config = Some(PathBuf::from(option_value(arguments, index)?));
+            }
+            Some("--config" | "--json") => {
+                return Err(format!("duplicate option: {}", flag.to_string_lossy()));
+            }
+            _ => return Err(format!("unsupported option: {}", flag.to_string_lossy())),
+        }
+        index += 2;
+    }
+    Ok(Command::LiveLogs {
+        service_id,
+        stream,
+        tail,
+        config,
+        json,
+    })
+}
+
 fn parse_remote_mutation(
     action: &OsString,
     arguments: &[OsString],
@@ -1004,6 +1079,145 @@ fn ensure_fresh_bridge_validation_request(
         }
     }
     unreachable!("bounded validation preflight returns from every final attempt")
+}
+
+fn run_live_logs(
+    service_id: &str,
+    selection: LiveLogSelection,
+    tail: usize,
+    explicit_config: Option<PathBuf>,
+    json_output: bool,
+) -> ExitCode {
+    match live_logs(service_id, selection, tail, explicit_config, json_output) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn live_logs(
+    service_id: &str,
+    selection: LiveLogSelection,
+    tail: usize,
+    explicit_config: Option<PathBuf>,
+    json_output: bool,
+) -> Result<(), String> {
+    use std::fs;
+    use std::net::SocketAddr;
+
+    use crate::adapters::config::SupervisorConfig;
+    use crate::adapters::config_path::resolve_config_path;
+    use crate::adapters::control_http::client_live_logs;
+    use crate::adapters::runtime_token::{RuntimeToken, resolve_token_path};
+
+    let resolved = resolve_config_path(explicit_config).map_err(|error| error.to_string())?;
+    let source = fs::read_to_string(resolved.path())
+        .map_err(|error| format!("failed to read {}: {error}", resolved.path().display()))?;
+    let config = SupervisorConfig::parse_json(&source).map_err(|error| error.to_string())?;
+    config.validate().map_err(|error| error.to_string())?;
+    let token_path = resolve_token_path(resolved.path(), &config.control.token_file);
+    let token = RuntimeToken::load(&token_path).map_err(|error| error.to_string())?;
+    let address: SocketAddr = format!("{}:{}", config.control.host, config.control.port)
+        .parse()
+        .map_err(|error| format!("invalid control address: {error}"))?;
+    let stream_name = match selection {
+        LiveLogSelection::Both => "both",
+        LiveLogSelection::Stdout => "stdout",
+        LiveLogSelection::Stderr => "stderr",
+    };
+    if !json_output {
+        println!("Configuration: {}", resolved.path().display());
+        println!("Control API: http://{address}");
+        println!(
+            "Live logs: {service_id} (stream={stream_name}, initial tail={tail}); press Ctrl+C to stop viewing."
+        );
+    }
+
+    let mut after = None;
+    let mut connected_once = false;
+    loop {
+        let target = after.map_or_else(
+            || {
+                format!(
+                    "/v1/services/{service_id}/logs/live?stream={stream_name}&tail={tail}"
+                )
+            },
+            |sequence| {
+                format!(
+                    "/v1/services/{service_id}/logs/live?stream={stream_name}&tail=0&after={sequence}"
+                )
+            },
+        );
+        let mut client = match client_live_logs(address, &token, &target) {
+            Ok(client) => client,
+            Err(error) if connected_once && error.is_transient() => {
+                if !json_output {
+                    eprintln!("[live-logs] connection unavailable; retrying...");
+                }
+                std::thread::sleep(Duration::from_millis(500));
+                continue;
+            }
+            Err(error) => return Err(error.to_string()),
+        };
+        connected_once = true;
+        loop {
+            let event = match client.next_event() {
+                Ok(Some(event)) => event,
+                Ok(None) => break,
+                Err(error) if error.is_transient() => {
+                    if !json_output {
+                        eprintln!("[live-logs] connection interrupted; reconnecting...");
+                    }
+                    break;
+                }
+                Err(error) => return Err(error.to_string()),
+            };
+            if let Some(sequence) = event.sequence {
+                after = Some(sequence);
+            }
+            print_live_log_event(&event, json_output);
+        }
+        if !json_output {
+            eprintln!("[live-logs] connection closed; reconnecting...");
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+fn print_live_log_event(event: &crate::adapters::service_logs::LiveLogEvent, json_output: bool) {
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string(event).expect("live log event JSON serialization cannot fail")
+        );
+        return;
+    }
+    match event.kind {
+        LiveLogEventKind::Line => {
+            let timestamp = crate::adapters::journal::format_unix_milliseconds_utc(u128::from(
+                event.observed_at_unix_ms,
+            ))
+            .unwrap_or_else(|| event.observed_at_unix_ms.to_string());
+            let stream = match event.stream {
+                Some(LogStream::Stdout) => "stdout",
+                Some(LogStream::Stderr) => "stderr",
+                None => "unknown",
+            };
+            println!(
+                "[{timestamp}] [{stream}] {}",
+                event.text.as_deref().unwrap_or_default()
+            );
+        }
+        LiveLogEventKind::Gap => {
+            eprintln!(
+                "[live-logs] viewer fell behind; {} event(s) were dropped.",
+                event.dropped.unwrap_or(0)
+            );
+        }
+        LiveLogEventKind::Heartbeat => {}
+    }
 }
 
 fn validation_actor(actor: ApiActor) -> serde_json::Value {
@@ -1437,6 +1651,7 @@ mod tests {
     use super::{Command, RemoteCommand, format_simple_status, lifecycle_response_timeout, parse};
     use crate::adapters::config::SupervisorConfig;
     use crate::adapters::control_http::ApiActor;
+    use crate::adapters::service_logs::LiveLogSelection;
     use crate::application::ControlAction;
 
     fn args(values: &[&str]) -> Vec<std::ffi::OsString> {
@@ -1452,6 +1667,38 @@ mod tests {
     #[test]
     fn version_flag_selects_version() {
         assert_eq!(parse(args(&["--version"])), Ok(Command::Version));
+    }
+
+    #[test]
+    fn live_logs_defaults_to_both_streams_and_accepts_a_filter() {
+        assert_eq!(
+            parse(args(&["live-logs", "api"])),
+            Ok(Command::LiveLogs {
+                service_id: "api".to_owned(),
+                stream: LiveLogSelection::Both,
+                tail: 50,
+                config: None,
+                json: false,
+            })
+        );
+        assert_eq!(
+            parse(args(&[
+                "live-logs",
+                "api",
+                "--stream",
+                "stderr",
+                "--tail",
+                "0",
+                "--json",
+            ])),
+            Ok(Command::LiveLogs {
+                service_id: "api".to_owned(),
+                stream: LiveLogSelection::Stderr,
+                tail: 0,
+                config: None,
+                json: true,
+            })
+        );
     }
 
     #[test]

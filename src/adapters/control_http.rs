@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
-use std::io::{self, Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,13 +21,17 @@ use super::config::McpConfig;
 use super::journal::FileJournal;
 use super::mcp::{self, McpResponse};
 use super::runtime_token::RuntimeToken;
-use super::service_logs::{LogStream, ServiceLogError, ServiceLogStore};
+use super::service_logs::{
+    LiveLogEvent, LiveLogSelection, LiveLogSubscription, LogStream, ServiceLogError,
+    ServiceLogStore,
+};
 
 const MAX_HEADER_BYTES: usize = 16 * 1024;
 const MAX_BODY_BYTES: usize = 4 * 1024;
 const MAX_RESPONSE_BYTES: u64 = 1024 * 1024;
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(25);
+const LIVE_LOG_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 
 /// Actor vocabulary accepted by the local control protocol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -152,9 +156,9 @@ fn serve(
     control: &dyn SupervisorControl,
     cooperative: Option<&CooperativeOperationManager>,
     journal: &FileJournal,
-    logs: &ServiceLogStore,
+    logs: &Arc<ServiceLogStore>,
     reconciliation: &RegistryReconciliationStatus,
-    stop: &AtomicBool,
+    stop: &Arc<AtomicBool>,
 ) -> Result<(), ControlHttpError> {
     let mut idempotency = IdempotencyStore::default();
     while !stop.load(Ordering::Acquire) {
@@ -172,6 +176,7 @@ fn serve(
                     logs,
                     reconciliation,
                     &mut idempotency,
+                    stop,
                 ) {
                     let response = error_response(400, "bad_request", &error.to_string());
                     write_response(&mut stream, &response).ok();
@@ -194,11 +199,57 @@ fn handle_connection(
     control: &dyn SupervisorControl,
     cooperative: Option<&CooperativeOperationManager>,
     journal: &FileJournal,
-    logs: &ServiceLogStore,
+    logs: &Arc<ServiceLogStore>,
     reconciliation: &RegistryReconciliationStatus,
     idempotency: &mut IdempotencyStore,
+    stop: &Arc<AtomicBool>,
 ) -> Result<(), RequestError> {
     let request = read_request(stream)?;
+    if request.method == "GET"
+        && let Some((service_id, selection, tail, after)) = parse_live_logs_target(&request.target)
+    {
+        if !request_is_authorized(&request, token) {
+            let response = error_response(401, "unauthorized", "valid bearer token required");
+            return write_response(stream, &response).map_err(RequestError::Write);
+        }
+        let subscription = match logs.subscribe(service_id, selection, tail, after) {
+            Ok(subscription) => subscription,
+            Err(ServiceLogError::ServiceNotFound(_)) => {
+                let response = error_response(404, "service_not_found", "unknown service");
+                return write_response(stream, &response).map_err(RequestError::Write);
+            }
+            Err(ServiceLogError::TooManySubscribers(_)) => {
+                let response = error_response(
+                    409,
+                    "live_log_subscriber_limit",
+                    "too many live-log subscribers for service",
+                );
+                return write_response(stream, &response).map_err(RequestError::Write);
+            }
+            Err(error) => {
+                let response = error_response(500, "log_unavailable", &error.to_string());
+                return write_response(stream, &response).map_err(RequestError::Write);
+            }
+        };
+        let live_stream = stream.try_clone().map_err(RequestError::Write)?;
+        let worker_stop = Arc::clone(stop);
+        let hub_instance_id = logs.hub_instance_id().to_owned();
+        let service_id = service_id.to_owned();
+        thread::Builder::new()
+            .name("aku-supervisor-live-log".to_owned())
+            .spawn(move || {
+                stream_live_logs(
+                    live_stream,
+                    &subscription,
+                    &hub_instance_id,
+                    &service_id,
+                    &worker_stop,
+                )
+                .ok();
+            })
+            .map_err(RequestError::Write)?;
+        return Ok(());
+    }
     let response = route(
         &request,
         token,
@@ -211,6 +262,49 @@ fn handle_connection(
         idempotency,
     );
     write_response(stream, &response).map_err(RequestError::Write)
+}
+
+fn stream_live_logs(
+    mut stream: TcpStream,
+    subscription: &LiveLogSubscription,
+    hub_instance_id: &str,
+    service_id: &str,
+    stop: &AtomicBool,
+) -> io::Result<()> {
+    write!(
+        stream,
+        "HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
+    )?;
+    for event in &subscription.initial {
+        write_live_log_event(&mut stream, event)?;
+    }
+    let mut last_write = Instant::now();
+    while !stop.load(Ordering::Acquire) {
+        match subscription.receiver.recv_timeout(Duration::from_secs(1)) {
+            Ok(event) => {
+                write_live_log_event(&mut stream, &event)?;
+                last_write = Instant::now();
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                if last_write.elapsed() >= LIVE_LOG_HEARTBEAT_INTERVAL =>
+            {
+                write_live_log_event(
+                    &mut stream,
+                    &LiveLogEvent::heartbeat(hub_instance_id, service_id),
+                )?;
+                last_write = Instant::now();
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    stream.shutdown(Shutdown::Write)
+}
+
+fn write_live_log_event(stream: &mut TcpStream, event: &LiveLogEvent) -> io::Result<()> {
+    serde_json::to_writer(&mut *stream, event).map_err(io::Error::other)?;
+    stream.write_all(b"\n")?;
+    stream.flush()
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
@@ -439,6 +533,27 @@ fn parse_logs_target(target: &str) -> Option<(&str, LogStream, usize)> {
         }
     }
     Some((service_id, stream, tail))
+}
+
+fn parse_live_logs_target(target: &str) -> Option<(&str, LiveLogSelection, usize, Option<u64>)> {
+    let suffix = target.strip_prefix("/v1/services/")?;
+    let (service_id, query) = suffix.split_once("/logs/live?")?;
+    if service_id.is_empty() || service_id.contains('/') {
+        return None;
+    }
+    let mut selection = LiveLogSelection::Both;
+    let mut tail = 50_usize;
+    let mut after = None;
+    for field in query.split('&') {
+        let (name, value) = field.split_once('=')?;
+        match name {
+            "stream" => selection = LiveLogSelection::parse(value)?,
+            "tail" => tail = value.parse::<usize>().ok()?.clamp(0, 1_000),
+            "after" => after = Some(value.parse::<u64>().ok()?),
+            _ => return None,
+        }
+    }
+    Some((service_id, selection, tail, after))
 }
 
 fn parse_events_target(target: &str) -> Option<(u64, usize)> {
@@ -931,6 +1046,94 @@ pub fn client_request(
     client_request_with_response_timeout(address, token, method, target, body, IO_TIMEOUT)
 }
 
+/// Opens one authenticated, close-delimited NDJSON live-log response.
+///
+/// # Errors
+///
+/// Returns connection, protocol, authorization, or JSON decoding errors.
+pub fn client_live_logs(
+    address: SocketAddr,
+    token: &RuntimeToken,
+    target: &str,
+) -> Result<LiveLogClient, ControlClientError> {
+    let mut stream =
+        TcpStream::connect_timeout(&address, IO_TIMEOUT).map_err(ControlClientError::Connect)?;
+    stream.set_read_timeout(Some(IO_TIMEOUT)).ok();
+    stream.set_write_timeout(Some(IO_TIMEOUT)).ok();
+    write!(
+        stream,
+        "GET {target} HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer {}\r\nAccept: application/x-ndjson\r\nConnection: close\r\n\r\n",
+        token.expose_for_authorization_header(),
+    )
+    .map_err(ControlClientError::Write)?;
+    stream.flush().map_err(ControlClientError::Write)?;
+    let mut reader = BufReader::new(stream);
+    let mut status_line = String::new();
+    reader
+        .read_line(&mut status_line)
+        .map_err(ControlClientError::Read)?;
+    let status = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|value| value.parse::<u16>().ok())
+        .ok_or(ControlClientError::MalformedResponse)?;
+    loop {
+        let mut header = String::new();
+        reader
+            .read_line(&mut header)
+            .map_err(ControlClientError::Read)?;
+        if header.is_empty() {
+            return Err(ControlClientError::MalformedResponse);
+        }
+        if header == "\r\n" {
+            break;
+        }
+    }
+    if status != 200 {
+        let mut body = String::new();
+        reader
+            .take(MAX_RESPONSE_BYTES)
+            .read_to_string(&mut body)
+            .map_err(ControlClientError::Read)?;
+        return Err(ControlClientError::Rejected {
+            status,
+            body: serde_json::from_str(&body).unwrap_or(Value::String(body)),
+        });
+    }
+    reader.get_mut().set_read_timeout(None).ok();
+    Ok(LiveLogClient { reader })
+}
+
+/// Reader for one long-lived live-log connection.
+#[derive(Debug)]
+pub struct LiveLogClient {
+    reader: BufReader<TcpStream>,
+}
+
+impl LiveLogClient {
+    /// Waits for the next NDJSON event, returning `None` on clean disconnect.
+    ///
+    /// # Errors
+    ///
+    /// Returns a bounded read or JSON decoding error.
+    pub fn next_event(&mut self) -> Result<Option<LiveLogEvent>, ControlClientError> {
+        let mut line = String::new();
+        let bytes = self
+            .reader
+            .read_line(&mut line)
+            .map_err(ControlClientError::Read)?;
+        if bytes == 0 {
+            return Ok(None);
+        }
+        if u64::try_from(bytes).unwrap_or(u64::MAX) > MAX_RESPONSE_BYTES {
+            return Err(ControlClientError::MessageTooLarge);
+        }
+        serde_json::from_str(line.trim_end())
+            .map(Some)
+            .map_err(ControlClientError::Deserialize)
+    }
+}
+
 /// Sends one bounded request while allowing a caller-defined response timeout.
 ///
 /// Connection establishment and request writes retain the short control-plane
@@ -1302,6 +1505,60 @@ mod tests {
         }
     }
 
+    #[test]
+    fn live_log_connection_does_not_block_other_control_requests() {
+        use crate::application::{CapturedLogStream, ServiceLogSink};
+
+        let root =
+            std::env::temp_dir().join(format!("aku-supervisor-live-http-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create live HTTP fixture");
+        let token_path = root.join("control-token");
+        std::fs::remove_file(&token_path).ok();
+        let server_token =
+            RuntimeToken::load_or_create(&token_path, || Ok("c".repeat(64))).expect("server token");
+        let client_token = RuntimeToken::load(&token_path).expect("client token");
+        let journal = Arc::new(
+            FileJournal::open(root.join("journal.jsonl"), Vec::<String>::new())
+                .expect("test journal"),
+        );
+        let logs = Arc::new(ServiceLogStore::new(&root, ["api".to_owned()]));
+        let reconciliation = Arc::new(RegistryReconciliationStatus::new("sha256:test".to_owned()));
+        let mut server = ControlHttpServer::start(
+            "127.0.0.1",
+            0,
+            server_token,
+            McpConfig::default(),
+            Arc::new(FakeControl::default()),
+            None,
+            journal,
+            Arc::clone(&logs),
+            reconciliation,
+        )
+        .expect("start control server");
+
+        let mut live = client_live_logs(
+            server.address(),
+            &client_token,
+            "/v1/services/api/logs/live?stream=both&tail=0",
+        )
+        .expect("open live logs");
+        let status = client_request(server.address(), &client_token, "GET", "/v1/services", None)
+            .expect("status while live stream is open");
+        assert_eq!(status["services"], json!([]));
+
+        logs.publish("api", CapturedLogStream::Stderr, b"failure detail\n");
+        let event = live
+            .next_event()
+            .expect("read event")
+            .expect("event exists");
+        assert_eq!(event.stream, Some(LogStream::Stderr));
+        assert_eq!(event.text.as_deref(), Some("failure detail"));
+
+        drop(live);
+        server.shutdown().expect("stop control server");
+        std::fs::remove_dir_all(root).ok();
+    }
+
     #[derive(Debug, Default)]
     struct FakeCooperativeControl {
         reloads: Mutex<u32>,
@@ -1337,6 +1594,21 @@ mod tests {
         );
         assert!(parse_mutation_target("/v1/services/api/shell").is_none());
         assert!(parse_mutation_target("/v1/services/api/restart/extra").is_none());
+    }
+
+    #[test]
+    fn live_log_target_defaults_to_merged_stream_and_bounded_tail() {
+        assert_eq!(
+            parse_live_logs_target("/v1/services/api/logs/live?stream=both&tail=50"),
+            Some(("api", LiveLogSelection::Both, 50, None))
+        );
+        assert_eq!(
+            parse_live_logs_target("/v1/services/api/logs/live?stream=stderr&tail=5000&after=42"),
+            Some(("api", LiveLogSelection::Stderr, 1_000, Some(42)))
+        );
+        assert!(
+            parse_live_logs_target("/v1/services/api/logs/live?stream=invalid&tail=50").is_none()
+        );
     }
 
     #[test]

@@ -46,7 +46,7 @@ mod windows_demo {
             std::env::current_dir()?,
             std::iter::empty::<(&str, &str)>(),
         );
-        let mut tree = WindowsProcessSpawner.spawn(&launch)?;
+        let mut tree = WindowsProcessSpawner::without_live_logs().spawn("demo", &launch)?;
         let deadline = Instant::now() + DEMO_DURATION;
 
         let owned_pids = loop {

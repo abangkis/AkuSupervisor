@@ -12,6 +12,7 @@ use std::os::windows::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::ptr;
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -43,7 +44,7 @@ use windows_sys::Win32::System::Threading::{
     TerminateProcess, WaitForSingleObject,
 };
 
-use crate::application::{ManagedProcessTree, TreeStopReport};
+use crate::application::{CapturedLogStream, ManagedProcessTree, ServiceLogSink, TreeStopReport};
 
 const INITIAL_OWNED_PROCESS_CAPACITY: usize = 256;
 const MAX_OWNED_PROCESSES: usize = 65_536;
@@ -126,18 +127,20 @@ impl OwnedProcessTree {
     /// the process cannot be spawned or assigned, or its primary thread cannot
     /// be resumed. A process that fails before resume is terminated.
     pub fn spawn(command: &mut Command) -> Result<Self, ProcessTreeError> {
-        Self::spawn_with_logs(command, None, None)
+        Self::spawn_with_logs(command, None, None, None, None)
     }
 
     pub(crate) fn spawn_with_logs(
         command: &mut Command,
         stdout_path: Option<&Path>,
         stderr_path: Option<&Path>,
+        service_id: Option<&str>,
+        log_sink: Option<&Arc<dyn ServiceLogSink>>,
     ) -> Result<Self, ProcessTreeError> {
         if is_batch_program(command.get_program()) {
-            Self::spawn_batch_with_logs(command, stdout_path, stderr_path)
+            Self::spawn_batch_with_logs(command, stdout_path, stderr_path, service_id, log_sink)
         } else {
-            Self::spawn_native_with_logs(command, stdout_path, stderr_path)
+            Self::spawn_native_with_logs(command, stdout_path, stderr_path, service_id, log_sink)
         }
     }
 
@@ -145,6 +148,8 @@ impl OwnedProcessTree {
         command: &mut Command,
         stdout_path: Option<&Path>,
         stderr_path: Option<&Path>,
+        service_id: Option<&str>,
+        log_sink: Option<&Arc<dyn ServiceLogSink>>,
     ) -> Result<Self, ProcessTreeError> {
         let job = create_kill_on_close_job()?;
         let stdout_writer = stdout_path
@@ -188,7 +193,13 @@ impl OwnedProcessTree {
                         path: writer.path.clone(),
                         source: io::Error::other("stdout pipe was not created"),
                     })?;
-                threads.push(spawn_log_thread(reader, writer)?);
+                threads.push(spawn_log_thread(
+                    reader,
+                    writer,
+                    service_id.map(str::to_owned),
+                    log_sink.cloned(),
+                    CapturedLogStream::Stdout,
+                )?);
             }
             if let Some(writer) = stderr_writer {
                 let reader = child
@@ -198,7 +209,13 @@ impl OwnedProcessTree {
                         path: writer.path.clone(),
                         source: io::Error::other("stderr pipe was not created"),
                     })?;
-                threads.push(spawn_log_thread(reader, writer)?);
+                threads.push(spawn_log_thread(
+                    reader,
+                    writer,
+                    service_id.map(str::to_owned),
+                    log_sink.cloned(),
+                    CapturedLogStream::Stderr,
+                )?);
             }
             Ok(threads)
         })();
@@ -230,6 +247,8 @@ impl OwnedProcessTree {
         command: &Command,
         stdout_path: Option<&Path>,
         stderr_path: Option<&Path>,
+        service_id: Option<&str>,
+        log_sink: Option<&Arc<dyn ServiceLogSink>>,
     ) -> Result<Self, ProcessTreeError> {
         let job = create_kill_on_close_job()?;
         let stdout_writer = stdout_path
@@ -267,7 +286,13 @@ impl OwnedProcessTree {
                         path: writer.path.clone(),
                         source: io::Error::other("stdout pipe was not created"),
                     })?;
-                threads.push(spawn_log_thread(reader, writer)?);
+                threads.push(spawn_log_thread(
+                    reader,
+                    writer,
+                    service_id.map(str::to_owned),
+                    log_sink.cloned(),
+                    CapturedLogStream::Stdout,
+                )?);
             }
             if let Some(writer) = stderr_writer {
                 let reader = spawned
@@ -277,7 +302,13 @@ impl OwnedProcessTree {
                         path: writer.path.clone(),
                         source: io::Error::other("stderr pipe was not created"),
                     })?;
-                threads.push(spawn_log_thread(reader, writer)?);
+                threads.push(spawn_log_thread(
+                    reader,
+                    writer,
+                    service_id.map(str::to_owned),
+                    log_sink.cloned(),
+                    CapturedLogStream::Stderr,
+                )?);
             }
             Ok(threads)
         })();
@@ -754,14 +785,35 @@ struct LogThread {
 fn spawn_log_thread(
     mut reader: impl Read + Send + 'static,
     mut writer: RotatingLogWriter,
+    service_id: Option<String>,
+    log_sink: Option<Arc<dyn ServiceLogSink>>,
+    stream: CapturedLogStream,
 ) -> Result<LogThread, ProcessTreeError> {
     let path = writer.path.clone();
     let thread_path = path.clone();
     let handle = thread::Builder::new()
         .name("aku-supervisor-log-pump".to_owned())
         .spawn(move || {
-            io::copy(&mut reader, &mut writer)?;
-            writer.flush()
+            let result = (|| {
+                let mut buffer = [0_u8; 8 * 1024];
+                loop {
+                    let bytes_read = reader.read(&mut buffer)?;
+                    if bytes_read == 0 {
+                        break;
+                    }
+                    writer.write_all(&buffer[..bytes_read])?;
+                    if let (Some(service_id), Some(log_sink)) =
+                        (service_id.as_deref(), log_sink.as_ref())
+                    {
+                        log_sink.publish(service_id, stream, &buffer[..bytes_read]);
+                    }
+                }
+                writer.flush()
+            })();
+            if let (Some(service_id), Some(log_sink)) = (service_id.as_deref(), log_sink.as_ref()) {
+                log_sink.close_stream(service_id, stream);
+            }
+            result
         })
         .map_err(|source| ProcessTreeError::LogSetup {
             path: thread_path,

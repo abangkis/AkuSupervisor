@@ -5,6 +5,24 @@ use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::time::Duration;
 
+/// Platform-neutral identity of one captured child-process output stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapturedLogStream {
+    Stdout,
+    Stderr,
+}
+
+/// Receives bytes after they have been persisted by a platform log pump.
+///
+/// Implementations must keep this path bounded: service output and durable log
+/// persistence must never wait for a live-log viewer.
+pub trait ServiceLogSink: Debug + Send + Sync {
+    fn publish(&self, service_id: &str, stream: CapturedLogStream, bytes: &[u8]);
+
+    /// Finishes any incomplete line when one process stream closes.
+    fn close_stream(&self, service_id: &str, stream: CapturedLogStream);
+}
+
 /// Fully resolved process launch request produced from validated configuration.
 ///
 /// Control surfaces must never construct this value from request-supplied shell
@@ -155,6 +173,7 @@ pub trait ProcessTreeSpawner: Debug + Send + Sync {
     /// before the root process begins normal execution.
     fn spawn(
         &self,
+        service_id: &str,
         launch: &LaunchSpec,
     ) -> Result<Self::Process, <Self::Process as ManagedProcessTree>::Error>;
 }

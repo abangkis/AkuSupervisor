@@ -349,7 +349,7 @@ where
             .start_with(|| {
                 self.ensure_ports_available(&entry.registration.ports)?;
                 self.spawner
-                    .spawn(&entry.registration.launch)
+                    .spawn(&entry.registration.id, &entry.registration.launch)
                     .map_err(BackendOperationError::Process)
             })
             .map_err(RegistryError::Runtime)?;
@@ -506,7 +506,7 @@ where
                 || {
                     self.ensure_ports_available(&entry.registration.ports)?;
                     self.spawner
-                        .spawn(&entry.registration.launch)
+                        .spawn(&entry.registration.id, &entry.registration.launch)
                         .map_err(BackendOperationError::Process)
                 },
             )
@@ -1195,7 +1195,11 @@ mod tests {
     impl ProcessTreeSpawner for FakeSpawner {
         type Process = FakeProcess;
 
-        fn spawn(&self, _launch: &LaunchSpec) -> Result<Self::Process, FakeError> {
+        fn spawn(
+            &self,
+            _service_id: &str,
+            _launch: &LaunchSpec,
+        ) -> Result<Self::Process, FakeError> {
             let pid = self.spawn_count.fetch_add(1, Ordering::SeqCst) + 1_000;
             Ok(FakeProcess { pid })
         }
@@ -1308,7 +1312,11 @@ mod tests {
     impl ProcessTreeSpawner for ControllableSpawner {
         type Process = ControllableProcess;
 
-        fn spawn(&self, _launch: &LaunchSpec) -> Result<Self::Process, FakeError> {
+        fn spawn(
+            &self,
+            _service_id: &str,
+            _launch: &LaunchSpec,
+        ) -> Result<Self::Process, FakeError> {
             let pid = self.next_pid.fetch_add(1, Ordering::SeqCst);
             let control = ProcessControl {
                 owned_pids: Arc::new(Mutex::new(vec![pid])),

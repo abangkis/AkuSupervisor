@@ -12,7 +12,7 @@ mod active {
     use std::sync::Arc;
 
     use crate::application::{
-        HealthProbe, RegistryBuildError, ServiceRegistration, ServiceRegistry,
+        HealthProbe, RegistryBuildError, ServiceLogSink, ServiceRegistration, ServiceRegistry,
     };
     use crate::platform::windows::{ConsoleShutdown, WindowsPortInspector, WindowsProcessSpawner};
 
@@ -31,10 +31,11 @@ mod active {
     pub fn create_registry(
         registrations: Vec<ServiceRegistration>,
         health_probe: Arc<dyn HealthProbe>,
+        log_sink: Arc<dyn ServiceLogSink>,
     ) -> Result<HostRegistry, RegistryBuildError> {
         HostRegistry::new(
             registrations,
-            WindowsProcessSpawner,
+            WindowsProcessSpawner::new(log_sink),
             WindowsPortInspector,
             health_probe,
         )

@@ -153,6 +153,8 @@ cargo run -- status
 cargo run -- registry-status
 cargo run -- events --limit 20
 cargo run -- logs akusidecar --stream stdout --tail 100
+cargo run -- live-logs akusidecar
+cargo run -- live-logs akusidecar --stream stderr --tail 20
 cargo run -- restart akusidecar --actor codex --reason "source changed"
 cargo run -- bridge reload --actor codex --reason "load updated unpacked extension" --request-id "bridge-reload-001"
 cargo run -- bridge status --request-id "bridge-reload-001" --json
@@ -475,6 +477,14 @@ Runtime artifacts use this layout:
 Each output stream rotates continuously at 5 MB and retains five generations.
 The `events` command returns at most 200 records per request; `logs` returns at
 most 1,000 lines from the active generation.
+
+`live-logs <service>` follows both stdout and stderr by default, beginning with
+the last 50 merged lines. Use `--stream stdout` or `--stream stderr` to select
+one stream, `--tail 0` to skip history, and `--json` for the native NDJSON
+event contract. Ctrl+C stops only the viewer; it does not stop the managed
+service or AkuSupervisor. The persistent rotating files remain authoritative.
+A slow viewer receives an explicit `gap` event instead of blocking the service
+log pump. See the [live-log design](docs/live-logs.md).
 
 The lifecycle journal is always complete. The optional root setting
 `observability.consoleEvents` controls whether its persisted records are also

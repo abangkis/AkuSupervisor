@@ -32,8 +32,9 @@ pub use health::{
     HealthCheckSpec, HealthProbe, HealthSnapshot, HealthStatus, JsonPathMode, TransportHealth,
 };
 pub use platform_ports::{
-    LaunchSpec, ManagedProcessTree, NetworkFamily, PortDiagnostic, PortInspector, PortOccupant,
-    ProcessTreeSpawner, ShutdownSignal, TreeStopReport,
+    CapturedLogStream, LaunchSpec, ManagedProcessTree, NetworkFamily, PortDiagnostic,
+    PortInspector, PortOccupant, ProcessTreeSpawner, ServiceLogSink, ShutdownSignal,
+    TreeStopReport,
 };
 pub use registry_reconciliation::{
     RegistryReconciliationSnapshot, RegistryReconciliationState, RegistryReconciliationStatus,
