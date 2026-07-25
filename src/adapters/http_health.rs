@@ -35,7 +35,7 @@ impl HealthProbe for LoopbackTransportHealthProbe {
                 url,
                 expected_status,
                 ..
-            } => match request(url, timeout) {
+            } => match request(url, timeout, "*/*") {
                 Ok(response) => TransportHealth {
                     transport_ready: true,
                     healthy: response.status == *expected_status,
@@ -56,7 +56,7 @@ impl HealthProbe for LoopbackTransportHealthProbe {
                 expect,
                 diagnostic_expect,
                 ..
-            } => match request(url, timeout) {
+            } => match request(url, timeout, "application/json") {
                 Ok(response) => {
                     if !(200..300).contains(&response.status) {
                         return TransportHealth {
@@ -171,7 +171,7 @@ fn failed_transport(detail: String) -> TransportHealth {
     }
 }
 
-fn request(url: &str, timeout: std::time::Duration) -> Result<HttpResponse, String> {
+fn request(url: &str, timeout: std::time::Duration, accept: &str) -> Result<HttpResponse, String> {
     if timeout.is_zero() {
         return Err("HTTP health deadline was exhausted".to_owned());
     }
@@ -188,7 +188,7 @@ fn request(url: &str, timeout: std::time::Duration) -> Result<HttpResponse, Stri
         .map_err(|error| format!("failed to set HTTP write timeout: {error}"))?;
     write!(
         stream,
-        "GET {path} HTTP/1.1\r\nHost: {authority}\r\nAccept: application/json\r\nConnection: close\r\n\r\n"
+        "GET {path} HTTP/1.1\r\nHost: {authority}\r\nAccept: {accept}\r\nConnection: close\r\n\r\n"
     )
     .and_then(|()| stream.flush())
     .map_err(|error| format!("HTTP request failed: {error}"))?;
@@ -232,14 +232,16 @@ fn parse_loopback_url(url: &str) -> Result<(SocketAddr, &str, &str), String> {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::io::{Read, Write};
     use std::net::TcpListener;
+    use std::thread;
     use std::time::Duration;
 
     use crate::application::{HealthCheckSpec, HealthProbe, JsonPathMode};
 
     use super::{
         LoopbackTransportHealthProbe, connect_tcp, decode_chunked_body, evaluate_json_body,
-        parse_loopback_url, parse_response,
+        parse_loopback_url, parse_response, request,
     };
 
     #[test]
@@ -270,6 +272,56 @@ mod tests {
         assert_eq!(path, "/api/health?full=1");
         assert!(parse_loopback_url("http://192.0.2.1:80/health").is_err());
         assert!(parse_loopback_url("https://127.0.0.1:443/health").is_err());
+    }
+
+    #[test]
+    fn status_and_json_probes_send_distinct_accept_headers() {
+        assert_eq!(captured_accept_header("*/*"), "Accept: */*");
+        assert_eq!(
+            captured_accept_header("application/json"),
+            "Accept: application/json"
+        );
+    }
+
+    fn captured_accept_header(accept: &str) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind HTTP fixture");
+        let address = listener.local_addr().expect("fixture address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept health request");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .expect("set fixture timeout");
+            let mut request_bytes = Vec::new();
+            let mut buffer = [0_u8; 256];
+            while !request_bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = stream.read(&mut buffer).expect("read health request");
+                if read == 0 {
+                    break;
+                }
+                request_bytes.extend_from_slice(&buffer[..read]);
+            }
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+                )
+                .expect("write fixture response");
+            String::from_utf8(request_bytes).expect("health request is ASCII")
+        });
+
+        request(
+            &format!("http://{address}/health"),
+            Duration::from_secs(1),
+            accept,
+        )
+        .expect("health request succeeds");
+
+        server
+            .join()
+            .expect("fixture server completes")
+            .lines()
+            .find(|line| line.starts_with("Accept:"))
+            .expect("Accept header is present")
+            .to_owned()
     }
 
     #[test]
