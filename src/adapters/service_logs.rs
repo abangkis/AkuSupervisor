@@ -87,6 +87,14 @@ pub enum LiveLogEventKind {
     Line,
     Gap,
     Heartbeat,
+    HubReset,
+}
+
+/// Resume position scoped to exactly one Supervisor-owned live-log hub.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveLogCursor {
+    pub hub_instance_id: String,
+    pub sequence: u64,
 }
 
 /// One versioned, newline-delimited event emitted by the live-log protocol.
@@ -106,6 +114,12 @@ pub struct LiveLogEvent {
     pub text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dropped: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_hub_instance_id: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub replayed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_modified_at_unix_ms: Option<u64>,
 }
 
 impl LiveLogEvent {
@@ -121,6 +135,32 @@ impl LiveLogEvent {
             observed_at_unix_ms: unix_time_ms(),
             text: None,
             dropped: None,
+            previous_hub_instance_id: None,
+            replayed: false,
+            source_modified_at_unix_ms: None,
+        }
+    }
+
+    #[must_use]
+    fn hub_reset(
+        hub_instance_id: &str,
+        previous_hub_instance_id: &str,
+        service_id: &str,
+        high_watermark: u64,
+    ) -> Self {
+        Self {
+            schema_version: 1,
+            kind: LiveLogEventKind::HubReset,
+            hub_instance_id: hub_instance_id.to_owned(),
+            service_id: service_id.to_owned(),
+            sequence: Some(high_watermark),
+            stream: None,
+            observed_at_unix_ms: unix_time_ms(),
+            text: Some("AkuSupervisor live-log hub changed; replay cursor was reset".to_owned()),
+            dropped: None,
+            previous_hub_instance_id: Some(previous_hub_instance_id.to_owned()),
+            replayed: false,
+            source_modified_at_unix_ms: None,
         }
     }
 }
@@ -140,7 +180,7 @@ impl LiveLogHub {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            instance_id: format!("{}-{}", std::process::id(), unix_time_ms()),
+            instance_id: format!("{}-{}", std::process::id(), unix_time_ns()),
             state: Mutex::new(LiveLogState::default()),
         }
     }
@@ -163,18 +203,21 @@ impl LiveLogHub {
             .iter()
             .filter(|(service_id, _)| !existing.contains(service_id))
             .map(|(service_id, paths)| {
-                let lines = [
+                let mut streams = [
                     (LogStream::Stdout, &paths.stdout),
                     (LogStream::Stderr, &paths.stderr),
-                ]
-                .into_iter()
-                .flat_map(|(stream, path)| {
-                    read_tail_lines(path, MAX_TAIL_LINES / 2)
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(move |line| (stream, line))
-                })
-                .collect::<Vec<_>>();
+                ];
+                streams.sort_by_key(|(_, path)| file_modified_at_unix_ms(path));
+                let lines = streams
+                    .into_iter()
+                    .flat_map(|(stream, path)| {
+                        let modified_at = file_modified_at_unix_ms(path);
+                        read_tail_lines(path, MAX_TAIL_LINES / 2)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(move |line| (stream, modified_at, line))
+                    })
+                    .collect::<Vec<_>>();
                 (service_id.clone(), lines)
             })
             .collect::<Vec<_>>();
@@ -190,13 +233,14 @@ impl LiveLogHub {
                 continue;
             }
             let mut service = LiveServiceState::default();
-            for (stream, line) in lines {
-                let event = Self::line_event(
+            for (stream, source_modified_at_unix_ms, line) in lines {
+                let event = Self::replayed_line_event(
                     &self.instance_id,
                     &service_id,
                     stream,
                     state.next_sequence(),
                     line,
+                    source_modified_at_unix_ms,
                 );
                 service.push_ring(event);
             }
@@ -264,6 +308,33 @@ impl LiveLogHub {
             observed_at_unix_ms: unix_time_ms(),
             text: Some(text),
             dropped: None,
+            previous_hub_instance_id: None,
+            replayed: false,
+            source_modified_at_unix_ms: None,
+        }
+    }
+
+    fn replayed_line_event(
+        instance_id: &str,
+        service_id: &str,
+        stream: LogStream,
+        sequence: u64,
+        text: String,
+        source_modified_at_unix_ms: Option<u64>,
+    ) -> LiveLogEvent {
+        LiveLogEvent {
+            schema_version: 1,
+            kind: LiveLogEventKind::Line,
+            hub_instance_id: instance_id.to_owned(),
+            service_id: service_id.to_owned(),
+            sequence: Some(sequence),
+            stream: Some(stream),
+            observed_at_unix_ms: source_modified_at_unix_ms.unwrap_or_else(unix_time_ms),
+            text: Some(text),
+            dropped: None,
+            previous_hub_instance_id: None,
+            replayed: true,
+            source_modified_at_unix_ms,
         }
     }
 
@@ -272,13 +343,14 @@ impl LiveLogHub {
         service_id: &str,
         selection: LiveLogSelection,
         tail: usize,
-        after: Option<u64>,
+        cursor: Option<&LiveLogCursor>,
     ) -> Result<LiveLogSubscription, ServiceLogError> {
         let mut state = self
             .state
             .lock()
             .map_err(|_| ServiceLogError::LockPoisoned)?;
         let subscriber_id = state.next_subscriber_id();
+        let high_watermark = state.next_sequence;
         let service = state
             .services
             .get_mut(service_id)
@@ -286,6 +358,8 @@ impl LiveLogHub {
         if service.subscribers.len() >= MAX_LIVE_SUBSCRIBERS_PER_SERVICE {
             return Err(ServiceLogError::TooManySubscribers(service_id.to_owned()));
         }
+        let cursor_matches_hub =
+            cursor.is_some_and(|value| value.hub_instance_id == self.instance_id);
         let mut initial = service
             .ring
             .iter()
@@ -293,13 +367,26 @@ impl LiveLogHub {
                 event
                     .stream
                     .is_some_and(|stream| selection.includes(stream))
-                    && after
-                        .is_none_or(|sequence| event.sequence.is_some_and(|value| value > sequence))
+                    && (!cursor_matches_hub
+                        || cursor.is_some_and(|cursor| {
+                            event.sequence.is_some_and(|value| value > cursor.sequence)
+                        }))
             })
             .cloned()
             .collect::<Vec<_>>();
-        if after.is_none() && initial.len() > tail {
+        if !cursor_matches_hub && initial.len() > tail {
             initial.drain(..initial.len() - tail);
+        }
+        if let Some(cursor) = cursor.filter(|_| !cursor_matches_hub) {
+            initial.insert(
+                0,
+                LiveLogEvent::hub_reset(
+                    &self.instance_id,
+                    &cursor.hub_instance_id,
+                    service_id,
+                    high_watermark,
+                ),
+            );
         }
         let (sender, receiver) = mpsc::sync_channel(LIVE_SUBSCRIBER_QUEUE);
         service.subscribers.insert(
@@ -419,6 +506,9 @@ impl LiveServiceState {
                     observed_at_unix_ms: unix_time_ms(),
                     text: None,
                     dropped: Some(subscriber.dropped),
+                    previous_hub_instance_id: None,
+                    replayed: false,
+                    source_modified_at_unix_ms: None,
                 };
                 match subscriber.sender.try_send(gap) {
                     Ok(()) => subscriber.dropped = 0,
@@ -569,10 +659,10 @@ impl ServiceLogStore {
         service_id: &str,
         selection: LiveLogSelection,
         tail: usize,
-        after: Option<u64>,
+        cursor: Option<&LiveLogCursor>,
     ) -> Result<LiveLogSubscription, ServiceLogError> {
         self.live
-            .subscribe(service_id, selection, tail.clamp(0, MAX_TAIL_LINES), after)
+            .subscribe(service_id, selection, tail.clamp(0, MAX_TAIL_LINES), cursor)
     }
 
     #[must_use]
@@ -630,6 +720,25 @@ fn unix_time_ms() -> u64 {
         })
 }
 
+fn unix_time_ns() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos())
+}
+
+fn file_modified_at_unix_ms(path: &Path) -> Option<u64> {
+    fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Debug, Clone)]
 struct ServiceLogPaths {
     stdout: PathBuf,
@@ -678,7 +787,7 @@ mod tests {
 
     use crate::application::{CapturedLogStream, ServiceLogSink};
 
-    use super::{LiveLogEventKind, LiveLogSelection, LogStream, ServiceLogStore};
+    use super::{LiveLogCursor, LiveLogEventKind, LiveLogSelection, LogStream, ServiceLogStore};
 
     fn directory(name: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("aku-supervisor-{name}-{}", std::process::id()))
@@ -717,14 +826,18 @@ mod tests {
         store.publish("api", CapturedLogStream::Stderr, b"err\n");
         store.publish("api", CapturedLogStream::Stdout, b"put\n");
         store.close_stream("api", CapturedLogStream::Stdout);
+        store.publish("api", CapturedLogStream::Stdout, b"after service restart\n");
 
         let first = subscription.receiver.recv().expect("stderr event");
         let second = subscription.receiver.recv().expect("stdout event");
+        let third = subscription.receiver.recv().expect("stdout after restart");
         assert_eq!(first.stream, Some(LogStream::Stderr));
         assert_eq!(first.text.as_deref(), Some("err"));
         assert_eq!(second.stream, Some(LogStream::Stdout));
         assert_eq!(second.text.as_deref(), Some("output"));
+        assert_eq!(third.text.as_deref(), Some("after service restart"));
         assert!(first.sequence < second.sequence);
+        assert!(second.sequence < third.sequence);
         assert!(matches!(
             subscription.receiver.try_recv(),
             Err(TryRecvError::Empty)
@@ -798,6 +911,62 @@ mod tests {
                 .as_deref(),
             Some("still-live")
         );
+        fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn matching_composite_cursor_replays_only_newer_events() {
+        let directory = directory("live-cursor");
+        fs::create_dir_all(&directory).expect("create log directory");
+        let store = ServiceLogStore::new(&directory, ["api".to_owned()]);
+        store.publish("api", CapturedLogStream::Stdout, b"one\ntwo\n");
+        let all = store
+            .subscribe("api", LiveLogSelection::Both, 10, None)
+            .expect("initial subscription");
+        let cursor = LiveLogCursor {
+            hub_instance_id: all.initial[0].hub_instance_id.clone(),
+            sequence: all.initial[0].sequence.expect("line sequence"),
+        };
+
+        let resumed = store
+            .subscribe("api", LiveLogSelection::Both, 10, Some(&cursor))
+            .expect("resume same hub");
+
+        assert_eq!(resumed.initial.len(), 1);
+        assert_eq!(resumed.initial[0].text.as_deref(), Some("two"));
+        assert_eq!(resumed.initial[0].kind, LiveLogEventKind::Line);
+        fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn foreign_hub_cursor_emits_reset_and_replays_current_tail() {
+        let directory = directory("live-hub-reset");
+        fs::create_dir_all(&directory).expect("create log directory");
+        fs::write(directory.join("api.stdout.log"), "old\nstartup\n")
+            .expect("write persisted log fixture");
+        let previous = ServiceLogStore::new(&directory, ["api".to_owned()]);
+        let previous_hub = previous.hub_instance_id().to_owned();
+        let stale_cursor = LiveLogCursor {
+            hub_instance_id: previous_hub.clone(),
+            sequence: u64::MAX,
+        };
+        drop(previous);
+
+        let current = ServiceLogStore::new(&directory, ["api".to_owned()]);
+        let resumed = current
+            .subscribe("api", LiveLogSelection::Both, 1, Some(&stale_cursor))
+            .expect("resume after Supervisor restart");
+
+        assert_ne!(current.hub_instance_id(), previous_hub);
+        assert_eq!(resumed.initial.len(), 2);
+        assert_eq!(resumed.initial[0].kind, LiveLogEventKind::HubReset);
+        assert_eq!(
+            resumed.initial[0].previous_hub_instance_id.as_deref(),
+            Some(previous_hub.as_str())
+        );
+        assert_eq!(resumed.initial[1].text.as_deref(), Some("startup"));
+        assert!(resumed.initial[1].replayed);
+        assert!(resumed.initial[1].source_modified_at_unix_ms.is_some());
         fs::remove_dir_all(directory).ok();
     }
 }

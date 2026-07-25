@@ -54,9 +54,16 @@ Accept: application/x-ndjson
 Authorization: Bearer <runtime token>
 ```
 
-`after=<sequence>` supports bounded reconnection replay. The response is
-close-delimited NDJSON and contains versioned `line`, `gap`, and `heartbeat`
-records. Line events include:
+Reconnection uses one atomic composite cursor:
+
+```text
+afterHub=<hubInstanceId>&after=<sequence>
+```
+
+Supplying only one half is rejected. A sequence is meaningful only inside the
+Hub instance that issued it; it must never be reused against a newly started
+AkuSupervisor. The response is close-delimited NDJSON and contains versioned
+`line`, `gap`, `heartbeat`, and `hub_reset` records. Line events include:
 
 - `hubInstanceId`, which changes when AkuSupervisor restarts;
 - one shared `sequence` across stdout and stderr;
@@ -64,15 +71,40 @@ records. Line events include:
 - `observedAtUnixMs`; and
 - `text`.
 
+When AkuSupervisor restarts, the CLI automatically reconnects with its old
+composite cursor. The new Hub emits `hub_reset`, ignores the foreign sequence,
+and replays the requested tail from its current bounded ring. The reset record
+also carries the new Hub high-water mark, so subsequent reconnects do not
+repeat the startup replay.
+
 The shared sequence specifies the order in which the two capture pumps reached
 the hub. It cannot reconstruct a stronger operating-system emission order.
-Historical lines loaded from separate persistent files are best-effort merged;
-new live lines are deterministically sequenced at observation time.
+Historical lines loaded from separate persistent files are best-effort merged
+by each file's modification time. They carry `replayed: true` and
+`sourceModifiedAtUnixMs`, and the human view labels their stream as
+`stdout/replay` or `stderr/replay`. This prevents a persisted line restored
+after Supervisor restart from masquerading as freshly emitted output. New live
+lines are deterministically sequenced at observation time.
 
 Heartbeats keep an idle connection observable across long service pauses or
-machine sleep. The CLI reconnects after a closed connection and requests
-events after its latest observed sequence. Persistent files remain the source
-for complete forensic history and `logs` remains the bounded snapshot command.
+machine sleep. Human output shows the first idle heartbeat and then at most one
+per minute; `--json` retains every protocol heartbeat. The CLI reconnects after
+a closed connection and requests events after its latest composite cursor.
+Persistent files remain the source for complete forensic history and `logs`
+remains the bounded snapshot command.
+
+## Restart guarantees
+
+- **Service restart:** the Hub and subscription stay alive, so the same viewer
+  receives output from the replacement child process.
+- **AkuSupervisor restart:** the TCP connection closes, the CLI retries, a new
+  Hub identity is detected, and a bounded current tail is replayed before live
+  delivery continues.
+- **Viewer restart:** a newly launched viewer has no prior cursor and starts
+  from its requested tail.
+
+The ring and composite cursor provide continuity, not a permanent merged
+ledger. Rotating stdout/stderr files remain authoritative across long outages.
 
 ## Portability
 

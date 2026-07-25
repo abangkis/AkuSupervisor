@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use crate::VERSION;
 use crate::adapters::control_http::ApiActor;
-use crate::adapters::service_logs::{LiveLogEventKind, LiveLogSelection, LogStream};
+use crate::adapters::service_logs::{LiveLogCursor, LiveLogEventKind, LiveLogSelection, LogStream};
 use crate::application::ControlAction;
 
 const HELP: &str = "AkuSupervisor - local development service supervisor\n\n\
@@ -1135,21 +1135,11 @@ fn live_logs(
         );
     }
 
-    let mut after = None;
+    let mut cursor: Option<LiveLogCursor> = None;
     let mut connected_once = false;
+    let mut last_heartbeat_notice = None;
     loop {
-        let target = after.map_or_else(
-            || {
-                format!(
-                    "/v1/services/{service_id}/logs/live?stream={stream_name}&tail={tail}"
-                )
-            },
-            |sequence| {
-                format!(
-                    "/v1/services/{service_id}/logs/live?stream={stream_name}&tail=0&after={sequence}"
-                )
-            },
-        );
+        let target = live_log_target(service_id, stream_name, tail, cursor.as_ref());
         let mut client = match client_live_logs(address, &token, &target) {
             Ok(client) => client,
             Err(error) if connected_once && error.is_transient() => {
@@ -1174,10 +1164,16 @@ fn live_logs(
                 }
                 Err(error) => return Err(error.to_string()),
             };
-            if let Some(sequence) = event.sequence {
-                after = Some(sequence);
+            advance_live_log_cursor(&mut cursor, &event);
+            let show_heartbeat = json_output
+                || event.kind != LiveLogEventKind::Heartbeat
+                || last_heartbeat_notice.is_none_or(|instant: std::time::Instant| {
+                    instant.elapsed() >= Duration::from_mins(1)
+                });
+            if event.kind == LiveLogEventKind::Heartbeat && show_heartbeat && !json_output {
+                last_heartbeat_notice = Some(std::time::Instant::now());
             }
-            print_live_log_event(&event, json_output);
+            print_live_log_event(&event, json_output, show_heartbeat);
         }
         if !json_output {
             eprintln!("[live-logs] connection closed; reconnecting...");
@@ -1186,7 +1182,48 @@ fn live_logs(
     }
 }
 
-fn print_live_log_event(event: &crate::adapters::service_logs::LiveLogEvent, json_output: bool) {
+fn advance_live_log_cursor(
+    cursor: &mut Option<LiveLogCursor>,
+    event: &crate::adapters::service_logs::LiveLogEvent,
+) {
+    let Some(sequence) = event.sequence else {
+        return;
+    };
+    match cursor.as_mut() {
+        Some(cursor) if cursor.hub_instance_id == event.hub_instance_id => {
+            cursor.sequence = cursor.sequence.max(sequence);
+        }
+        _ => {
+            *cursor = Some(LiveLogCursor {
+                hub_instance_id: event.hub_instance_id.clone(),
+                sequence,
+            });
+        }
+    }
+}
+
+fn live_log_target(
+    service_id: &str,
+    stream_name: &str,
+    tail: usize,
+    cursor: Option<&LiveLogCursor>,
+) -> String {
+    cursor.map_or_else(
+        || format!("/v1/services/{service_id}/logs/live?stream={stream_name}&tail={tail}"),
+        |cursor| {
+            format!(
+                "/v1/services/{service_id}/logs/live?stream={stream_name}&tail={tail}&afterHub={}&after={}",
+                cursor.hub_instance_id, cursor.sequence
+            )
+        },
+    )
+}
+
+fn print_live_log_event(
+    event: &crate::adapters::service_logs::LiveLogEvent,
+    json_output: bool,
+    show_heartbeat: bool,
+) {
     if json_output {
         println!(
             "{}",
@@ -1205,6 +1242,11 @@ fn print_live_log_event(event: &crate::adapters::service_logs::LiveLogEvent, jso
                 Some(LogStream::Stderr) => "stderr",
                 None => "unknown",
             };
+            let stream = if event.replayed {
+                format!("{stream}/replay")
+            } else {
+                stream.to_owned()
+            };
             println!(
                 "[{timestamp}] [{stream}] {}",
                 event.text.as_deref().unwrap_or_default()
@@ -1214,6 +1256,26 @@ fn print_live_log_event(event: &crate::adapters::service_logs::LiveLogEvent, jso
             eprintln!(
                 "[live-logs] viewer fell behind; {} event(s) were dropped.",
                 event.dropped.unwrap_or(0)
+            );
+        }
+        LiveLogEventKind::Heartbeat if show_heartbeat => {
+            let timestamp = crate::adapters::journal::format_unix_milliseconds_utc(u128::from(
+                event.observed_at_unix_ms,
+            ))
+            .unwrap_or_else(|| event.observed_at_unix_ms.to_string());
+            eprintln!(
+                "[{timestamp}] [live-logs] stream connected; service output is idle (hub={})",
+                event.hub_instance_id
+            );
+        }
+        LiveLogEventKind::HubReset => {
+            eprintln!(
+                "[live-logs] reconnected to a new AkuSupervisor instance: {} -> {}; replay cursor reset.",
+                event
+                    .previous_hub_instance_id
+                    .as_deref()
+                    .unwrap_or("unknown"),
+                event.hub_instance_id
             );
         }
         LiveLogEventKind::Heartbeat => {}
@@ -1648,7 +1710,10 @@ mod tests {
     use std::path::PathBuf;
     use std::time::Duration;
 
-    use super::{Command, RemoteCommand, format_simple_status, lifecycle_response_timeout, parse};
+    use super::{
+        Command, RemoteCommand, advance_live_log_cursor, format_simple_status,
+        lifecycle_response_timeout, live_log_target, parse,
+    };
     use crate::adapters::config::SupervisorConfig;
     use crate::adapters::control_http::ApiActor;
     use crate::adapters::service_logs::LiveLogSelection;
@@ -1697,6 +1762,49 @@ mod tests {
                 tail: 0,
                 config: None,
                 json: true,
+            })
+        );
+        let cursor = crate::adapters::service_logs::LiveLogCursor {
+            hub_instance_id: "123-current".to_owned(),
+            sequence: 77,
+        };
+        assert_eq!(
+            live_log_target("api", "both", 50, Some(&cursor)),
+            "/v1/services/api/logs/live?stream=both&tail=50&afterHub=123-current&after=77"
+        );
+
+        let reset: crate::adapters::service_logs::LiveLogEvent =
+            serde_json::from_value(serde_json::json!({
+                "schemaVersion": 1,
+                "kind": "hub_reset",
+                "hubInstanceId": "456-new",
+                "serviceId": "api",
+                "sequence": 41,
+                "observedAtUnixMs": 1,
+                "previousHubInstanceId": "123-current"
+            }))
+            .expect("deserialize reset event");
+        let mut resumed_cursor = Some(cursor);
+        advance_live_log_cursor(&mut resumed_cursor, &reset);
+        let replayed_line: crate::adapters::service_logs::LiveLogEvent =
+            serde_json::from_value(serde_json::json!({
+                "schemaVersion": 1,
+                "kind": "line",
+                "hubInstanceId": "456-new",
+                "serviceId": "api",
+                "sequence": 12,
+                "stream": "stdout",
+                "observedAtUnixMs": 1,
+                "text": "persisted line",
+                "replayed": true
+            }))
+            .expect("deserialize replayed line");
+        advance_live_log_cursor(&mut resumed_cursor, &replayed_line);
+        assert_eq!(
+            resumed_cursor,
+            Some(crate::adapters::service_logs::LiveLogCursor {
+                hub_instance_id: "456-new".to_owned(),
+                sequence: 41,
             })
         );
     }

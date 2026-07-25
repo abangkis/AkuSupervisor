@@ -22,7 +22,7 @@ use super::journal::FileJournal;
 use super::mcp::{self, McpResponse};
 use super::runtime_token::RuntimeToken;
 use super::service_logs::{
-    LiveLogEvent, LiveLogSelection, LiveLogSubscription, LogStream, ServiceLogError,
+    LiveLogCursor, LiveLogEvent, LiveLogSelection, LiveLogSubscription, LogStream, ServiceLogError,
     ServiceLogStore,
 };
 
@@ -206,13 +206,13 @@ fn handle_connection(
 ) -> Result<(), RequestError> {
     let request = read_request(stream)?;
     if request.method == "GET"
-        && let Some((service_id, selection, tail, after)) = parse_live_logs_target(&request.target)
+        && let Some((service_id, selection, tail, cursor)) = parse_live_logs_target(&request.target)
     {
         if !request_is_authorized(&request, token) {
             let response = error_response(401, "unauthorized", "valid bearer token required");
             return write_response(stream, &response).map_err(RequestError::Write);
         }
-        let subscription = match logs.subscribe(service_id, selection, tail, after) {
+        let subscription = match logs.subscribe(service_id, selection, tail, cursor.as_ref()) {
             Ok(subscription) => subscription,
             Err(ServiceLogError::ServiceNotFound(_)) => {
                 let response = error_response(404, "service_not_found", "unknown service");
@@ -535,7 +535,9 @@ fn parse_logs_target(target: &str) -> Option<(&str, LogStream, usize)> {
     Some((service_id, stream, tail))
 }
 
-fn parse_live_logs_target(target: &str) -> Option<(&str, LiveLogSelection, usize, Option<u64>)> {
+fn parse_live_logs_target(
+    target: &str,
+) -> Option<(&str, LiveLogSelection, usize, Option<LiveLogCursor>)> {
     let suffix = target.strip_prefix("/v1/services/")?;
     let (service_id, query) = suffix.split_once("/logs/live?")?;
     if service_id.is_empty() || service_id.contains('/') {
@@ -544,16 +546,34 @@ fn parse_live_logs_target(target: &str) -> Option<(&str, LiveLogSelection, usize
     let mut selection = LiveLogSelection::Both;
     let mut tail = 50_usize;
     let mut after = None;
+    let mut after_hub = None;
     for field in query.split('&') {
         let (name, value) = field.split_once('=')?;
         match name {
             "stream" => selection = LiveLogSelection::parse(value)?,
             "tail" => tail = value.parse::<usize>().ok()?.clamp(0, 1_000),
             "after" => after = Some(value.parse::<u64>().ok()?),
+            "afterHub" if valid_hub_instance_id(value) => after_hub = Some(value.to_owned()),
             _ => return None,
         }
     }
-    Some((service_id, selection, tail, after))
+    let cursor = match (after_hub, after) {
+        (Some(hub_instance_id), Some(sequence)) => Some(LiveLogCursor {
+            hub_instance_id,
+            sequence,
+        }),
+        (None, None) => None,
+        _ => return None,
+    };
+    Some((service_id, selection, tail, cursor))
+}
+
+fn valid_hub_instance_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
 fn parse_events_target(target: &str) -> Option<(u64, usize)> {
@@ -1423,6 +1443,7 @@ impl std::error::Error for ControlClientError {}
 mod tests {
     use std::sync::Mutex;
 
+    use crate::adapters::service_logs::LiveLogEventKind;
     use crate::application::{
         ControlError, ControlMutationOutcome, ControlMutationResult, CooperativeActionError,
         CooperativeActionOutcome, CooperativeActionStatus, ServiceSnapshot,
@@ -1554,6 +1575,28 @@ mod tests {
         assert_eq!(event.stream, Some(LogStream::Stderr));
         assert_eq!(event.text.as_deref(), Some("failure detail"));
 
+        let mut reset = client_live_logs(
+            server.address(),
+            &client_token,
+            "/v1/services/api/logs/live?stream=both&tail=1&afterHub=previous-hub&after=999",
+        )
+        .expect("resume with foreign hub cursor");
+        let reset_event = reset
+            .next_event()
+            .expect("read reset event")
+            .expect("reset event exists");
+        let replayed = reset
+            .next_event()
+            .expect("read replayed event")
+            .expect("replayed event exists");
+        assert_eq!(reset_event.kind, LiveLogEventKind::HubReset);
+        assert_eq!(
+            reset_event.previous_hub_instance_id.as_deref(),
+            Some("previous-hub")
+        );
+        assert_eq!(replayed.text.as_deref(), Some("failure detail"));
+
+        drop(reset);
         drop(live);
         server.shutdown().expect("stop control server");
         std::fs::remove_dir_all(root).ok();
@@ -1603,8 +1646,28 @@ mod tests {
             Some(("api", LiveLogSelection::Both, 50, None))
         );
         assert_eq!(
-            parse_live_logs_target("/v1/services/api/logs/live?stream=stderr&tail=5000&after=42"),
-            Some(("api", LiveLogSelection::Stderr, 1_000, Some(42)))
+            parse_live_logs_target(
+                "/v1/services/api/logs/live?stream=stderr&tail=5000&afterHub=123-old&after=42"
+            ),
+            Some((
+                "api",
+                LiveLogSelection::Stderr,
+                1_000,
+                Some(LiveLogCursor {
+                    hub_instance_id: "123-old".to_owned(),
+                    sequence: 42,
+                })
+            ))
+        );
+        assert!(
+            parse_live_logs_target("/v1/services/api/logs/live?stream=stderr&tail=50&after=42")
+                .is_none()
+        );
+        assert!(
+            parse_live_logs_target(
+                "/v1/services/api/logs/live?stream=stderr&tail=50&afterHub=123-old"
+            )
+            .is_none()
         );
         assert!(
             parse_live_logs_target("/v1/services/api/logs/live?stream=invalid&tail=50").is_none()

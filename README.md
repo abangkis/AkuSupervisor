@@ -484,7 +484,11 @@ one stream, `--tail 0` to skip history, and `--json` for the native NDJSON
 event contract. Ctrl+C stops only the viewer; it does not stop the managed
 service or AkuSupervisor. The persistent rotating files remain authoritative.
 A slow viewer receives an explicit `gap` event instead of blocking the service
-log pump. See the [live-log design](docs/live-logs.md).
+log pump. The viewer remains attached across service restarts. If
+AkuSupervisor itself restarts, it reconnects with a Hub-scoped composite
+cursor, reports `hub_reset`, and replays the current bounded tail; restored
+file lines are visibly marked `/replay`. See the
+[live-log design](docs/live-logs.md).
 
 The lifecycle journal is always complete. The optional root setting
 `observability.consoleEvents` controls whether its persisted records are also

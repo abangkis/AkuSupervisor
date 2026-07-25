@@ -861,7 +861,11 @@ Status: **Core and Windows capture implemented**
 - [x] add `live-logs <service>`, defaulting to both streams and an initial
   50-line tail;
 - [x] keep subscriptions alive while a service is stopped or restarted and
-  preserve them across unrelated registry reconciliation; and
+  preserve them across unrelated registry reconciliation;
+- [x] scope reconnect cursors to a Hub identity, emit `hub_reset`, and replay
+  the current bounded tail after an AkuSupervisor restart;
+- [x] mark lines restored from persistent files as replayed and retain their
+  source file modification time; and
 - [ ] connect future Linux and macOS pipe-capture adapters to the unchanged
   `ServiceLogSink` and run the same conformance tests natively.
 
