@@ -22,7 +22,7 @@ impl LifecycleState {
         matches!(
             (self, next),
             (Self::Stopped | Self::Failed, Self::Starting)
-                | (Self::Failed, Self::Stopping)
+                | (Self::Failed, Self::Stopped | Self::Stopping)
                 | (
                     Self::Starting,
                     Self::Running | Self::Unhealthy | Self::Failed | Self::Stopping
@@ -114,6 +114,14 @@ mod tests {
 
         assert_eq!(error.previous, LifecycleState::Stopped);
         assert_eq!(error.requested, LifecycleState::Running);
+    }
+
+    #[test]
+    fn failed_service_without_an_owner_can_be_acknowledged_as_stopped() {
+        assert_eq!(
+            LifecycleState::Failed.transition_to(LifecycleState::Stopped),
+            Ok(LifecycleState::Stopped)
+        );
     }
 
     #[test]

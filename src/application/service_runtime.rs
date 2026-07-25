@@ -222,6 +222,13 @@ impl<Process> ServiceRuntime<Process> {
     ) -> Result<StopOutcome, ServiceRuntimeError<Error>> {
         let mut inner = self.lock()?;
         if inner.process.is_none() {
+            if inner.lifecycle == LifecycleState::Failed {
+                inner.lifecycle = inner
+                    .lifecycle
+                    .transition_to(LifecycleState::Stopped)
+                    .map_err(ServiceRuntimeError::Transition)?;
+                return Ok(StopOutcome::Stopped);
+            }
             return Ok(StopOutcome::AlreadyStopped);
         }
 
@@ -539,5 +546,26 @@ mod tests {
         assert_eq!(status.code(), Some(23));
         assert_eq!(runtime.has_process(), Ok(false));
         assert_eq!(runtime.lifecycle(), Ok(LifecycleState::Failed));
+    }
+
+    #[test]
+    fn stop_normalizes_terminal_failure_without_a_process_owner() {
+        let runtime = ServiceRuntime::new();
+        runtime
+            .start_with(|| Ok::<_, &'static str>(7_u32))
+            .expect("initial start");
+        runtime
+            .reconcile_exit_with(|_| Ok::<_, &'static str>(Some(exit_status(23))))
+            .expect("terminal observation");
+
+        assert_eq!(runtime.has_process(), Ok(false));
+        assert_eq!(
+            runtime.stop_with(|_| -> Result<StopProgress, Infallible> {
+                panic!("stop callback must not run without a process owner");
+            }),
+            Ok(StopOutcome::Stopped)
+        );
+        assert_eq!(runtime.has_process(), Ok(false));
+        assert_eq!(runtime.lifecycle(), Ok(LifecycleState::Stopped));
     }
 }
