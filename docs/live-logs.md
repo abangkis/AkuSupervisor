@@ -6,6 +6,7 @@ for output already captured by AkuSupervisor.
 ```powershell
 .\target\dev\aku-supervisor.exe live-logs ai4u-be
 .\target\dev\aku-supervisor.exe live-logs ai4u-be --stream stderr
+.\target\dev\aku-supervisor.exe live-logs ai4u-be --timezone utc
 .\target\dev\aku-supervisor.exe live-logs ai4u-be --tail 0 --json
 ```
 
@@ -13,6 +14,12 @@ The default follows stdout and stderr together and starts with the last 50
 events retained by the current Supervisor. `--stream stdout` and
 `--stream stderr` select one stream. `--tail` accepts 0 through 1,000. Ctrl+C
 terminates only this client process.
+
+Human output defaults to the viewer machine's local timezone and includes the
+numeric UTC offset, for example `2026-07-26 10:15:20.123 +07:00`.
+`--timezone utc` renders the same event as
+`2026-07-26T03:15:20.123Z`. This is presentation only: `--json` continues to
+emit the canonical `observedAtUnixMs`, regardless of the timezone option.
 
 ## Data path
 
@@ -79,6 +86,8 @@ repeat the startup replay.
 
 The shared sequence specifies the order in which the two capture pumps reached
 the hub. It cannot reconstruct a stronger operating-system emission order.
+Timezone rendering never participates in sequence, cursor, replay, or merge
+ordering.
 Historical lines loaded from separate persistent files are best-effort merged
 by each file's modification time. They carry `replayed: true` and
 `sourceModifiedAtUnixMs`, and the human view labels their stream as

@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use crate::adapters::config::{ConfigError, SupervisorConfig};
 use crate::adapters::config_path::ResolvedConfigPath;
+use crate::adapters::console_time::{DisplayTimezone, format_unix_milliseconds};
 use crate::adapters::control_http::{ControlHttpError, ControlHttpServer};
 use crate::adapters::cooperative_extensions::build as build_cooperative_extensions;
 use crate::adapters::development_shutdown::{DevelopmentShutdown, DevelopmentShutdownError};
@@ -50,7 +51,10 @@ const INTERACTIVE_HELP: &str = "Commands:\n\
 ///
 /// Returns a startup, configuration, console-handler, input, or cleanup error.
 #[allow(clippy::too_many_lines)]
-pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> {
+pub fn run(
+    resolved_config: &ResolvedConfigPath,
+    console_timezone: DisplayTimezone,
+) -> Result<(), ForegroundError> {
     let config_path = resolved_config.path();
     let source = fs::read_to_string(config_path).map_err(|source| ForegroundError::ReadConfig {
         path: config_path.to_owned(),
@@ -109,7 +113,8 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
     let registry_control: Arc<dyn SupervisorControl> = registry.clone();
     let audited = Arc::new(
         AuditedControl::new(registry_control, Arc::clone(&journal), fingerprint.clone())
-            .with_console_events(config.observability.console_events),
+            .with_console_events(config.observability.console_events)
+            .with_console_timezone(console_timezone),
     );
     let control: Arc<dyn SupervisorControl> = audited.clone();
     let cooperative_extensions =
@@ -141,6 +146,7 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
             &fingerprint,
             &runtime_services_directory,
             reconciliation,
+            console_timezone,
         );
 
     print_startup(
@@ -155,6 +161,7 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
         development_shutdown.request_path(),
         instance.as_ref(),
         instance_lease.path(),
+        console_timezone,
     );
     print_status(control.as_ref());
     if development_shutdown.request_path().is_some() {
@@ -199,6 +206,7 @@ fn start_runtime_monitors(
     fingerprint: &str,
     runtime_services_directory: &std::path::Path,
     reconciliation: Arc<RegistryReconciliationStatus>,
+    console_timezone: DisplayTimezone,
 ) -> (ConfigMonitor, RegistrationEventMonitor, ServiceMonitor) {
     let config_monitor = ConfigMonitor::start(
         Arc::clone(registry),
@@ -209,12 +217,14 @@ fn start_runtime_monitors(
         fingerprint.to_owned(),
         runtime_services_directory.to_owned(),
         reconciliation,
+        console_timezone,
     );
     let registration_audit_path = runtime_services_directory
         .parent()
         .expect("runtime services directory has a parent")
         .join("registration/audit.jsonl");
-    let registration_monitor = RegistrationEventMonitor::start(registration_audit_path);
+    let registration_monitor =
+        RegistrationEventMonitor::start(registration_audit_path, console_timezone);
     let service_monitor = ServiceMonitor::start(Arc::clone(registry), audited);
     (config_monitor, registration_monitor, service_monitor)
 }
@@ -226,7 +236,7 @@ struct RegistrationEventMonitor {
 }
 
 impl RegistrationEventMonitor {
-    fn start(audit_path: PathBuf) -> Self {
+    fn start(audit_path: PathBuf, console_timezone: DisplayTimezone) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
         let worker = thread::spawn(move || {
@@ -237,7 +247,7 @@ impl RegistrationEventMonitor {
                     Ok(events) => {
                         last_error = None;
                         for event in events {
-                            println!("{}", event.console_line());
+                            println!("{}", event.console_line(console_timezone));
                         }
                     }
                     Err(error) => {
@@ -296,6 +306,7 @@ impl ConfigMonitor {
         mut active_fingerprint: String,
         runtime_services_directory: PathBuf,
         reconciliation: Arc<RegistryReconciliationStatus>,
+        console_timezone: DisplayTimezone,
     ) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
@@ -320,7 +331,7 @@ impl ConfigMonitor {
                         reconciliation.applied(active_fingerprint.clone(), &outcome);
                         println!(
                             "[{}] [registry] Applied revision {} without Supervisor handoff: added={}, updated={}, removed={}; unrelated services preserved.",
-                            console_timestamp_now(),
+                            console_timestamp_now(console_timezone),
                             active_fingerprint,
                             display_service_ids(&outcome.added),
                             display_service_ids(&outcome.updated),
@@ -348,7 +359,7 @@ impl ConfigMonitor {
                             };
                             eprintln!(
                                 "[{}] [registry] Configuration reconciliation {state}: {error}",
-                                console_timestamp_now()
+                                console_timestamp_now(console_timezone)
                             );
                         }
                         last_error = Some(error);
@@ -468,12 +479,12 @@ fn display_service_ids(service_ids: &[String]) -> String {
     }
 }
 
-fn console_timestamp_now() -> String {
+fn console_timestamp_now(timezone: DisplayTimezone) -> String {
     let milliseconds = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis();
-    crate::adapters::journal::format_unix_milliseconds_utc(milliseconds)
+    format_unix_milliseconds(milliseconds, timezone)
         .unwrap_or_else(|| "timestamp-invalid".to_owned())
 }
 
@@ -645,6 +656,7 @@ fn print_startup(
     development_shutdown_path: Option<&std::path::Path>,
     instance: &RuntimeInstance,
     instance_path: &std::path::Path,
+    console_timezone: DisplayTimezone,
 ) {
     println!("AkuSupervisor {}", crate::VERSION);
     println!("Configuration: {}", resolved_config.path().display());
@@ -676,6 +688,10 @@ fn print_startup(
     println!(
         "Console lifecycle events: {}",
         config.observability.console_events.as_str()
+    );
+    println!(
+        "Human timestamp display: {} (persistent logs and JSON remain UTC)",
+        console_timezone.as_str()
     );
     if config.cooperative_actions.aku_bridge_reload.is_some() {
         println!(

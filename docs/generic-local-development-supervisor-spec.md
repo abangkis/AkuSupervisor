@@ -478,7 +478,7 @@ Runtime layout:
 Every lifecycle event contains:
 
 - monotonically increasing sequence;
-- timestamp;
+- canonical UTC timestamp;
 - supervisor instance ID;
 - service ID;
 - action;
@@ -497,6 +497,13 @@ the foreground console as `off`, concise `lifecycle` (default), or `verbose`.
 Even `off` does not suppress failures from stderr. Console publication happens
 only after persistence succeeds, and managed-service stdout/stderr remains a
 separate log stream.
+
+Human terminal views default to the reader machine's local timezone and always
+include a numeric UTC offset. A per-command UTC override is available.
+Persistent files, JSON/NDJSON contracts, cursors, and ordering remain UTC or
+Unix-time based and are not changed by presentation preferences. AkuSupervisor
+does not reinterpret timestamps embedded inside a managed application's log
+message.
 
 Minimum error categories:
 

@@ -902,6 +902,27 @@ Gate 11:
 - a conflicting shutdown request fails closed; and
 - watcher handoff cannot be stolen during the temporary control-port gap.
 
+### Phase 12 - Human-local timestamp presentation
+
+Status: **Implemented**
+
+- [x] keep lifecycle JSONL and JSON/NDJSON contracts canonical UTC;
+- [x] render watcher lifecycle, registry, registration, and `live-logs`
+  timestamps in the reader machine's local timezone by default;
+- [x] include an explicit numeric UTC offset in every local timestamp;
+- [x] support `--timezone local|utc` for the foreground and live-log viewer;
+- [x] expose the same override as `-Timezone local|utc` in development scripts;
+- [x] keep timezone conversion outside sequence, merge, replay, and cursor
+  behavior; and
+- [x] retain application-owned timestamps inside log text unchanged.
+
+Gate 12:
+
+- local and UTC views represent the same instant;
+- `--json` output is independent of display timezone;
+- malformed persisted timestamps cannot inject terminal lines; and
+- the shared timestamp adapter contains no platform-specific process code.
+
 ## 5. Cross-phase testing strategy
 
 Every phase must preserve:

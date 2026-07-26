@@ -156,6 +156,7 @@ cargo run -- events --limit 20
 cargo run -- logs akusidecar --stream stdout --tail 100
 cargo run -- live-logs akusidecar
 cargo run -- live-logs akusidecar --stream stderr --tail 20
+cargo run -- live-logs akusidecar --timezone utc
 cargo run -- supervisor shutdown --reason "operator requested shutdown" --request-id "supervisor-shutdown-001"
 cargo run -- restart akusidecar --actor codex --reason "source changed"
 cargo run -- bridge reload --actor codex --reason "load updated unpacked extension" --request-id "bridge-reload-001"
@@ -505,11 +506,14 @@ or `verbose`. Failures remain visible on stderr even in `off` mode. The default
 prints one bounded line such as:
 
 ```text
-[2026-07-16T10:42:13.527Z] [event #244] geofu-be start: stopped -> running (user/cli, success)
+[2026-07-16 17:42:13.527 +07:00] [event #244] geofu-be start: stopped -> running (user/cli, success)
 ```
 
-The leading RFC 3339 timestamp is the persisted event time in UTC (`Z`), so
-console evidence remains unambiguous across machines and future OS ports.
+Persistent JSONL records and JSON/NDJSON output remain canonical UTC. Human
+terminal output defaults to the machine's local timezone and always includes
+its numeric offset. Use `--timezone utc` with the foreground Supervisor or
+`live-logs` when UTC presentation is preferred. The development scripts expose
+the same choice as `-Timezone utc`.
 
 See the [configuration guide](docs/configuration-guide.md) for the distinction
 between Supervisor lifecycle events and managed-service stdout/stderr logs.

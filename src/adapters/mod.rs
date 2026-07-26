@@ -6,6 +6,7 @@
 pub mod aku_bridge_reload;
 pub mod config;
 pub mod config_path;
+pub mod console_time;
 pub mod control_http;
 pub mod cooperative_extensions;
 pub mod development_shutdown;

@@ -118,11 +118,14 @@ journal record has been durably written.
 Example default output:
 
 ```text
-[2026-07-16T10:42:13.527Z] [event #244] geofu-be start: stopped -> running (user/cli, success)
-[2026-07-16T10:45:01.104Z] [event #245] geofu-be stop: running -> stopped (user/cli, graceful)
+[2026-07-16 17:42:13.527 +07:00] [event #244] geofu-be start: stopped -> running (user/cli, success)
+[2026-07-16 17:45:01.104 +07:00] [event #245] geofu-be stop: running -> stopped (user/cli, graceful)
 ```
 
-The leading timestamp is the persisted event time rendered as RFC 3339 UTC.
+The persisted event remains RFC 3339 UTC. Human console output defaults to the
+local timezone with an explicit numeric offset. Start the Supervisor with
+`--timezone utc`, or the watcher with `-Timezone utc`, to retain UTC terminal
+presentation.
 The explicit `Z` keeps console evidence comparable across Windows, Linux,
 macOS, CI, and machines with different local time zones.
 

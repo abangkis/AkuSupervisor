@@ -240,6 +240,7 @@ With the visible supervisor running, use a second terminal:
 ```powershell
 .\target\aku-supervisor.exe events --limit 20
 .\target\aku-supervisor.exe logs akusidecar --stream stdout --tail 100
+.\target\aku-supervisor.exe live-logs akusidecar
 .\target\aku-supervisor.exe restart akusidecar --actor codex `
   --reason "idempotency check" --request-id "manual-restart-1"
 ```
@@ -268,6 +269,12 @@ sandbox is not permitted to change file DACLs.
 Service output is captured beneath `.runtime/services`. Each active file is
 limited to 5 MB and keeps five rotated generations. `logs` reads only the
 active file and bounds output to 1,000 lines.
+
+Human lifecycle and `live-logs` timestamps default to the viewer machine's
+local timezone with an explicit numeric offset. Compare with
+`live-logs akusidecar --timezone utc`; both views must represent the same
+`observedAtUnixMs`. `--json` must remain independent of the display timezone,
+and persistent journal records must remain UTC.
 
 ## 6. Runtime health
 

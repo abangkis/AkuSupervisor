@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use super::journal::format_unix_milliseconds_utc;
+use super::console_time::{DisplayTimezone, format_unix_milliseconds};
 
 const MAX_EVENT_BYTES: usize = 16 * 1024;
 const MAX_POLL_BYTES: u64 = 256 * 1024;
@@ -30,8 +30,8 @@ pub struct RegistrationAuditEvent {
 impl RegistrationAuditEvent {
     /// Formats one bounded, single-line control-plane event for the foreground console.
     #[must_use]
-    pub fn console_line(&self) -> String {
-        let timestamp = format_unix_milliseconds_utc(u128::from(self.timestamp_unix_ms))
+    pub fn console_line(&self, timezone: DisplayTimezone) -> String {
+        let timestamp = format_unix_milliseconds(u128::from(self.timestamp_unix_ms), timezone)
             .unwrap_or_else(|| "timestamp-invalid".to_owned());
         format!(
             "[{timestamp}] [registration] {} {} {} by {} (draft={}, request={}, revision={}){}",
@@ -213,6 +213,8 @@ impl std::error::Error for RegistrationEventError {}
 
 #[cfg(test)]
 mod tests {
+    use crate::adapters::console_time::DisplayTimezone;
+
     use std::fs::{self, OpenOptions};
     use std::io::Write;
 
@@ -249,7 +251,7 @@ mod tests {
         let events = tail.poll().expect("read appended event");
         assert_eq!(events.len(), 1);
         assert_eq!(
-            events[0].console_line(),
+            events[0].console_line(DisplayTimezone::Utc),
             "[2024-07-15T12:00:00.124Z] [registration] approved register api by user/human_cli (draft=registration-abc, request=request-1, revision=sha256:123456789abc...); authorization recorded, configuration unchanged until commit"
         );
         drop(file);

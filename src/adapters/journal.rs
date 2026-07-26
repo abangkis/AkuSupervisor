@@ -8,6 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::adapters::config::ConsoleEvents;
+use crate::adapters::console_time::{DisplayTimezone, format_persisted_timestamp};
 use crate::application::{
     ControlAction, ControlError, ControlErrorKind, ControlMutationOutcome, ControlMutationResult,
     ProcessExitEvent, ServiceSnapshot, SupervisorControl, TreeStopReport,
@@ -296,6 +297,7 @@ pub struct AuditedControl {
     supervisor_instance_id: String,
     config_fingerprint: RwLock<String>,
     console_events: Option<ConsoleEvents>,
+    console_timezone: DisplayTimezone,
     event_publication: Mutex<()>,
 }
 
@@ -312,6 +314,7 @@ impl AuditedControl {
             supervisor_instance_id: format!("{}-{}", std::process::id(), unix_milliseconds()),
             config_fingerprint: RwLock::new(config_fingerprint.into()),
             console_events: None,
+            console_timezone: DisplayTimezone::Local,
             event_publication: Mutex::new(()),
         }
     }
@@ -321,6 +324,13 @@ impl AuditedControl {
     #[must_use]
     pub const fn with_console_events(mut self, console_events: ConsoleEvents) -> Self {
         self.console_events = Some(console_events);
+        self
+    }
+
+    /// Selects timezone rendering for human-facing lifecycle events.
+    #[must_use]
+    pub const fn with_console_timezone(mut self, timezone: DisplayTimezone) -> Self {
+        self.console_timezone = timezone;
         self
     }
 
@@ -344,7 +354,7 @@ impl AuditedControl {
         let Some(mode) = self.console_events else {
             return;
         };
-        let Some(line) = format_console_event(record, mode) else {
+        let Some(line) = format_console_event(record, mode, self.console_timezone) else {
             return;
         };
         if record.result == JournalResult::Failure {
@@ -533,7 +543,11 @@ fn lifecycle_action(action: ControlAction) -> JournalAction {
     }
 }
 
-fn format_console_event(record: &JournalRecord, mode: ConsoleEvents) -> Option<String> {
+fn format_console_event(
+    record: &JournalRecord,
+    mode: ConsoleEvents,
+    timezone: DisplayTimezone,
+) -> Option<String> {
     if mode == ConsoleEvents::Off && record.result == JournalResult::Success {
         return None;
     }
@@ -543,7 +557,7 @@ fn format_console_event(record: &JournalRecord, mode: ConsoleEvents) -> Option<S
     let previous = lifecycle_state_label(record.previous_state);
     let resulting = lifecycle_state_label(record.resulting_state);
     let outcome = event_outcome_label(record);
-    let timestamp = console_timestamp(&record.timestamp);
+    let timestamp = format_persisted_timestamp(&record.timestamp, timezone);
 
     if mode != ConsoleEvents::Verbose {
         return Some(format!(
@@ -590,52 +604,6 @@ fn format_console_event(record: &JournalRecord, mode: ConsoleEvents) -> Option<S
         "[{timestamp}] [event #{}] {}",
         record.sequence,
         details.join(" ")
-    ))
-}
-
-fn console_timestamp(value: &str) -> String {
-    if let Some(milliseconds) = value
-        .strip_prefix("unix-ms:")
-        .and_then(|value| value.parse::<u128>().ok())
-        && let Some(formatted) = format_unix_milliseconds_utc(milliseconds)
-    {
-        return formatted;
-    }
-    if !value.is_empty()
-        && value.len() <= 40
-        && value.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b':' | b'.' | b'+' | b'_')
-        })
-    {
-        value.to_owned()
-    } else {
-        "timestamp-invalid".to_owned()
-    }
-}
-
-pub(crate) fn format_unix_milliseconds_utc(milliseconds: u128) -> Option<String> {
-    let total_seconds = milliseconds / 1_000;
-    let days = i64::try_from(total_seconds / 86_400).ok()?;
-    let seconds_in_day = u64::try_from(total_seconds % 86_400).ok()?;
-    let shifted_days = days.checked_add(719_468)?;
-    let era = shifted_days / 146_097;
-    let day_of_era = shifted_days - era * 146_097;
-    let year_of_era =
-        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let mut year = year_of_era + era * 400;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let month_prime = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
-    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
-    if month <= 2 {
-        year += 1;
-    }
-    let hour = seconds_in_day / 3_600;
-    let minute = (seconds_in_day % 3_600) / 60;
-    let second = seconds_in_day % 60;
-    let millisecond = milliseconds % 1_000;
-    Some(format!(
-        "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millisecond:03}Z"
     ))
 }
 
@@ -809,12 +777,13 @@ impl std::error::Error for FileJournalError {}
 #[cfg(test)]
 mod tests {
     use crate::adapters::config::ConsoleEvents;
+    use crate::adapters::console_time::DisplayTimezone;
     use crate::application::TreeStopReport;
     use crate::domain::{Actor, LifecycleState, Reason};
 
     use super::{
         ErrorCategory, FileJournal, JournalAction, JournalRecord, JournalResult,
-        MAX_ERROR_DETAIL_BYTES, format_console_event, format_unix_milliseconds_utc,
+        MAX_ERROR_DETAIL_BYTES, format_console_event,
     };
 
     fn record(reason: &str) -> JournalRecord {
@@ -857,12 +826,16 @@ mod tests {
         let record = record("backend source changed");
 
         assert_eq!(
-            format_console_event(&record, ConsoleEvents::Lifecycle).as_deref(),
+            format_console_event(&record, ConsoleEvents::Lifecycle, DisplayTimezone::Utc)
+                .as_deref(),
             Some(
                 "[2026-07-13T12:00:00.000Z] [event #7] akusidecar restart: running -> running (agent/generic, success)"
             )
         );
-        assert_eq!(format_console_event(&record, ConsoleEvents::Off), None);
+        assert_eq!(
+            format_console_event(&record, ConsoleEvents::Off, DisplayTimezone::Utc),
+            None
+        );
     }
 
     #[test]
@@ -880,15 +853,16 @@ mod tests {
             forced: false,
         });
 
-        let lifecycle = format_console_event(&stopped, ConsoleEvents::Lifecycle)
-            .expect("lifecycle console event");
+        let lifecycle =
+            format_console_event(&stopped, ConsoleEvents::Lifecycle, DisplayTimezone::Utc)
+                .expect("lifecycle console event");
         assert_eq!(
             lifecycle,
             "[2026-07-13T12:00:00.000Z] [event #7] akusidecar stop: running -> stopped (user/cli, graceful)"
         );
 
-        let verbose =
-            format_console_event(&stopped, ConsoleEvents::Verbose).expect("verbose console event");
+        let verbose = format_console_event(&stopped, ConsoleEvents::Verbose, DisplayTimezone::Utc)
+            .expect("verbose console event");
         assert!(verbose.contains("actor=user/cli"));
         assert!(verbose.contains(r#"reason="operator requested\nshutdown""#));
         assert!(verbose.contains("pids=2->0"));
@@ -904,22 +878,10 @@ mod tests {
         failed.error_category = Some(ErrorCategory::SpawnFailed);
 
         assert_eq!(
-            format_console_event(&failed, ConsoleEvents::Off).as_deref(),
+            format_console_event(&failed, ConsoleEvents::Off, DisplayTimezone::Utc).as_deref(),
             Some(
                 "[2026-07-13T12:00:00.000Z] [event #7] akusidecar restart: running -> failed (agent/generic, spawn_failed)"
             )
-        );
-    }
-
-    #[test]
-    fn unix_millisecond_console_timestamp_is_portable_rfc3339_utc() {
-        assert_eq!(
-            format_unix_milliseconds_utc(0).as_deref(),
-            Some("1970-01-01T00:00:00.000Z")
-        );
-        assert_eq!(
-            format_unix_milliseconds_utc(1_721_044_800_123).as_deref(),
-            Some("2024-07-15T12:00:00.123Z")
         );
     }
 
@@ -928,7 +890,7 @@ mod tests {
         let mut record = record("bounded console timestamp");
         record.timestamp = "malformed\ninjected".to_owned();
 
-        let line = format_console_event(&record, ConsoleEvents::Lifecycle)
+        let line = format_console_event(&record, ConsoleEvents::Lifecycle, DisplayTimezone::Utc)
             .expect("lifecycle console event");
 
         assert!(line.starts_with("[timestamp-invalid] [event #7]"));

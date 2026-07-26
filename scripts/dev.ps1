@@ -8,7 +8,9 @@ param(
     [ValidateRange(100, 10000)]
     [int] $DebounceMilliseconds = 600,
     [ValidateRange(5, 120)]
-    [int] $ShutdownTimeoutSeconds = 30
+    [int] $ShutdownTimeoutSeconds = 30,
+    [ValidateSet('local', 'utc')]
+    [string] $Timezone = 'local'
 )
 
 Set-StrictMode -Version Latest
@@ -421,7 +423,7 @@ function Start-DevelopmentSupervisor {
     if (Test-Path $shutdownRequest) {
         Remove-Item -LiteralPath $shutdownRequest -Force
     }
-    $arguments = '--config "{0}"' -f $script:configPath
+    $arguments = '--timezone {0} --config "{1}"' -f $Timezone.ToLowerInvariant(), $script:configPath
     $startInfo = [Diagnostics.ProcessStartInfo]::new()
     $startInfo.FileName = $devExecutable
     $startInfo.Arguments = $arguments

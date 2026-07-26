@@ -6,23 +6,24 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use crate::VERSION;
+use crate::adapters::console_time::DisplayTimezone;
 use crate::adapters::control_http::ApiActor;
 use crate::adapters::service_logs::{LiveLogCursor, LiveLogEventKind, LiveLogSelection, LogStream};
 use crate::application::ControlAction;
 
 const HELP: &str = "AkuSupervisor - local development service supervisor\n\n\
 Usage:\n\
-  aku-supervisor\n\
-  aku-supervisor --config <path>\n\
-  aku-supervisor run\n\
-  aku-supervisor run --config <path>\n\
+  aku-supervisor [--timezone <local|utc>]\n\
+  aku-supervisor --config <path> [--timezone <local|utc>]\n\
+  aku-supervisor run [--timezone <local|utc>]\n\
+  aku-supervisor run --config <path> [--timezone <local|utc>]\n\
   aku-supervisor status [--json] [--config <path>]\n\
   aku-supervisor simple-status [--config <path>]\n\
   aku-supervisor instance-status [--json] [--config <path>]\n\
   aku-supervisor registry-status [--json] [--config <path>]\n\
   aku-supervisor events [--after <sequence>] [--limit <n>] [--json] [--config <path>]\n\
   aku-supervisor logs <service> [--stream <stdout|stderr>] [--tail <n>] [--json] [--config <path>]\n\
-  aku-supervisor live-logs <service> [--stream <both|stdout|stderr>] [--tail <n>] [--json] [--config <path>]\n\
+  aku-supervisor live-logs <service> [--stream <both|stdout|stderr>] [--tail <n>] [--timezone <local|utc>] [--json] [--config <path>]\n\
   aku-supervisor <start|stop|restart> <service> [--reason <text>] [--actor <user|codex>] [--request-id <id>] [--json] [--config <path>]\n\
   aku-supervisor supervisor shutdown --reason <text> --request-id <id> [--actor <user|codex>] [--json] [--config <path>]\n\
   aku-supervisor bridge reload --reason <text> --request-id <id> [--actor <user|codex>] [--wait|--no-wait] [--json] [--config <path>]\n\
@@ -43,6 +44,7 @@ enum Command {
     Version,
     Run {
         config: Option<PathBuf>,
+        timezone: DisplayTimezone,
     },
     BridgeValidate {
         actor: ApiActor,
@@ -75,6 +77,7 @@ enum Command {
         tail: usize,
         config: Option<PathBuf>,
         json: bool,
+        timezone: DisplayTimezone,
     },
     Remote(RemoteCommand),
 }
@@ -151,7 +154,7 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
             println!("aku-supervisor {VERSION}");
             ExitCode::SUCCESS
         }
-        Ok(Command::Run { config }) => run_foreground(config),
+        Ok(Command::Run { config, timezone }) => run_foreground(config, timezone),
         Ok(Command::BridgeValidate {
             actor,
             request_id,
@@ -192,7 +195,8 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
             tail,
             config,
             json,
-        }) => run_live_logs(&service_id, stream, tail, config, json),
+            timezone,
+        }) => run_live_logs(&service_id, stream, tail, config, json, timezone),
         Ok(Command::Remote(command)) => run_remote(command),
         Err(message) => {
             eprintln!("error: {message}\n\n{HELP}");
@@ -204,18 +208,14 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
 fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, String> {
     let arguments = arguments.into_iter().collect::<Vec<_>>();
     match arguments.as_slice() {
-        [] => Ok(Command::Run { config: None }),
+        [] => Ok(Command::Run {
+            config: None,
+            timezone: DisplayTimezone::Local,
+        }),
         [flag] if flag == "--help" || flag == "-h" => Ok(Command::Help),
         [flag] if flag == "--version" || flag == "-V" => Ok(Command::Version),
-        [config_flag, config] if config_flag == "--config" => Ok(Command::Run {
-            config: Some(PathBuf::from(config)),
-        }),
-        [run] if run == "run" => Ok(Command::Run { config: None }),
-        [run, config_flag, config] if run == "run" && config_flag == "--config" => {
-            Ok(Command::Run {
-                config: Some(PathBuf::from(config)),
-            })
-        }
+        [run, rest @ ..] if run == "run" => parse_run(rest),
+        [flag, ..] if flag == "--config" || flag == "--timezone" => parse_run(&arguments),
         [proxy] if proxy == "mcp-proxy" => Ok(Command::McpProxy { config: None }),
         [proxy, config_flag, config] if proxy == "mcp-proxy" && config_flag == "--config" => {
             Ok(Command::McpProxy {
@@ -261,6 +261,45 @@ fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, Strin
         )),
         _ => Err("expected run, a lifecycle client command, --help, or --version".to_owned()),
     }
+}
+
+fn parse_run(arguments: &[OsString]) -> Result<Command, String> {
+    let mut config = None;
+    let mut timezone = DisplayTimezone::Local;
+    let mut timezone_set = false;
+    let mut index = 0;
+    while index < arguments.len() {
+        match arguments[index].to_str() {
+            Some("--config") if config.is_none() => {
+                config = Some(PathBuf::from(option_value(arguments, index)?));
+            }
+            Some("--timezone") if !timezone_set => {
+                timezone = parse_display_timezone(option_value(arguments, index)?)?;
+                timezone_set = true;
+            }
+            Some("--config" | "--timezone") => {
+                return Err(format!(
+                    "duplicate option: {}",
+                    arguments[index].to_string_lossy()
+                ));
+            }
+            _ => {
+                return Err(format!(
+                    "unsupported option: {}",
+                    arguments[index].to_string_lossy()
+                ));
+            }
+        }
+        index += 2;
+    }
+    Ok(Command::Run { config, timezone })
+}
+
+fn parse_display_timezone(value: &OsString) -> Result<DisplayTimezone, String> {
+    value
+        .to_str()
+        .and_then(DisplayTimezone::parse)
+        .ok_or_else(|| "--timezone must be local or utc".to_owned())
 }
 
 fn parse_registration(arguments: &[OsString]) -> Result<Command, String> {
@@ -745,6 +784,8 @@ fn parse_live_logs(arguments: &[OsString]) -> Result<Command, String> {
     let mut tail = 50_usize;
     let mut config = None;
     let mut json = false;
+    let mut timezone = DisplayTimezone::Local;
+    let mut timezone_set = false;
     let mut index = 1;
     while index < arguments.len() {
         let flag = &arguments[index];
@@ -772,7 +813,11 @@ fn parse_live_logs(arguments: &[OsString]) -> Result<Command, String> {
             Some("--config") if config.is_none() => {
                 config = Some(PathBuf::from(option_value(arguments, index)?));
             }
-            Some("--config" | "--json") => {
+            Some("--timezone") if !timezone_set => {
+                timezone = parse_display_timezone(option_value(arguments, index)?)?;
+                timezone_set = true;
+            }
+            Some("--config" | "--json" | "--timezone") => {
                 return Err(format!("duplicate option: {}", flag.to_string_lossy()));
             }
             _ => return Err(format!("unsupported option: {}", flag.to_string_lossy())),
@@ -785,6 +830,7 @@ fn parse_live_logs(arguments: &[OsString]) -> Result<Command, String> {
         tail,
         config,
         json,
+        timezone,
     })
 }
 
@@ -936,7 +982,7 @@ fn parse_request_id(value: &OsString) -> Result<String, String> {
 }
 
 #[cfg(windows)]
-fn run_foreground(explicit_config: Option<PathBuf>) -> ExitCode {
+fn run_foreground(explicit_config: Option<PathBuf>, timezone: DisplayTimezone) -> ExitCode {
     let resolved = match crate::adapters::config_path::resolve_config_path(explicit_config) {
         Ok(resolved) => resolved,
         Err(error) => {
@@ -944,7 +990,7 @@ fn run_foreground(explicit_config: Option<PathBuf>) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match crate::adapters::foreground::run(&resolved) {
+    match crate::adapters::foreground::run(&resolved, timezone) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("error: {error}");
@@ -1140,8 +1186,16 @@ fn run_live_logs(
     tail: usize,
     explicit_config: Option<PathBuf>,
     json_output: bool,
+    timezone: DisplayTimezone,
 ) -> ExitCode {
-    match live_logs(service_id, selection, tail, explicit_config, json_output) {
+    match live_logs(
+        service_id,
+        selection,
+        tail,
+        explicit_config,
+        json_output,
+        timezone,
+    ) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("error: {error}");
@@ -1156,6 +1210,7 @@ fn live_logs(
     tail: usize,
     explicit_config: Option<PathBuf>,
     json_output: bool,
+    timezone: DisplayTimezone,
 ) -> Result<(), String> {
     use std::fs;
     use std::net::SocketAddr;
@@ -1185,6 +1240,10 @@ fn live_logs(
         println!("Control API: http://{address}");
         println!(
             "Live logs: {service_id} (stream={stream_name}, initial tail={tail}); press Ctrl+C to stop viewing."
+        );
+        println!(
+            "Human timestamp display: {} (NDJSON remains UTC Unix milliseconds)",
+            timezone.as_str()
         );
     }
 
@@ -1226,7 +1285,7 @@ fn live_logs(
             if event.kind == LiveLogEventKind::Heartbeat && show_heartbeat && !json_output {
                 last_heartbeat_notice = Some(std::time::Instant::now());
             }
-            print_live_log_event(&event, json_output, show_heartbeat);
+            print_live_log_event(&event, json_output, show_heartbeat, timezone);
         }
         if !json_output {
             eprintln!("[live-logs] connection closed; reconnecting...");
@@ -1276,6 +1335,7 @@ fn print_live_log_event(
     event: &crate::adapters::service_logs::LiveLogEvent,
     json_output: bool,
     show_heartbeat: bool,
+    timezone: DisplayTimezone,
 ) {
     if json_output {
         println!(
@@ -1286,9 +1346,10 @@ fn print_live_log_event(
     }
     match event.kind {
         LiveLogEventKind::Line => {
-            let timestamp = crate::adapters::journal::format_unix_milliseconds_utc(u128::from(
-                event.observed_at_unix_ms,
-            ))
+            let timestamp = crate::adapters::console_time::format_unix_milliseconds(
+                u128::from(event.observed_at_unix_ms),
+                timezone,
+            )
             .unwrap_or_else(|| event.observed_at_unix_ms.to_string());
             let stream = match event.stream {
                 Some(LogStream::Stdout) => "stdout",
@@ -1312,9 +1373,10 @@ fn print_live_log_event(
             );
         }
         LiveLogEventKind::Heartbeat if show_heartbeat => {
-            let timestamp = crate::adapters::journal::format_unix_milliseconds_utc(u128::from(
-                event.observed_at_unix_ms,
-            ))
+            let timestamp = crate::adapters::console_time::format_unix_milliseconds(
+                u128::from(event.observed_at_unix_ms),
+                timezone,
+            )
             .unwrap_or_else(|| event.observed_at_unix_ms.to_string());
             eprintln!(
                 "[{timestamp}] [live-logs] stream connected; service output is idle (hub={})",
@@ -1777,7 +1839,7 @@ fn format_simple_status(response: &serde_json::Value) -> Result<String, String> 
 }
 
 #[cfg(not(windows))]
-fn run_foreground(_explicit_config: Option<PathBuf>) -> ExitCode {
+fn run_foreground(_explicit_config: Option<PathBuf>, _timezone: DisplayTimezone) -> ExitCode {
     eprintln!("error: no lifecycle platform adapter is implemented for this operating system");
     ExitCode::FAILURE
 }
@@ -1792,6 +1854,7 @@ mod tests {
         lifecycle_response_timeout, live_log_target, parse,
     };
     use crate::adapters::config::SupervisorConfig;
+    use crate::adapters::console_time::DisplayTimezone;
     use crate::adapters::control_http::ApiActor;
     use crate::adapters::service_logs::LiveLogSelection;
     use crate::application::ControlAction;
@@ -1802,8 +1865,26 @@ mod tests {
 
     #[test]
     fn no_argument_starts_with_discovered_configuration() {
-        assert_eq!(parse(args(&[])), Ok(Command::Run { config: None }));
-        assert_eq!(parse(args(&["run"])), Ok(Command::Run { config: None }));
+        let expected = Ok(Command::Run {
+            config: None,
+            timezone: DisplayTimezone::Local,
+        });
+        assert_eq!(parse(args(&[])), expected);
+        assert_eq!(
+            parse(args(&["run"])),
+            Ok(Command::Run {
+                config: None,
+                timezone: DisplayTimezone::Local,
+            })
+        );
+        assert_eq!(
+            parse(args(&["run", "--timezone", "utc"])),
+            Ok(Command::Run {
+                config: None,
+                timezone: DisplayTimezone::Utc,
+            })
+        );
+        assert!(parse(args(&["run", "--timezone", "WIB"])).is_err());
     }
 
     #[test]
@@ -1821,6 +1902,7 @@ mod tests {
                 tail: 50,
                 config: None,
                 json: false,
+                timezone: DisplayTimezone::Local,
             })
         );
         assert_eq!(
@@ -1831,6 +1913,8 @@ mod tests {
                 "stderr",
                 "--tail",
                 "0",
+                "--timezone",
+                "utc",
                 "--json",
             ])),
             Ok(Command::LiveLogs {
@@ -1839,6 +1923,7 @@ mod tests {
                 tail: 0,
                 config: None,
                 json: true,
+                timezone: DisplayTimezone::Utc,
             })
         );
         let cursor = crate::adapters::service_logs::LiveLogCursor {
@@ -2145,12 +2230,14 @@ mod tests {
     fn explicit_configuration_path_is_supported() {
         let expected = Ok(Command::Run {
             config: Some(PathBuf::from("services.json")),
+            timezone: DisplayTimezone::Local,
         });
         assert_eq!(parse(args(&["--config", "services.json"])), expected);
         assert_eq!(
             parse(args(&["run", "--config", "services.json"])),
             Ok(Command::Run {
-                config: Some(PathBuf::from("services.json"))
+                config: Some(PathBuf::from("services.json")),
+                timezone: DisplayTimezone::Local,
             })
         );
         assert_eq!(

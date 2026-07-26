@@ -40,6 +40,8 @@ fn watcher_requires_executable_release_without_force_killing_an_owner() {
     assert!(script.contains("but another process now owns"));
     assert!(script.contains("Active instance: PID"));
     assert!(script.contains("Use 'supervisor shutdown' from a second terminal"));
+    assert!(script.contains("[ValidateSet('local', 'utc')]"));
+    assert!(script.contains("--timezone {0} --config"));
     assert!(script.contains("Test-ConfigurationBeforeHandoff"));
     assert!(script.contains(
         "Configuration validation failed. The current supervisor and services remain active."
@@ -77,6 +79,7 @@ fn akuworkspace_entrypoint_bootstraps_sidecar_before_generic_supervision() {
     assert!(script.contains("'akusidecar' -in $requestedServices"));
     assert!(script.contains("& $sidecarBuildScript"));
     assert!(script.contains("& $supervisorDevScript @requestedServices @devParameters"));
+    assert!(script.contains("Timezone = $Timezone"));
 
     let sidecar_build = script
         .find("& $sidecarBuildScript")

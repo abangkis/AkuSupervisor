@@ -102,6 +102,7 @@ not considered a portable guarantee.
 | Development reload request | bounded local file signal plus PowerShell runner | same file-signal contract plus future native runner | same file-signal contract plus future native runner |
 | Runtime instance lease | shared `std::fs::File` lock plus PowerShell watcher lease | same Rust lock plus native watcher lease holder | same Rust lock plus native watcher lease holder |
 | Live service logs | Windows pipe pump persists then publishes to shared `LiveLogHub` | Unix pipe pump uses the same `ServiceLogSink` | Unix pipe pump uses the same `ServiceLogSink` |
+| Human timestamp rendering | shared local-offset or UTC presentation; persistence remains UTC | same shared adapter | same shared adapter |
 
 The Linux and macOS entries are design candidates, not implemented promises.
 Each backend must independently pass the same ownership safety contract before
@@ -123,8 +124,9 @@ it is considered supported.
 | Foreground host composition | Compile-time host composition is extracted; the shared foreground imports only `platform::host`, whose active Windows backend supplies registry, shutdown, secure entropy, and token permissions | Implement the same host-facing constructors and aliases for a second OS without copying the foreground loop |
 | Checked-in AkuWorkspace profile | Intentionally Windows-specific data, not core logic | Supply separate profiles; do not add path rewriting to the core |
 | Development watcher | Portable Rust file-signal adapter; Windows PowerShell orchestration | Add a native runner that preserves build-first, graceful handoff, and service restoration |
-| Runtime identity and remote shutdown | Portable standard-library lease, JSON identity, authenticated HTTP route, and shared cleanup intent | Run lock interoperability and shutdown fixtures natively | Run lock interoperability and shutdown fixtures natively |
+| Runtime identity and remote shutdown | Portable standard-library lease, JSON identity, authenticated HTTP route, and shared cleanup intent | Run lock interoperability and shutdown fixtures natively |
 | Live-log hub and NDJSON protocol | Portable standard-library implementation; only pipe capture is native | Connect the native process spawner to the existing `ServiceLogSink`; do not fork the protocol |
+| Timestamp semantics | Canonical UTC persistence and machine protocols; local or UTC human rendering with explicit offset | Verify native local-offset discovery and retain UTC JSON fixtures |
 
 The foreground-host extraction now precedes the second OS implementation.
 Linux or macOS support must populate the compile-time `platform::host`

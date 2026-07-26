@@ -26,6 +26,7 @@ fn shared_control_plane_does_not_import_windows_implementation_details() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     for relative in [
         "src/adapters/control_http.rs",
+        "src/adapters/console_time.rs",
         "src/adapters/foreground.rs",
         "src/adapters/runtime_instance.rs",
         "src/adapters/runtime_token.rs",

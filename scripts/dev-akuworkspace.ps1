@@ -8,7 +8,9 @@ param(
     [ValidateRange(100, 10000)]
     [int] $DebounceMilliseconds = 600,
     [ValidateRange(5, 120)]
-    [int] $ShutdownTimeoutSeconds = 30
+    [int] $ShutdownTimeoutSeconds = 30,
+    [ValidateSet('local', 'utc')]
+    [string] $Timezone = 'local'
 )
 
 Set-StrictMode -Version Latest
@@ -40,6 +42,7 @@ $devParameters = @{
     PollMilliseconds = $PollMilliseconds
     DebounceMilliseconds = $DebounceMilliseconds
     ShutdownTimeoutSeconds = $ShutdownTimeoutSeconds
+    Timezone = $Timezone
 }
 if ($Config) {
     $devParameters.Config = $Config
