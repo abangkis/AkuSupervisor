@@ -271,8 +271,9 @@ a bounded version preflight, skips byte-identical builds, rejects a locked
 stable Windows image, copies the candidate, and verifies the promoted SHA-256.
 If a normal Supervisor is using `target\aku-supervisor.exe`, recycle only that
 stable-path process and retry. Long-lived Codex MCP processes must use the
-separately staged `target\mcp\aku-supervisor-mcp.exe`, so ordinary core
-promotion never depends on restarting Codex.
+separately staged content-addressed host at
+`target\mcp\sha256-<binary-hash>\aku-supervisor-mcp.exe`, so ordinary core
+promotion never depends on restarting Codex or overwriting an active executable.
 
 The AkuWorkspace-specific cooperative reload gate is deliberately separate:
 
@@ -374,13 +375,22 @@ enabled_tools = [
 The proxy reads newline-delimited MCP from stdin, reads the existing ACL-
 protected token file, and forwards only to the already-running `/mcp` endpoint.
 It never starts AkuSupervisor or a managed service. AkuWorkspace checks this in
-at `.codex/config.toml`; restart Codex or begin a new task after changing MCP
+`.codex/config.toml`; restart Codex or begin a new task after changing MCP
 configuration. The MCP host is intentionally not overwritten by
 `promote-stable.ps1`. Rerun `install-codex-mcp.ps1` when MCP behavior changes;
-if the existing MCP host is active and its bytes differ, close Codex, apply the
-fresh plan, and reopen Codex. `stage-mcp-host.ps1` remains the lower-level
-maintenance primitive when config registration is already known to be correct.
-Ordinary core-only changes require no MCP restaging.
+the installer stages changed bytes beside the active host under an immutable
+`sha256-<binary-hash>` directory and then atomically updates both Codex entries.
+Codex may remain open during apply; restart it afterward to select the newly
+configured path. Older host directories are retained intentionally because a
+long-lived agent may still be executing them. `stage-mcp-host.ps1` remains the
+lower-level maintenance primitive when config registration is already known to
+be correct.
+Ordinary core-only changes require no MCP restaging. The development watcher
+and stable promotion nevertheless report the dedicated host as `CURRENT`,
+`OUTDATED`, or `MISSING` by comparing it with the selected build. An outdated
+result is conservative: review the MCP impact, then use
+`install-codex-mcp.ps1` whenever agents must receive changed tools, schemas, or
+host-side configuration compatibility.
 
 Generic service onboarding uses a second MCP identity, `registration-mcp`.
 It self-describes the full schema and workflow, creates revision-bound drafts,
@@ -393,6 +403,15 @@ live stopped-state evidence. A running Supervisor reconciles the
 committed service topology in place: unchanged services retain their process
 owners and are not restarted. See
 [Human-gated service registration](docs/service-registration.md).
+
+Registration MCP startup deliberately does not parse the Supervisor profile.
+`initialize`, `tools/list`, and `supervisor_registration_get_schema` therefore
+remain available when the runtime configuration is absent, malformed, or from
+a newer contract. Tools that need the current revision, drafts, or mutations
+open and validate the profile on demand and return a structured tool error
+without terminating the MCP session. The read-only stdio proxy similarly parses
+only its required `control` projection, keeping service and cooperative-action
+schema evolution outside its transport boundary.
 
 The foreground console also follows the secret-free registration audit. An MCP
 prepare, interactive approval, and MCP commit appear with UTC timestamp, actor,

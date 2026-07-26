@@ -52,7 +52,7 @@ must be restarted. The resulting registration section is:
 
 ```toml
 [mcp_servers.aku_supervisor_registration]
-command = "C:\\path\\to\\AkuSupervisor\\target\\mcp\\aku-supervisor-mcp.exe"
+command = "C:\\path\\to\\AkuSupervisor\\target\\mcp\\sha256-<binary-hash>\\aku-supervisor-mcp.exe"
 args = ["registration-mcp"]
 enabled = true
 enabled_tools = [
@@ -65,11 +65,20 @@ enabled_tools = [
 ]
 ```
 
-Both read-only and registration MCP entries point to the same staged file. Core
-promotion does not replace it, and an MCP host update is needed only when MCP
-behavior changes. A workspace-level `.codex\config.toml` serves all Codex
-tasks/agents in that workspace. Initial MCP discovery cannot install itself, so
-each new workspace needs this one explicit bootstrap and human approval.
+Both read-only and registration MCP entries point to the same immutable staged
+file. Core promotion does not replace it, and an MCP host update is needed only
+when MCP behavior changes. The installer can create a new content-addressed host
+while the previous executable remains active, then atomically changes both
+entries. Restart Codex afterward to activate the new path; closing Codex before
+apply is not required. Previous host directories remain available for processes
+that have not yet exited. A workspace-level `.codex\config.toml` serves all
+Codex tasks/agents in that workspace. Initial MCP discovery cannot install
+itself, so each new workspace needs this one explicit bootstrap and human
+approval.
+The development watcher and stable promotion print `MCP host status` as
+`CURRENT`, `OUTDATED`, or `MISSING`; an outdated or missing host may expose
+stale registration tools or schemas until the installer is applied and Codex
+is restarted.
 
 The agent does not need this document during normal registration. Tool
 descriptions, strict input schemas, structured failures, the current revision,
@@ -84,6 +93,13 @@ available from MCP:
    completes both approval and mutation after the review
 6. after the user responds, call `supervisor_registration_commit_change`
    idempotently to retrieve or confirm the final result
+
+Discovery is independent of the runtime profile. `initialize`, `tools/list`,
+and `supervisor_registration_get_schema` do not open or validate
+`services.json`, so an agent can still retrieve the current schema and diagnose
+a configuration migration. Capabilities, validation, draft, and commit tools
+load the current profile on demand; a missing or incompatible profile becomes
+a structured tool error and does not terminate the stdio server.
 
 No registration approval tool exists. The agent follow-up is useful for
 visibility and recovery, but the mutation no longer depends on the agent

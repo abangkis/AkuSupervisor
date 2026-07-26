@@ -185,18 +185,34 @@ MCP client -> stdio proxy -> authenticated loopback API -> AkuSupervisor
 The proxy may be launched by the MCP client because it does not own or spawn managed services. The long-lived AkuSupervisor process must not be replaced by a stdio child that inherits the MCP client's execution restrictions.
 
 The AkuWorkspace checkpoint implements this as `aku-supervisor mcp-proxy`.
-It resolves the ordinary Supervisor config, reads the existing protected token
-file, and forwards newline-delimited JSON-RPC to `/mcp`. It emits no startup
-text on stdout and exits if the Supervisor is unavailable. Codex is configured
+It resolves the ordinary Supervisor config but deserializes only the `control`
+projection required for loopback host, port, MCP enablement, and protected token
+path. Unknown service, health, or cooperative-action fields are ignored by this
+transport adapter; loopback and `.runtime` token-path validation remain
+mandatory. It forwards newline-delimited JSON-RPC to `/mcp`, emits no startup
+text on stdout, and exits if the Supervisor is unavailable. Codex is configured
 with an explicit four-tool allow-list, so the token is not duplicated into
 `config.toml` or an environment variable.
 
 Codex launches both stdio MCP identities from the separately staged
-`target\mcp\aku-supervisor-mcp.exe`. `scripts\stage-mcp-host.ps1` copies and
-verifies a selected stable or development build into that path. Core stable
-promotion never overwrites the MCP host, avoiding a file-lock dependency on a
-long-lived Codex process. Updating MCP behavior remains an explicit maintenance
-operation that requires recycling Codex if the staged host is active.
+`target\mcp\sha256-<binary-hash>\aku-supervisor-mcp.exe`.
+`scripts\stage-mcp-host.ps1` copies and verifies a selected stable or development
+build into its content-addressed path. Core stable promotion never overwrites
+the MCP host, avoiding a file-lock dependency on a long-lived Codex process.
+Updating MCP behavior remains an explicit maintenance operation, but staging
+and configuration apply may run while the prior host is active. Restarting
+Codex is needed only to activate the newly configured immutable path.
+Before copying, staging performs a real registration MCP initialize, tool-list,
+and schema call against a deliberately absent profile. A candidate that couples
+discovery back to runtime configuration is rejected before the installed host
+is touched.
+The watcher and core promotion surface a read-only hash comparison as
+`CURRENT`, `OUTDATED`, or `MISSING`, preventing a stale dedicated host from
+remaining invisible after a schema-affecting build.
+Old content-addressed hosts are not deleted automatically. This is deliberate:
+the filesystem cannot prove that every external agent has released a previous
+executable. Retention cleanup is therefore a separate future policy rather than
+part of staging or promotion.
 
 `scripts\install-codex-mcp.ps1` is the supported bootstrap above that staging
 primitive. Its default mode is read-only planning. It exposes only the current
@@ -207,6 +223,12 @@ integration fixture uses temporary config and host paths, including a simulated
 concurrent edit, so verification never mutates the active Codex configuration.
 This is deliberately a host/workspace operation rather than an MCP tool: an MCP
 server cannot be trusted or discovered before the host has registered it.
+
+The registration stdio server does not open the runtime profile during
+bootstrap. Initialization, tool discovery, and the compiled service schema stay
+available even if the profile is missing or uses an incompatible runtime
+contract. Profile-dependent tools open the registration authority per call and
+return structured errors while keeping the MCP session alive.
 
 A newly started Codex task successfully loaded the project-scoped registration
 and used the read-only MCP surface. This user-confirmed live check closes the

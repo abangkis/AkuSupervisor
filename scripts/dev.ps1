@@ -22,6 +22,7 @@ $buildDirectory = Join-Path $repository 'target\dev-build'
 $toolTempDirectory = Join-Path $repository 'target\tool-temp'
 $devExecutable = Join-Path $devDirectory 'aku-supervisor.exe'
 $stableExecutable = Join-Path $repository 'target\aku-supervisor.exe'
+$mcpHostStatusScript = Join-Path $PSScriptRoot 'get-mcp-host-status.ps1'
 $shutdownRequest = Join-Path $devDirectory 'shutdown-request'
 $stagedExecutable = Join-Path $buildDirectory 'debug\aku-supervisor.exe'
 $supervisorProcess = $null
@@ -62,6 +63,34 @@ function Assert-RustToolchain {
     }
 }
 
+function Show-McpHostGuidance {
+    try {
+        $statusOutput = @(& $mcpHostStatusScript `
+            -SourcePath $devExecutable `
+            -Json 2>&1)
+        if ($LASTEXITCODE -ne 0) {
+            throw ($statusOutput -join [Environment]::NewLine)
+        }
+        $mcpStatus = ($statusOutput -join "`n") | ConvertFrom-Json
+    } catch {
+        Write-Host "[watch] MCP host status: UNKNOWN ($($_.Exception.Message))" -ForegroundColor Yellow
+        return
+    }
+
+    if ($mcpStatus.status -eq 'CURRENT') {
+        Write-Host '[watch] MCP host status: CURRENT (matches this development build).' -ForegroundColor Green
+        Write-Host "[watch] MCP host: $($mcpStatus.hostPath)" -ForegroundColor DarkGray
+        return
+    }
+
+    Write-Host "[watch] MCP host status: $($mcpStatus.status) (does not match this development build)." -ForegroundColor Yellow
+    Write-Host "[watch] Expected immutable MCP host: $($mcpStatus.hostPath)" -ForegroundColor DarkGray
+    Write-Host '[watch] Registration tools or schema exposed to agents may be stale.' -ForegroundColor Yellow
+    Write-Host '[watch] After promoting the core build, refresh the dedicated host:' -ForegroundColor Yellow
+    Write-Host '[watch]   .\scripts\install-codex-mcp.ps1' -ForegroundColor Yellow
+    Write-Host '[watch] Review and apply its exact approval command, then restart Codex when instructed.' -ForegroundColor Yellow
+}
+
 function Show-ExecutionModeGuidance {
     Write-Host '[watch] Mode: DEVELOPMENT WATCHER' -ForegroundColor Cyan
     Write-Host "[watch] Active executable: $devExecutable" -ForegroundColor Cyan
@@ -73,6 +102,7 @@ function Show-ExecutionModeGuidance {
         $stableHash = (Get-FileHash -LiteralPath $stableExecutable -Algorithm SHA256).Hash
         $stableIsCurrent = $devHash -eq $stableHash
     }
+    Show-McpHostGuidance
 
     if ($stableIsCurrent) {
         Write-Host '[watch] Stable status: CURRENT (identical to this development build).' -ForegroundColor Green

@@ -7,9 +7,10 @@ use std::io::{self, BufRead, Write};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
+use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::config::SupervisorConfig;
+use super::config::is_runtime_token_path;
 use super::config_path::{ConfigPathError, resolve_config_path};
 use super::control_http::{ControlClientError, mcp_client_request};
 use super::runtime_token::{RuntimeToken, RuntimeTokenError, resolve_token_path};
@@ -28,8 +29,7 @@ pub fn run(explicit_config: Option<PathBuf>) -> Result<(), McpProxyError> {
             path: resolved.path().to_owned(),
             source,
         })?;
-    let config = SupervisorConfig::parse_json(&source).map_err(McpProxyError::Config)?;
-    config.validate().map_err(McpProxyError::Config)?;
+    let config = parse_proxy_profile(&source).map_err(McpProxyError::Config)?;
     if !config.control.mcp.enabled {
         return Err(McpProxyError::Disabled);
     }
@@ -40,6 +40,43 @@ pub fn run(explicit_config: Option<PathBuf>) -> Result<(), McpProxyError> {
         .map_err(McpProxyError::Address)?;
 
     proxy(io::stdin().lock(), io::stdout().lock(), address, &token)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct McpProxyProfile {
+    control: McpProxyControl,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct McpProxyControl {
+    host: String,
+    port: u16,
+    token_file: PathBuf,
+    #[serde(default)]
+    mcp: McpProxySettings,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct McpProxySettings {
+    #[serde(default)]
+    enabled: bool,
+}
+
+fn parse_proxy_profile(source: &str) -> Result<McpProxyProfile, String> {
+    let profile: McpProxyProfile =
+        serde_json::from_str(source).map_err(|error| format!("invalid JSON: {error}"))?;
+    if profile.control.host != "127.0.0.1" {
+        return Err("control.host must be exactly 127.0.0.1".to_owned());
+    }
+    if profile.control.port == 0 {
+        return Err("control.port must be non-zero".to_owned());
+    }
+    if !is_runtime_token_path(&profile.control.token_file) {
+        return Err("control.tokenFile must be a relative path beneath .runtime".to_owned());
+    }
+    Ok(profile)
 }
 
 fn proxy(
@@ -102,7 +139,7 @@ fn write_json_line(output: &mut impl Write, value: &Value) -> Result<(), McpProx
 pub enum McpProxyError {
     ConfigPath(ConfigPathError),
     ReadConfig { path: PathBuf, source: io::Error },
-    Config(super::config::ConfigError),
+    Config(String),
     Disabled,
     Token(RuntimeTokenError),
     Address(std::net::AddrParseError),
@@ -119,7 +156,7 @@ impl fmt::Display for McpProxyError {
             Self::ReadConfig { path, source } => {
                 write!(formatter, "failed to read {}: {source}", path.display())
             }
-            Self::Config(error) => error.fmt(formatter),
+            Self::Config(error) => write!(formatter, "MCP proxy configuration is invalid: {error}"),
             Self::Disabled => formatter.write_str("read-only MCP is disabled in configuration"),
             Self::Token(error) => error.fmt(formatter),
             Self::Address(error) => write!(formatter, "invalid control address: {error}"),
@@ -139,7 +176,41 @@ impl std::error::Error for McpProxyError {}
 mod tests {
     use std::io::Cursor;
 
-    use super::{McpProxyError, proxy};
+    use super::{McpProxyError, parse_proxy_profile, proxy};
+
+    #[test]
+    fn proxy_profile_ignores_unrelated_supervisor_contract_changes() {
+        let profile = parse_proxy_profile(
+            r#"{
+                "version": 999,
+                "control": {
+                    "host": "127.0.0.1",
+                    "port": 47820,
+                    "tokenFile": ".runtime/control-token",
+                    "mcp": {"enabled": true, "futureSetting": "ignored"},
+                    "futureControlSetting": true
+                },
+                "cooperativeActions": {"futureAction": {"shape": "unknown"}},
+                "services": {"future-service": {"shape": "unknown"}},
+                "futureTopLevel": true
+            }"#,
+        )
+        .expect("proxy should parse only its required control projection");
+
+        assert_eq!(profile.control.host, "127.0.0.1");
+        assert_eq!(profile.control.port, 47820);
+        assert!(profile.control.mcp.enabled);
+    }
+
+    #[test]
+    fn proxy_profile_retains_loopback_and_token_path_security_boundaries() {
+        for source in [
+            r#"{"control":{"host":"0.0.0.0","port":47820,"tokenFile":".runtime/control-token","mcp":{"enabled":true}}}"#,
+            r#"{"control":{"host":"127.0.0.1","port":47820,"tokenFile":"../control-token","mcp":{"enabled":true}}}"#,
+        ] {
+            assert!(parse_proxy_profile(source).is_err());
+        }
+    }
 
     #[test]
     fn malformed_stdio_input_is_answered_without_contacting_a_supervisor() {

@@ -493,6 +493,14 @@ mod tests {
                 .all(|tool| tool["execution"]["taskSupport"] == "forbidden")
         );
         assert_eq!(*control.mutations.lock().expect("mutation lock"), 0);
+        let installer = include_str!("../../scripts/install-codex-mcp.ps1");
+        for tool in tools {
+            let name = tool["name"].as_str().expect("tool name");
+            assert!(
+                installer.contains(&format!("\"{name}\"")),
+                "Codex installer is missing read-only tool {name}"
+            );
+        }
         std::fs::remove_dir_all(root).ok();
     }
 

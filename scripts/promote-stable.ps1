@@ -7,6 +7,7 @@ $ErrorActionPreference = 'Stop'
 $repository = Split-Path -Parent $PSScriptRoot
 $devExecutable = Join-Path $repository 'target\dev\aku-supervisor.exe'
 $stableExecutable = Join-Path $repository 'target\aku-supervisor.exe'
+$mcpHostStatusScript = Join-Path $PSScriptRoot 'get-mcp-host-status.ps1'
 
 function Stop-Promotion {
     param([Parameter(Mandatory)] [string] $Message)
@@ -33,6 +34,32 @@ function Get-StableExecutableUsers {
             # A process may exit between enumeration and path inspection.
         }
     })
+}
+
+function Show-McpHostStatus {
+    try {
+        $statusOutput = @(& $mcpHostStatusScript `
+            -SourcePath $stableExecutable `
+            -Json 2>&1)
+        if ($LASTEXITCODE -ne 0) {
+            throw ($statusOutput -join [Environment]::NewLine)
+        }
+        $mcpStatus = ($statusOutput -join "`n") | ConvertFrom-Json
+    } catch {
+        Write-Host "[release] MCP host status: UNKNOWN ($($_.Exception.Message))" -ForegroundColor Yellow
+        return
+    }
+
+    if ($mcpStatus.status -eq 'CURRENT') {
+        Write-Host '[release] MCP host status: CURRENT (matches stable core).' -ForegroundColor Green
+        Write-Host "[release] MCP host: $($mcpStatus.hostPath)" -ForegroundColor DarkGray
+        return
+    }
+
+    Write-Host "[release] MCP host status: $($mcpStatus.status) (does not match stable core)." -ForegroundColor Yellow
+    Write-Host "[release] Expected immutable MCP host: $($mcpStatus.hostPath)" -ForegroundColor DarkGray
+    Write-Host '[release] Registration tools or schema exposed to agents may be stale.' -ForegroundColor Yellow
+    Write-Host '[release] Run .\scripts\install-codex-mcp.ps1, apply its reviewed command, and restart Codex when instructed.' -ForegroundColor Yellow
 }
 
 function Assert-StableExecutableUnlocked {
@@ -81,6 +108,7 @@ if (Test-Path $stableExecutable -PathType Leaf) {
     $stableHash = (Get-FileHash -LiteralPath $stableExecutable -Algorithm SHA256).Hash
     if ($stableHash -eq $developmentHash) {
         Write-Host '[release] Stable is already current; no copy is required.' -ForegroundColor Green
+        Show-McpHostStatus
         Write-Host '[release] AkuWorkspace integration validation is separate and was not run.' -ForegroundColor DarkGray
         exit 0
     }
@@ -100,5 +128,6 @@ if ($promotedHash -ne $developmentHash) {
 
 Write-Host "[release] Promoted core AkuSupervisor build to: $stableExecutable" -ForegroundColor Green
 Write-Host "[release] SHA-256: $promotedHash" -ForegroundColor DarkGray
+Show-McpHostStatus
 Write-Host '[release] AkuWorkspace integration validation is separate and was not run.' -ForegroundColor Yellow
 Write-Host '[release] When a change affects AkuSidecar/AkuBridge integration, run .\scripts\validate-akuworkspace-integration.ps1 explicitly.' -ForegroundColor Yellow

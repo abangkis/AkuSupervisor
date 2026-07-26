@@ -6,7 +6,7 @@
 
 use std::fmt;
 use std::io::{self, BufRead, Write};
-use std::path::PathBuf;
+use std::path::Path;
 
 use serde_json::{Map, Value, json};
 
@@ -24,16 +24,14 @@ const MAX_RESULT_BYTES: usize = 512 * 1024;
 /// # Errors
 ///
 /// Returns a configuration, registration persistence, stdin, or stdout failure.
-pub fn run(explicit_config: Option<PathBuf>) -> Result<(), RegistrationMcpError> {
-    let authority =
-        RegistrationAuthority::open(explicit_config).map_err(RegistrationMcpError::Registration)?;
-    serve(io::stdin().lock(), io::stdout().lock(), &authority)
+pub fn run(explicit_config: Option<&Path>) -> Result<(), RegistrationMcpError> {
+    serve(io::stdin().lock(), io::stdout().lock(), explicit_config)
 }
 
 fn serve(
     mut input: impl BufRead,
     mut output: impl Write,
-    authority: &RegistrationAuthority,
+    explicit_config: Option<&Path>,
 ) -> Result<(), RegistrationMcpError> {
     let mut line = String::new();
     loop {
@@ -52,7 +50,7 @@ fn serve(
                 "MCP message exceeds bounded body size",
             )
         } else {
-            match handle_message(body, authority) {
+            match handle_message(body, explicit_config) {
                 McpResponse::Json(value) => value,
                 McpResponse::Accepted => continue,
             }
@@ -71,7 +69,7 @@ enum McpResponse {
     Accepted,
 }
 
-fn handle_message(body: &[u8], authority: &RegistrationAuthority) -> McpResponse {
+fn handle_message(body: &[u8], explicit_config: Option<&Path>) -> McpResponse {
     let message: Value = match serde_json::from_slice(body) {
         Ok(message) => message,
         Err(_) => return McpResponse::Json(rpc_error(&Value::Null, -32700, "Parse error")),
@@ -97,7 +95,7 @@ fn handle_message(body: &[u8], authority: &RegistrationAuthority) -> McpResponse
         "initialize" => initialize(&params),
         "ping" => empty_params(&params).map(|()| json!({})),
         "tools/list" => list_tools(&params),
-        "tools/call" => call_tool(&params, authority),
+        "tools/call" => call_tool(&params, explicit_config),
         _ => return McpResponse::Json(rpc_error(&id, -32601, "Method not found")),
     };
     match result {
@@ -193,7 +191,7 @@ fn draft_input_schema() -> Value {
     })
 }
 
-fn call_tool(params: &Value, authority: &RegistrationAuthority) -> Result<Value, String> {
+fn call_tool(params: &Value, explicit_config: Option<&Path>) -> Result<Value, String> {
     let params_object = object(params, "tools/call params")?;
     reject_unknown(params_object, &["name", "arguments", "_meta"])?;
     let name = required_string(params_object, "name")?;
@@ -205,33 +203,44 @@ fn call_tool(params: &Value, authority: &RegistrationAuthority) -> Result<Value,
     let result = match name {
         "supervisor_registration_get_capabilities" => {
             reject_unknown(arguments, &[])?;
-            authority.capabilities()
+            with_authority(explicit_config, RegistrationAuthority::capabilities)
         }
         "supervisor_registration_get_schema" => {
             reject_unknown(arguments, &[])?;
             Ok(json!({"serviceSchema":RegistrationAuthority::schema()}))
         }
-        "supervisor_registration_validate_service" => validate_tool(authority, arguments),
-        "supervisor_registration_prepare_change" => prepare_tool(authority, arguments),
+        "supervisor_registration_validate_service" => {
+            with_authority(explicit_config, |authority| {
+                validate_tool(authority, arguments)
+            })
+        }
+        "supervisor_registration_prepare_change" => with_authority(explicit_config, |authority| {
+            prepare_tool(authority, arguments)
+        }),
         "supervisor_registration_get_draft" => {
             reject_unknown(arguments, &["draftId"])?;
             let draft_id = required_string(arguments, "draftId")?;
-            authority.get_draft(draft_id).map(|draft| {
-                json!({
-                    "draft":draft,
-                    "approvalCommand":approval_command(draft_id),
-                    "approvalCommandCommits":true,
-                    "agentCommitRequired":false,
-                    "approvalAvailableThroughMcp":false,
-                    "completionCheck":completion_check()
+            with_authority(explicit_config, |authority| {
+                authority.get_draft(draft_id).map(|draft| {
+                    json!({
+                        "draft":draft,
+                        "approvalCommand":approval_command(draft_id),
+                        "approvalCommandCommits":true,
+                        "agentCommitRequired":false,
+                        "approvalAvailableThroughMcp":false,
+                        "completionCheck":completion_check()
+                    })
                 })
             })
         }
         "supervisor_registration_commit_change" => {
             reject_unknown(arguments, &["draftId"])?;
-            authority
-                .commit(required_string(arguments, "draftId")?)
-                .map(|commit| json!({"commit":commit}))
+            let draft_id = required_string(arguments, "draftId")?;
+            with_authority(explicit_config, |authority| {
+                authority
+                    .commit(draft_id)
+                    .map(|commit| json!({"commit":commit}))
+            })
         }
         _ => return Err("unknown registration tool".to_owned()),
     };
@@ -239,6 +248,14 @@ fn call_tool(params: &Value, authority: &RegistrationAuthority) -> Result<Value,
         Ok(value) => tool_success(&value),
         Err(error) => tool_failure(&error),
     })
+}
+
+fn with_authority<T>(
+    explicit_config: Option<&Path>,
+    operation: impl FnOnce(&RegistrationAuthority) -> Result<T, RegistrationError>,
+) -> Result<T, RegistrationError> {
+    let authority = RegistrationAuthority::open(explicit_config.map(Path::to_path_buf))?;
+    operation(&authority)
 }
 
 fn validate_tool(
@@ -420,7 +437,6 @@ fn rpc_error(id: &Value, code: i64, message: &str) -> Value {
 
 #[derive(Debug)]
 pub enum RegistrationMcpError {
-    Registration(RegistrationError),
     ReadStdin(io::Error),
     WriteStdout(io::Error),
     Serialize(serde_json::Error),
@@ -429,7 +445,6 @@ pub enum RegistrationMcpError {
 impl fmt::Display for RegistrationMcpError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Registration(error) => error.fmt(formatter),
             Self::ReadStdin(error) => {
                 write!(formatter, "failed to read registration MCP stdin: {error}")
             }
@@ -449,6 +464,8 @@ impl std::error::Error for RegistrationMcpError {}
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+
     use super::*;
 
     #[test]
@@ -534,5 +551,68 @@ mod tests {
                 .as_str()
                 .is_some_and(|description| description.contains("RFC 6901"))
         );
+    }
+
+    #[test]
+    fn discovery_and_schema_survive_an_unreadable_runtime_configuration() {
+        let missing_config = Path::new("Z:\\missing\\aku-supervisor-services.json");
+        let requests = [
+            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":MCP_PROTOCOL_VERSION,"capabilities":{},"clientInfo":{"name":"test","version":"1"}}}),
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
+            json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"supervisor_registration_get_schema","arguments":{}}}),
+            json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"supervisor_registration_get_capabilities","arguments":{}}}),
+            json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"supervisor_registration_get_schema","arguments":{}}}),
+        ];
+        let input = requests
+            .iter()
+            .map(|request| serde_json::to_string(request).expect("serialize request"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        let mut output = Vec::new();
+
+        serve(Cursor::new(input), &mut output, Some(missing_config))
+            .expect("discovery session must remain alive");
+
+        let responses = String::from_utf8(output)
+            .expect("UTF-8 output")
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).expect("JSON response"))
+            .collect::<Vec<_>>();
+        assert_eq!(responses.len(), requests.len());
+        assert_eq!(
+            responses[0]["result"]["serverInfo"]["name"],
+            "aku-supervisor-registration"
+        );
+        assert_eq!(
+            responses[1]["result"]["tools"].as_array().map(Vec::len),
+            Some(6)
+        );
+        for schema_response in [&responses[2], &responses[4]] {
+            assert_eq!(schema_response["result"]["isError"], false);
+            assert_eq!(
+                schema_response["result"]["structuredContent"]["serviceSchema"]["properties"]["startupPrerequisites"]
+                    ["maxItems"],
+                8
+            );
+        }
+        assert_eq!(responses[3]["result"]["isError"], true);
+        assert_eq!(
+            responses[3]["result"]["structuredContent"]["error"]["code"],
+            "configuration_path_failed"
+        );
+    }
+
+    #[test]
+    fn codex_allowlist_contains_every_registration_tool() {
+        let installer = include_str!("../../scripts/install-codex-mcp.ps1");
+        let listed = list_tools(&json!({})).expect("tool list");
+        for tool in listed["tools"].as_array().expect("tools array") {
+            let name = tool["name"].as_str().expect("tool name");
+            assert!(
+                installer.contains(&format!("\"{name}\"")),
+                "Codex installer is missing registration tool {name}"
+            );
+        }
     }
 }

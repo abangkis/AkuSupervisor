@@ -21,6 +21,10 @@ fn stable_promotion_is_core_only_bounded_and_fail_closed() {
     assert!(script.contains("Get-StableExecutableUsers"));
     assert!(script.contains("target\\mcp"));
     assert!(script.contains("stage-mcp-host.ps1"));
+    assert!(script.contains("Show-McpHostStatus"));
+    assert!(script.contains("get-mcp-host-status.ps1"));
+    assert!(script.contains("MCP host status: CURRENT"));
+    assert!(script.contains("Registration tools or schema exposed to agents may be stale."));
     assert!(script.contains("function Stop-Promotion"));
     assert!(script.contains("exit 1"));
     assert!(script.contains("AkuWorkspace integration validation is separate and was not run."));
@@ -36,10 +40,31 @@ fn dedicated_mcp_host_is_staged_outside_the_core_promotion_target() {
     assert!(script.contains("target\\mcp"));
     assert!(script.contains("aku-supervisor-mcp.exe"));
     assert!(script.contains("Get-FileHash"));
-    assert!(script.contains("Dedicated MCP host is in use and was not changed."));
+    assert!(script.contains("Assert-RegistrationDiscovery"));
+    assert!(script.contains("supervisor_registration_get_schema"));
+    assert!(script.contains("cannot bootstrap registration MCP discovery"));
+    assert!(script.contains("sha256-$($sourceHash.ToLowerInvariant())"));
+    assert!(script.contains("Explicit MCP host destination is in use and was not changed."));
     assert!(script.contains("Core stable promotion remains independent"));
     assert!(!script.contains("Stop-Process"));
     assert!(!script.contains("target\\dev\\shutdown-request"));
+}
+
+#[test]
+fn mcp_host_status_is_read_only_and_hash_based() {
+    let script = include_str!("../scripts/get-mcp-host-status.ps1");
+
+    assert!(script.contains("Get-FileHash"));
+    assert!(script.contains("'CURRENT'"));
+    assert!(script.contains("'OUTDATED'"));
+    assert!(script.contains("'MISSING'"));
+    assert!(script.contains("sha256-$sourceHash"));
+    assert!(script.contains("'content-addressed-default'"));
+    assert!(script.contains("restartCodexRequired"));
+    assert!(!script.contains("Copy-Item"));
+    assert!(!script.contains("Move-Item"));
+    assert!(!script.contains("Remove-Item"));
+    assert!(!script.contains("Stop-Process"));
 }
 
 #[test]
@@ -52,6 +77,7 @@ fn codex_mcp_bootstrap_requires_a_hash_bound_preview_before_atomic_apply() {
     assert!(installer.contains("$currentHash"));
     assert!(installer.contains("$proposedHash"));
     assert!(installer.contains("$sourceHash"));
+    assert!(installer.contains("sha256-$sourceHash"));
     assert!(installer.contains("Codex configuration changed after approval validation"));
     assert!(installer.contains("[System.IO.File]::Replace"));
     assert!(installer.contains("stage-mcp-host.ps1"));

@@ -46,6 +46,11 @@ fn watcher_requires_executable_release_without_force_killing_an_owner() {
     assert!(script.contains("[ValidateSet('local', 'utc')]"));
     assert!(script.contains("--timezone {0} --config"));
     assert!(script.contains("Test-ConfigurationBeforeHandoff"));
+    assert!(script.contains("Show-McpHostGuidance"));
+    assert!(script.contains("get-mcp-host-status.ps1"));
+    assert!(script.contains("MCP host status: CURRENT"));
+    assert!(script.contains("Registration tools or schema exposed to agents may be stale."));
+    assert!(script.contains("install-codex-mcp.ps1"));
     assert!(script.contains(
         "Configuration validation failed. The current supervisor and services remain active."
     ));

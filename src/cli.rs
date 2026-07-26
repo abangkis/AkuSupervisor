@@ -168,7 +168,7 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
             }
         },
         Ok(Command::RegistrationMcp { config }) => {
-            match crate::adapters::registration_mcp::run(config) {
+            match crate::adapters::registration_mcp::run(config.as_deref()) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(error) => {
                     eprintln!("error: {error}");

@@ -24,9 +24,6 @@ $workspace = Split-Path -Parent $repository
 if ([string]::IsNullOrWhiteSpace($CodexConfigPath)) {
     $CodexConfigPath = Join-Path $workspace '.codex\config.toml'
 }
-if ([string]::IsNullOrWhiteSpace($HostPath)) {
-    $HostPath = Join-Path $repository 'target\mcp\aku-supervisor-mcp.exe'
-}
 if ([string]::IsNullOrWhiteSpace($SourcePath)) {
     $SourcePath = if ($Source -eq 'development') {
         Join-Path $repository 'target\dev\aku-supervisor.exe'
@@ -37,7 +34,6 @@ if ([string]::IsNullOrWhiteSpace($SourcePath)) {
 
 $configFullPath = [System.IO.Path]::GetFullPath($CodexConfigPath)
 $sourceFullPath = [System.IO.Path]::GetFullPath($SourcePath)
-$hostFullPath = [System.IO.Path]::GetFullPath($HostPath)
 $sectionNames = @(
     'mcp_servers.aku_supervisor',
     'mcp_servers.aku_supervisor_registration'
@@ -125,6 +121,10 @@ if ($LASTEXITCODE -ne 0 -or $sourceVersion -notmatch '^aku-supervisor\s+\S+$') {
     Stop-Install -Message 'Source executable failed its bounded version preflight.'
 }
 $sourceHash = (Get-FileHash -LiteralPath $sourceFullPath -Algorithm SHA256).Hash.ToLowerInvariant()
+if ([string]::IsNullOrWhiteSpace($HostPath)) {
+    $HostPath = Join-Path $repository "target\mcp\sha256-$sourceHash\aku-supervisor-mcp.exe"
+}
+$hostFullPath = [System.IO.Path]::GetFullPath($HostPath)
 $currentContent = if (Test-Path -LiteralPath $configFullPath -PathType Leaf) {
     [System.IO.File]::ReadAllText($configFullPath)
 } else {

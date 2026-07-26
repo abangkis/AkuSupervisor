@@ -21,13 +21,6 @@ $sourceExecutable = if (-not [string]::IsNullOrWhiteSpace($SourcePath)) {
 } else {
     Join-Path $repository 'target\aku-supervisor.exe'
 }
-$hostExecutable = if (-not [string]::IsNullOrWhiteSpace($DestinationPath)) {
-    [System.IO.Path]::GetFullPath($DestinationPath)
-} else {
-    Join-Path $repository 'target\mcp\aku-supervisor-mcp.exe'
-}
-$hostDirectory = Split-Path -Parent $hostExecutable
-
 function Stop-Staging {
     param([Parameter(Mandatory)] [string] $Message)
 
@@ -53,6 +46,47 @@ function Get-ExecutableUsers {
     })
 }
 
+function Assert-RegistrationDiscovery {
+    param([Parameter(Mandatory)] [string] $Executable)
+
+    $missingConfig = Join-Path $repository "target\mcp-registration-probe-missing-$PID.json"
+    $requests = @(
+        '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"mcp-host-staging","version":"1"}}}',
+        '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}',
+        '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"supervisor_registration_get_schema","arguments":{}}}'
+    )
+    $raw = @($requests | & $Executable registration-mcp --config $missingConfig 2>&1)
+    $discoveryExitCode = $LASTEXITCODE
+    if ($discoveryExitCode -ne 0) {
+        $detail = (($raw | Select-Object -First 1) -join '').Trim()
+        if ($detail) {
+            Write-Host "[mcp-host] Registration discovery detail: $detail" -ForegroundColor Yellow
+        }
+        Stop-Staging -Message 'Source executable cannot bootstrap registration MCP discovery without a runtime configuration.'
+    }
+
+    try {
+        $responses = @(
+            $raw |
+                Where-Object { $_ -is [string] -and $_.TrimStart().StartsWith('{') } |
+                ForEach-Object { $_ | ConvertFrom-Json }
+        )
+        $tools = @(
+            ($responses | Where-Object id -eq 2).result.tools |
+                ForEach-Object { $_.name }
+        )
+        $schemaResponse = $responses | Where-Object id -eq 3
+        if ($responses.Count -ne 3 -or
+            $tools -notcontains 'supervisor_registration_get_schema' -or
+            $schemaResponse.result.isError -ne $false -or
+            $null -eq $schemaResponse.result.structuredContent.serviceSchema) {
+            throw 'registration discovery response contract mismatch'
+        }
+    } catch {
+        Stop-Staging -Message "Source executable registration discovery preflight failed: $($_.Exception.Message)"
+    }
+}
+
 if (-not (Test-Path -LiteralPath $sourceExecutable -PathType Leaf)) {
     Stop-Staging -Message "Source executable not found: $sourceExecutable"
 }
@@ -62,6 +96,7 @@ $versionOutput = (& $sourceExecutable --version | Out-String).Trim()
 if ($LASTEXITCODE -ne 0 -or $versionOutput -notmatch '^aku-supervisor\s+\S+$') {
     Stop-Staging -Message 'Source executable failed its bounded version preflight.'
 }
+Assert-RegistrationDiscovery -Executable $sourceExecutable
 $sourceHash = (Get-FileHash -LiteralPath $sourceExecutable -Algorithm SHA256).Hash
 if (-not [string]::IsNullOrWhiteSpace($ExpectedSourceHash)) {
     $normalizedExpectedHash = $ExpectedSourceHash.Replace('sha256:', '').ToUpperInvariant()
@@ -69,6 +104,12 @@ if (-not [string]::IsNullOrWhiteSpace($ExpectedSourceHash)) {
         Stop-Staging -Message 'Source executable hash no longer matches the approved proposal.'
     }
 }
+$hostExecutable = if (-not [string]::IsNullOrWhiteSpace($DestinationPath)) {
+    [System.IO.Path]::GetFullPath($DestinationPath)
+} else {
+    Join-Path $repository "target\mcp\sha256-$($sourceHash.ToLowerInvariant())\aku-supervisor-mcp.exe"
+}
+$hostDirectory = Split-Path -Parent $hostExecutable
 
 New-Item -ItemType Directory -Path $hostDirectory -Force | Out-Null
 if (Test-Path -LiteralPath $hostExecutable -PathType Leaf) {
@@ -81,13 +122,13 @@ if (Test-Path -LiteralPath $hostExecutable -PathType Leaf) {
 
     $users = @(Get-ExecutableUsers -Executable $hostExecutable)
     if ($users.Count -gt 0) {
-        Write-Host '[mcp-host] The dedicated MCP host is active and cannot be updated in place.' -ForegroundColor Yellow
+        Write-Host '[mcp-host] The explicitly selected MCP host is active and cannot be updated in place.' -ForegroundColor Yellow
         foreach ($user in $users) {
             Write-Host "[mcp-host] Active MCP host: PID $($user.Id) $($user.Path)" -ForegroundColor Yellow
         }
         Write-Host '[mcp-host] Core stable promotion remains independent and may still run.' -ForegroundColor Green
-        Write-Host '[mcp-host] Update this host only when MCP behavior changes: close Codex, rerun this script, then reopen Codex.' -ForegroundColor Yellow
-        Stop-Staging -Message 'Dedicated MCP host is in use and was not changed.'
+        Write-Host '[mcp-host] Use the default content-addressed destination to stage changed bytes beside this active host.' -ForegroundColor Yellow
+        Stop-Staging -Message 'Explicit MCP host destination is in use and was not changed.'
     }
 }
 
@@ -116,4 +157,4 @@ if ($LASTEXITCODE -ne 0 -or $hostVersion -ne $versionOutput -or $hostHash -ne $s
 Write-Host "[mcp-host] Staged dedicated MCP host: $hostExecutable" -ForegroundColor Green
 Write-Host "[mcp-host] Version: $hostVersion" -ForegroundColor DarkGray
 Write-Host "[mcp-host] SHA-256: $hostHash" -ForegroundColor DarkGray
-Write-Host '[mcp-host] Point Codex MCP entries at this executable. A Codex restart is required only after that configuration changes or this host is updated.' -ForegroundColor Yellow
+Write-Host '[mcp-host] Point Codex MCP entries at this immutable executable. Restart Codex only after its configuration is changed to select this version.' -ForegroundColor Yellow

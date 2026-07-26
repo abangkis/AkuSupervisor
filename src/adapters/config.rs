@@ -825,7 +825,7 @@ fn valid_service_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
-fn is_runtime_token_path(path: &Path) -> bool {
+pub(crate) fn is_runtime_token_path(path: &Path) -> bool {
     if path.is_absolute() {
         return false;
     }
