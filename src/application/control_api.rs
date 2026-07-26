@@ -199,7 +199,10 @@ where
         RegistryError::Runtime(super::ServiceRuntimeError::Start(
             super::BackendOperationError::Process(_),
         )) => ControlErrorKind::SpawnFailed,
-        RegistryError::HealthFailed { .. } => ControlErrorKind::HealthFailed,
+        RegistryError::Runtime(super::ServiceRuntimeError::Start(
+            super::BackendOperationError::StartupPrerequisite { .. },
+        ))
+        | RegistryError::HealthFailed { .. } => ControlErrorKind::HealthFailed,
         RegistryError::Runtime(super::ServiceRuntimeError::Stop(_)) => {
             ControlErrorKind::ShutdownTimeout
         }

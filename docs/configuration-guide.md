@@ -142,10 +142,35 @@ continues to use the files beneath `.runtime/services` and the `logs` command.
 | `command` | Absolute, existing executable or supported Windows command wrapper such as `npm.cmd`. |
 | `args` | Fixed argument array; it is never replaced by API input. |
 | `environment` | Fixed string-to-string overrides. Prefer an empty object when the program already has persisted configuration. |
+| `startupPrerequisites` | Optional bounded loopback checks that must pass before the process is spawned. Maximum eight. |
 | `health` | One of the bounded health contracts below. |
 | `ports` | Ports expected to be free before start. An external owner is reported and never killed. |
 | `restartPolicy` | `manual` or the bounded `on-failure` policy. |
 | `shutdownGraceMs` | Time allowed after the native graceful signal before owned-tree forced cleanup. |
+
+## Startup prerequisites
+
+Use `startupPrerequisites` when a program depends on an already-managed
+external local listener, such as PostgreSQL:
+
+```json
+"startupPrerequisites": [
+  {
+    "type": "tcp-connect",
+    "host": "127.0.0.1",
+    "port": 5432,
+    "timeoutMs": 1000,
+    "startupDeadlineMs": 60000
+  }
+]
+```
+
+AkuSupervisor retries the checks within their deadlines before every start or
+restart, including automatic recovery. If a prerequisite does not become
+ready, the target service enters `failed` and no child process is created.
+These checks do not start PostgreSQL, store database credentials, or create a
+dependency graph. The agent or operator registering the service declares the
+application's prerequisites; AkuSupervisor validates and enforces them.
 
 ## Health choices
 

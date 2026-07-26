@@ -565,13 +565,17 @@ type may be added. The managed Geofu program does not need source changes for
 basic supervision. Optional signal handling may be added to demonstrate a
 cooperative shutdown instead of the bounded forced fallback.
 
-Multi-service Geofu orchestration and dependency ordering remain deferred.
+Multi-service orchestration and dependency ordering remain deferred. A service
+may declare bounded loopback transport prerequisites that must pass before it
+is spawned, but those checks neither identify nor start another registered
+service and therefore do not create a dependency graph.
 
 After the independent proof passes, one configuration may register additional
 long-running Geofu-family development modes. Every declared port still has one
 configured owner; alternative modes that share a repository default must use
 explicit port overrides or separate profiles. Startup order remains an explicit
-operator or CLI choice; registration must not imply a dependency graph.
+operator or CLI choice. Registration may declare external transport readiness
+requirements, but must not imply a managed-service dependency graph.
 
 When a validated registration transaction replaces the service configuration,
 an active Supervisor must reconcile the registry in place. Unchanged entries

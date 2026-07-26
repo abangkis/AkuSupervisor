@@ -80,6 +80,7 @@ pub struct ServiceRegistration {
     id: String,
     label: String,
     launch: LaunchSpec,
+    startup_prerequisites: Vec<HealthCheckSpec>,
     health: HealthCheckSpec,
     restart_policy: ServiceRestartPolicy,
     ports: Vec<u16>,
@@ -101,6 +102,7 @@ impl ServiceRegistration {
             id: id.into(),
             label: label.into(),
             launch,
+            startup_prerequisites: Vec::new(),
             health,
             restart_policy,
             ports,
@@ -116,6 +118,16 @@ impl ServiceRegistration {
     #[must_use]
     pub fn label(&self) -> &str {
         &self.label
+    }
+
+    /// Adds bounded external readiness checks that must pass before spawning.
+    #[must_use]
+    pub fn with_startup_prerequisites(
+        mut self,
+        prerequisites: impl IntoIterator<Item = HealthCheckSpec>,
+    ) -> Self {
+        self.startup_prerequisites = prerequisites.into_iter().collect();
+        self
     }
 }
 
@@ -347,6 +359,7 @@ where
         let outcome = entry
             .runtime
             .start_with(|| {
+                self.wait_until_startup_prerequisites(entry)?;
                 self.ensure_ports_available(&entry.registration.ports)?;
                 self.spawner
                     .spawn(&entry.registration.id, &entry.registration.launch)
@@ -504,6 +517,7 @@ where
                     Ok(progress)
                 },
                 || {
+                    self.wait_until_startup_prerequisites(entry)?;
                     self.ensure_ports_available(&entry.registration.ports)?;
                     self.spawner
                         .spawn(&entry.registration.id, &entry.registration.launch)
@@ -701,6 +715,37 @@ where
             let remaining = deadline.checked_sub(elapsed).unwrap_or_default();
             thread::sleep(Duration::from_millis(100).min(remaining));
         }
+    }
+
+    fn wait_until_startup_prerequisites(
+        &self,
+        entry: &ServiceEntry<Spawner::Process>,
+    ) -> Result<(), BackendOperationError<ProcessError<Spawner>, Inspector::Error>> {
+        for (index, prerequisite) in entry.registration.startup_prerequisites.iter().enumerate() {
+            let deadline = prerequisite.startup_deadline();
+            let started = Instant::now();
+            loop {
+                let remaining = deadline.checked_sub(started.elapsed()).unwrap_or_default();
+                let timeout = prerequisite
+                    .timeout()
+                    .expect("startup prerequisites are transport checks")
+                    .min(remaining);
+                let observation = self.health_probe.probe(prerequisite, timeout);
+                if observation.healthy {
+                    break;
+                }
+                let elapsed = started.elapsed();
+                if elapsed >= deadline {
+                    return Err(BackendOperationError::StartupPrerequisite {
+                        index,
+                        detail: observation.detail,
+                    });
+                }
+                let remaining = deadline.checked_sub(elapsed).unwrap_or_default();
+                thread::sleep(Duration::from_millis(100).min(remaining));
+            }
+        }
+        Ok(())
     }
 
     fn observe_health(
@@ -1057,6 +1102,10 @@ impl<ProcessFailure> std::error::Error for RegistryReconcileError<ProcessFailure
 #[derive(Debug)]
 pub enum BackendOperationError<ProcessFailure, PortFailure> {
     Process(ProcessFailure),
+    StartupPrerequisite {
+        index: usize,
+        detail: String,
+    },
     PortInspection {
         port: u16,
         source: PortFailure,
@@ -1073,6 +1122,13 @@ impl<ProcessFailure: fmt::Display, PortFailure: fmt::Display> fmt::Display
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Process(error) => error.fmt(formatter),
+            Self::StartupPrerequisite { index, detail } => {
+                write!(
+                    formatter,
+                    "startup prerequisite {} failed: {detail}",
+                    index + 1
+                )
+            }
             Self::PortInspection { port, source } => {
                 write!(formatter, "failed to inspect TCP port {port}: {source}")
             }
@@ -1530,6 +1586,41 @@ mod tests {
             )))
         ));
         assert_eq!(spawn_count.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn failed_startup_prerequisite_never_invokes_process_spawner() {
+        let spawn_count = Arc::new(AtomicU32::new(0));
+        let healthy = Arc::new(AtomicBool::new(false));
+        let registration =
+            registration(Vec::new()).with_startup_prerequisites([HealthCheckSpec::TcpConnect {
+                host: "127.0.0.1".to_owned(),
+                port: 54_321,
+                timeout: Duration::from_millis(1),
+                startup_deadline: Duration::ZERO,
+            }]);
+        let registry = ServiceRegistry::new(
+            [registration],
+            FakeSpawner {
+                spawn_count: Arc::clone(&spawn_count),
+            },
+            FakePortInspector { occupied: false },
+            Arc::new(ToggleHealthProbe { healthy }),
+        )
+        .expect("valid registry");
+
+        let result = registry.start("fixture", Actor::UserCli, reason("user start"));
+
+        assert!(matches!(
+            result,
+            Err(RegistryError::Runtime(ServiceRuntimeError::Start(
+                BackendOperationError::StartupPrerequisite { index: 0, .. }
+            )))
+        ));
+        assert_eq!(spawn_count.load(Ordering::SeqCst), 0);
+        let snapshot = registry.snapshots().expect("failed snapshot").remove(0);
+        assert_eq!(snapshot.lifecycle, crate::domain::LifecycleState::Failed);
+        assert_eq!(snapshot.root_pid, None);
     }
 
     #[test]

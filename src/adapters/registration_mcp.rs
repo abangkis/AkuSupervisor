@@ -504,6 +504,13 @@ mod tests {
             assert!(required.iter().any(|value| value == field));
         }
         assert_eq!(schema["additionalProperties"], false);
+        assert_eq!(schema["properties"]["startupPrerequisites"]["maxItems"], 8);
+        assert_eq!(
+            schema["properties"]["startupPrerequisites"]["items"]["oneOf"]
+                .as_array()
+                .map(Vec::len),
+            Some(1)
+        );
         assert_eq!(
             schema["properties"]["health"]["oneOf"]
                 .as_array()

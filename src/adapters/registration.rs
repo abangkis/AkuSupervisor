@@ -1243,6 +1243,15 @@ fn service_schema() -> Value {
             "command": {"type":"string", "description":"Absolute existing executable or command wrapper path; never a shell expression."},
             "args": {"type":"array", "items":{"type":"string"}, "default":[], "description":"Fixed argv entries, kept separate from command."},
             "environment": {"type":"object", "additionalProperties":{"type":"string"}, "default":{}, "description":"Non-sensitive fixed overrides only. Likely secret keys are rejected."},
+            "startupPrerequisites": {
+                "type":"array",
+                "maxItems":8,
+                "default":[],
+                "description":"Bounded external loopback readiness checks evaluated before spawning. These checks do not start or manage the dependency.",
+                "items":{"oneOf":[
+                    {"type":"object", "additionalProperties":false, "required":["type","host","port","timeoutMs","startupDeadlineMs"], "properties":{"type":{"const":"tcp-connect"},"host":{"type":"string","description":"Explicit loopback IP."},"port":{"type":"integer","minimum":1,"maximum":65535},"timeoutMs":{"type":"integer","minimum":1},"startupDeadlineMs":{"type":"integer","minimum":1}}}
+                ]}
+            },
             "health": {"oneOf":[
                 {"type":"object", "additionalProperties":false, "required":["type"], "properties":{"type":{"const":"process"}}},
                 {"type":"object", "additionalProperties":false, "required":["type","host","port","timeoutMs","startupDeadlineMs"], "properties":{"type":{"const":"tcp-connect"},"host":{"type":"string","description":"Explicit loopback IP."},"port":{"type":"integer","minimum":1,"maximum":65535},"timeoutMs":{"type":"integer","minimum":1},"startupDeadlineMs":{"type":"integer","minimum":1}}},
@@ -1255,7 +1264,9 @@ fn service_schema() -> Value {
         },
         "examples": [{
             "label":"Example API", "cwd":"C:\\absolute\\project", "command":"C:\\absolute\\runtime\\server.exe",
-            "args":["--port","8090"], "environment":{}, "health":{"type":"http-status","url":"http://127.0.0.1:8090/health","expectedStatus":200,"timeoutMs":3000,"startupDeadlineMs":20000},
+            "args":["--port","8090"], "environment":{},
+            "startupPrerequisites":[{"type":"tcp-connect","host":"127.0.0.1","port":5432,"timeoutMs":1000,"startupDeadlineMs":30000}],
+            "health":{"type":"http-status","url":"http://127.0.0.1:8090/health","expectedStatus":200,"timeoutMs":3000,"startupDeadlineMs":20000},
             "ports":[8090], "restartPolicy":"manual", "shutdownGraceMs":5000
         }]
     })
@@ -1574,6 +1585,7 @@ mod tests {
                 command: executable.clone(),
                 args: Vec::new(),
                 environment: BTreeMap::new(),
+                startup_prerequisites: Vec::new(),
                 health: HealthCheck::Process,
                 ports: Vec::new(),
                 restart_policy: RestartPolicy::Manual,
@@ -1618,6 +1630,7 @@ mod tests {
                 command: self.executable.clone(),
                 args: Vec::new(),
                 environment: BTreeMap::new(),
+                startup_prerequisites: Vec::new(),
                 health: HealthCheck::Process,
                 ports: (port != 0).then_some(port).into_iter().collect(),
                 restart_policy: RestartPolicy::Manual,

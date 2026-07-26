@@ -108,11 +108,45 @@ pub struct ServiceConfig {
     pub args: Vec<String>,
     #[serde(default)]
     pub environment: BTreeMap<String, String>,
+    #[serde(default)]
+    pub startup_prerequisites: Vec<StartupPrerequisite>,
     pub health: HealthCheck,
     #[serde(default)]
     pub ports: Vec<u16>,
     pub restart_policy: RestartPolicy,
     pub shutdown_grace_ms: u64,
+}
+
+/// External loopback readiness that must pass before a service is spawned.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum StartupPrerequisite {
+    TcpConnect {
+        host: String,
+        port: u16,
+        #[serde(rename = "timeoutMs")]
+        timeout_ms: u64,
+        #[serde(rename = "startupDeadlineMs")]
+        startup_deadline_ms: u64,
+    },
+}
+
+impl StartupPrerequisite {
+    fn to_spec(&self) -> HealthCheckSpec {
+        match self {
+            Self::TcpConnect {
+                host,
+                port,
+                timeout_ms,
+                startup_deadline_ms,
+            } => HealthCheckSpec::TcpConnect {
+                host: host.clone(),
+                port: *port,
+                timeout: Duration::from_millis(*timeout_ms),
+                startup_deadline: Duration::from_millis(*startup_deadline_ms),
+            },
+        }
+    }
 }
 
 impl ServiceConfig {
@@ -347,6 +381,7 @@ impl SupervisorConfig {
                 ));
             }
             validate_health(&service.health, &prefix, &mut issues);
+            validate_startup_prerequisites(&service.startup_prerequisites, &prefix, &mut issues);
 
             let mut local_ports = BTreeSet::new();
             for port in &service.ports {
@@ -412,6 +447,12 @@ impl SupervisorConfig {
                     service.ports.clone(),
                     Duration::from_millis(service.shutdown_grace_ms),
                 )
+                .with_startup_prerequisites(
+                    service
+                        .startup_prerequisites
+                        .iter()
+                        .map(StartupPrerequisite::to_spec),
+                )
             })
             .collect()
     }
@@ -438,6 +479,12 @@ impl SupervisorConfig {
                     service.restart_policy.to_spec(),
                     service.ports.clone(),
                     Duration::from_millis(service.shutdown_grace_ms),
+                )
+                .with_startup_prerequisites(
+                    service
+                        .startup_prerequisites
+                        .iter()
+                        .map(StartupPrerequisite::to_spec),
                 )
             })
             .collect()
@@ -570,6 +617,74 @@ fn validate_health(health: &HealthCheck, prefix: &str, issues: &mut Vec<ConfigIs
             validate_http_fields(url, *timeout_ms, *startup_deadline_ms, prefix, issues);
             validate_http_json_expectations(*path_mode, expect, observe, prefix, issues);
         }
+    }
+}
+
+fn validate_startup_prerequisite(
+    prerequisite: &StartupPrerequisite,
+    prefix: &str,
+    issues: &mut Vec<ConfigIssue>,
+) {
+    match prerequisite {
+        StartupPrerequisite::TcpConnect {
+            host,
+            port,
+            timeout_ms,
+            startup_deadline_ms,
+        } => {
+            let valid_loopback_host = host
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|address| address.is_loopback());
+            if !valid_loopback_host {
+                issues.push(ConfigIssue::new(
+                    format!("{prefix}.host"),
+                    "startup_prerequisite_host_invalid",
+                    "TCP startup prerequisite host must be an explicit loopback IP",
+                ));
+            }
+            if *port == 0 {
+                issues.push(ConfigIssue::new(
+                    format!("{prefix}.port"),
+                    "startup_prerequisite_port_invalid",
+                    "TCP startup prerequisite port must be greater than zero",
+                ));
+            }
+            if *timeout_ms == 0 {
+                issues.push(ConfigIssue::new(
+                    format!("{prefix}.timeoutMs"),
+                    "startup_prerequisite_timeout_invalid",
+                    "startup prerequisite timeout must be greater than zero",
+                ));
+            }
+            if *startup_deadline_ms < *timeout_ms {
+                issues.push(ConfigIssue::new(
+                    format!("{prefix}.startupDeadlineMs"),
+                    "startup_prerequisite_deadline_invalid",
+                    "startup prerequisite deadline must be at least its timeout",
+                ));
+            }
+        }
+    }
+}
+
+fn validate_startup_prerequisites(
+    prerequisites: &[StartupPrerequisite],
+    prefix: &str,
+    issues: &mut Vec<ConfigIssue>,
+) {
+    if prerequisites.len() > 8 {
+        issues.push(ConfigIssue::new(
+            format!("{prefix}.startupPrerequisites"),
+            "startup_prerequisites_too_many",
+            "at most 8 startup prerequisites are allowed",
+        ));
+    }
+    for (index, prerequisite) in prerequisites.iter().enumerate() {
+        validate_startup_prerequisite(
+            prerequisite,
+            &format!("{prefix}.startupPrerequisites.{index}"),
+            issues,
+        );
     }
 }
 
@@ -829,7 +944,7 @@ mod tests {
     use super::{
         CONFIG_VERSION, ConfigError, ConfigIssue, ConsoleEvents, ControlConfig,
         CooperativeActionsConfig, HealthCheck, McpConfig, ObservabilityConfig, RestartPolicy,
-        ServiceConfig, SupervisorConfig,
+        ServiceConfig, StartupPrerequisite, SupervisorConfig,
     };
 
     static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(1);
@@ -864,6 +979,7 @@ mod tests {
             command,
             args: vec!["--serve".to_owned()],
             environment: BTreeMap::new(),
+            startup_prerequisites: Vec::new(),
             health: HealthCheck::Process,
             ports: vec![49_001],
             restart_policy: RestartPolicy::Manual,
@@ -992,6 +1108,43 @@ mod tests {
         assert!(codes.contains(&"health_host_invalid".to_owned()));
         assert!(codes.contains(&"health_port_invalid".to_owned()));
         assert!(codes.contains(&"health_timeout_invalid".to_owned()));
+    }
+
+    #[test]
+    fn startup_prerequisite_requires_a_bounded_loopback_listener() {
+        let (_directory, mut config) = valid_config();
+        let service = config.services.get_mut("fixture").expect("fixture service");
+        service.startup_prerequisites = vec![StartupPrerequisite::TcpConnect {
+            host: "0.0.0.0".to_owned(),
+            port: 0,
+            timeout_ms: 0,
+            startup_deadline_ms: 0,
+        }];
+
+        let codes = config
+            .validation_issues()
+            .into_iter()
+            .map(|issue| issue.code)
+            .collect::<Vec<_>>();
+
+        assert!(codes.contains(&"startup_prerequisite_host_invalid".to_owned()));
+        assert!(codes.contains(&"startup_prerequisite_port_invalid".to_owned()));
+        assert!(codes.contains(&"startup_prerequisite_timeout_invalid".to_owned()));
+    }
+
+    #[test]
+    fn omitted_startup_prerequisites_remain_backward_compatible() {
+        let (_directory, config) = valid_config();
+        let mut value = serde_json::to_value(config).expect("serialize fixture configuration");
+        value["services"]["fixture"]
+            .as_object_mut()
+            .expect("service object")
+            .remove("startupPrerequisites");
+
+        let parsed = SupervisorConfig::parse_json(&value.to_string())
+            .expect("configuration without startup prerequisites must parse");
+
+        assert!(parsed.services["fixture"].startup_prerequisites.is_empty());
     }
 
     #[test]

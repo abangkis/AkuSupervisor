@@ -159,6 +159,7 @@ fn typed_configuration_serializes_with_contract_field_names() {
                 command: PathBuf::from(r"C:\fixture\service.exe"),
                 args: Vec::new(),
                 environment: BTreeMap::new(),
+                startup_prerequisites: Vec::new(),
                 health: HealthCheck::HttpStatus {
                     url: "http://127.0.0.1:49001/health".to_owned(),
                     expected_status: 200,

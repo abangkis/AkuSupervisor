@@ -66,6 +66,7 @@ AkuSupervisor's differentiators are therefore the combination of:
 - ownership and cleanup of the complete launcher/child process tree;
 - bounded graceful stop/restart with operator holds and a small recovery policy;
 - HTTP JSON health that distinguishes transport readiness from process presence;
+- bounded loopback startup prerequisites checked before process creation;
 - durable lifecycle events and bounded stdout/stderr access;
 - an authenticated local control API with stateless read-only MCP inspection;
 - cooperative Chrome extension self-reload with profile-owned target identity,
