@@ -19,6 +19,7 @@ $ErrorActionPreference = 'Stop'
 $repository = Split-Path -Parent $PSScriptRoot
 $devDirectory = Join-Path $repository 'target\dev'
 $buildDirectory = Join-Path $repository 'target\dev-build'
+$toolTempDirectory = Join-Path $repository 'target\tool-temp'
 $devExecutable = Join-Path $devDirectory 'aku-supervisor.exe'
 $stableExecutable = Join-Path $repository 'target\aku-supervisor.exe'
 $shutdownRequest = Join-Path $devDirectory 'shutdown-request'
@@ -241,8 +242,19 @@ function Get-WatchFingerprint {
 
 function Invoke-DevelopmentBuild {
     Write-Host "`n[watch] Building staged AkuSupervisor..." -ForegroundColor Cyan
-    & $script:cargo build --bin aku-supervisor
-    if ($LASTEXITCODE -ne 0) {
+    New-Item -ItemType Directory -Force $toolTempDirectory | Out-Null
+    $previousTemp = $env:TEMP
+    $previousTmp = $env:TMP
+    try {
+        $env:TEMP = $toolTempDirectory
+        $env:TMP = $toolTempDirectory
+        & $script:cargo build --bin aku-supervisor
+        $buildExitCode = $LASTEXITCODE
+    } finally {
+        $env:TEMP = $previousTemp
+        $env:TMP = $previousTmp
+    }
+    if ($buildExitCode -ne 0) {
         Write-Host '[watch] Build failed. The currently running supervisor remains active.' -ForegroundColor Red
         return $false
     }

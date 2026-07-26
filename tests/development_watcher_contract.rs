@@ -15,6 +15,9 @@ fn watcher_requires_executable_release_without_force_killing_an_owner() {
     assert!(script.contains("AkuSupervisor itself is always started by dev.ps1"));
     assert!(script.contains("Resolve-AkuRustToolchain -Repository $repository"));
     assert!(script.contains("scripts\\rust-toolchain.ps1"));
+    assert!(script.contains("target\\tool-temp"));
+    assert!(script.contains("$env:TEMP = $toolTempDirectory"));
+    assert!(script.contains("$env:TMP = $toolTempDirectory"));
     assert!(toolchain.contains("Source = 'project-local'"));
     assert!(toolchain.contains("Test-AkuRustExecutable"));
     assert!(toolchain.contains("lib\\rustlib"));
@@ -88,4 +91,18 @@ fn akuworkspace_entrypoint_bootstraps_sidecar_before_generic_supervision() {
         .find("& $supervisorDevScript")
         .expect("workspace entrypoint must delegate to the generic watcher");
     assert!(sidecar_build < supervisor_start);
+}
+
+#[test]
+fn verification_and_watcher_keep_tool_temporary_files_inside_the_repository() {
+    let watcher = include_str!("../scripts/dev.ps1");
+    let verification = include_str!("../scripts/test-phase2.ps1");
+
+    for script in [watcher, verification] {
+        assert!(script.contains("target\\tool-temp"));
+        assert!(script.contains("$env:TEMP = $toolTempDirectory"));
+        assert!(script.contains("$env:TMP = $toolTempDirectory"));
+        assert!(script.contains("$env:TEMP = $previousTemp"));
+        assert!(script.contains("$env:TMP = $previousTmp"));
+    }
 }

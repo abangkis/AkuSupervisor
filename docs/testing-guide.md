@@ -448,6 +448,15 @@ the repository's development compiler. `scripts\test-phase2.ps1` uses the
 same shared resolver, so both the watcher and the release test gate select one
 verified toolchain instead of merely trusting that a rustup proxy exists.
 
+Both scripts also scope `TEMP` and `TMP` to the project-local
+`target\tool-temp` directory while Cargo and its child tools run, then restore
+the caller's original environment. Cargo artifacts remain in
+`target\dev-build` for watcher builds and the normal repository `target`
+directory for verification. This keeps generated executables and intermediate
+files under the AkuSupervisor project instead of a user or IDE temporary
+directory, which gives endpoint-security exclusions one stable, narrow project
+path without weakening scanning globally.
+
 The signal exists only when the watcher sets
 `AKU_SUPERVISOR_DEV_SHUTDOWN_FILE`. AkuSupervisor accepts only an absolute path
 whose filename is exactly `shutdown-request`, consumes at most 1 KiB, and uses
