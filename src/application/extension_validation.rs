@@ -12,7 +12,7 @@ const REQUIRED_AUDIT_STAGES: [&str; 6] = [
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct BridgeValidationCheck {
+pub struct ExtensionValidationCheck {
     pub id: &'static str,
     pub passed: bool,
     pub expected: Value,
@@ -21,18 +21,18 @@ pub struct BridgeValidationCheck {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct BridgeValidationReport {
+pub struct ExtensionValidationReport {
     pub schema_version: u32,
     pub command: &'static str,
     pub status: &'static str,
     pub exit_code: u8,
     pub request_id: String,
     pub actor: Value,
-    pub checks: Vec<BridgeValidationCheck>,
+    pub checks: Vec<ExtensionValidationCheck>,
     pub operation: Value,
 }
 
-impl BridgeValidationReport {
+impl ExtensionValidationReport {
     #[must_use]
     pub const fn passed(&self) -> bool {
         self.exit_code == 0
@@ -40,13 +40,13 @@ impl BridgeValidationReport {
 }
 
 #[must_use]
-pub fn validate_bridge_release(
+pub fn validate_extension_release(
     request_id: &str,
     actor: Value,
     operation: Value,
     active_operation: Value,
     audit_records: &[Value],
-) -> BridgeValidationReport {
+) -> ExtensionValidationReport {
     let audit_stages = audit_records
         .iter()
         .filter_map(|record| record.get("status").and_then(Value::as_str))
@@ -64,7 +64,7 @@ pub fn validate_bridge_release(
         .cloned()
         .unwrap_or(Value::Null);
     let checks = vec![
-        BridgeValidationCheck {
+        ExtensionValidationCheck {
             id: "cooperative_reload_completed",
             passed: operation.get("status").and_then(Value::as_str) == Some("completed")
                 && operation.get("stage").and_then(Value::as_str) == Some("completed"),
@@ -74,13 +74,13 @@ pub fn validate_bridge_release(
                 "stage": operation.get("stage").cloned().unwrap_or(Value::Null),
             }),
         },
-        BridgeValidationCheck {
+        ExtensionValidationCheck {
             id: "six_stage_audit",
             passed: audit_stages == REQUIRED_AUDIT_STAGES,
             expected: json!(REQUIRED_AUDIT_STAGES),
             actual: json!(audit_stages),
         },
-        BridgeValidationCheck {
+        ExtensionValidationCheck {
             id: "actor_and_request_identity",
             passed: operation.get("requestId").and_then(Value::as_str) == Some(request_id)
                 && operation.get("actor") == Some(&actor)
@@ -94,13 +94,13 @@ pub fn validate_bridge_release(
                 "auditIdentityMatches": audit_identity_matches,
             }),
         },
-        BridgeValidationCheck {
+        ExtensionValidationCheck {
             id: "expected_observed_heartbeat",
             passed: !expected_build.is_null() && expected_build == observed_build,
             expected: expected_build.clone(),
             actual: observed_build,
         },
-        BridgeValidationCheck {
+        ExtensionValidationCheck {
             id: "no_zombie_action",
             passed: active_operation.is_null(),
             expected: Value::Null,
@@ -108,9 +108,9 @@ pub fn validate_bridge_release(
         },
     ];
     let passed = checks.iter().all(|check| check.passed);
-    BridgeValidationReport {
+    ExtensionValidationReport {
         schema_version: 1,
-        command: "bridge_validate",
+        command: "extension_validate",
         status: if passed { "passed" } else { "failed" },
         exit_code: u8::from(!passed),
         request_id: request_id.to_owned(),
@@ -155,7 +155,7 @@ mod tests {
     #[test]
     fn complete_release_evidence_passes_with_exit_zero() {
         let report =
-            validate_bridge_release("validate-1", actor(), operation(), Value::Null, &audit());
+            validate_extension_release("validate-1", actor(), operation(), Value::Null, &audit());
         assert!(report.passed());
         assert_eq!(report.exit_code, 0);
         assert!(report.checks.iter().all(|check| check.passed));
@@ -165,7 +165,7 @@ mod tests {
     fn missing_stage_or_active_operation_fails_deterministically() {
         let mut incomplete = audit();
         incomplete.remove(3);
-        let report = validate_bridge_release(
+        let report = validate_extension_release(
             "validate-1",
             actor(),
             operation(),

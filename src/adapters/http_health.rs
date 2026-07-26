@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpStream};
 
@@ -20,6 +21,7 @@ impl HealthProbe for LoopbackTransportHealthProbe {
                 transport_ready: true,
                 healthy: true,
                 detail: "owned process tree is ready".to_owned(),
+                observed: BTreeMap::new(),
             },
             HealthCheckSpec::TcpConnect { host, port, .. } => {
                 match connect_tcp(host, *port, timeout) {
@@ -27,6 +29,7 @@ impl HealthProbe for LoopbackTransportHealthProbe {
                         transport_ready: true,
                         healthy: true,
                         detail: format!("TCP connect to {host}:{port} succeeded"),
+                        observed: BTreeMap::new(),
                     },
                     Err(detail) => failed_transport(detail),
                 }
@@ -47,6 +50,7 @@ impl HealthProbe for LoopbackTransportHealthProbe {
                             response.status
                         )
                     },
+                    observed: BTreeMap::new(),
                 },
                 Err(detail) => failed_transport(detail),
             },
@@ -54,7 +58,7 @@ impl HealthProbe for LoopbackTransportHealthProbe {
                 url,
                 path_mode,
                 expect,
-                diagnostic_expect,
+                observe,
                 ..
             } => match request(url, timeout, "application/json") {
                 Ok(response) => {
@@ -66,16 +70,16 @@ impl HealthProbe for LoopbackTransportHealthProbe {
                                 "HTTP JSON endpoint returned status {}",
                                 response.status
                             ),
+                            observed: BTreeMap::new(),
                         };
                     }
                     match serde_json::from_slice::<serde_json::Value>(&response.body) {
-                        Ok(body) => {
-                            evaluate_json_body(&body, *path_mode, expect, diagnostic_expect)
-                        }
+                        Ok(body) => evaluate_json_body(&body, *path_mode, expect, observe),
                         Err(error) => TransportHealth {
                             transport_ready: true,
                             healthy: false,
                             detail: format!("HTTP response was not valid JSON: {error}"),
+                            observed: BTreeMap::new(),
                         },
                     }
                 }
@@ -88,43 +92,37 @@ impl HealthProbe for LoopbackTransportHealthProbe {
 fn evaluate_json_body(
     body: &serde_json::Value,
     path_mode: JsonPathMode,
-    expect: &std::collections::BTreeMap<String, serde_json::Value>,
-    diagnostic_expect: &std::collections::BTreeMap<String, serde_json::Value>,
+    expect: &BTreeMap<String, serde_json::Value>,
+    observe: &[String],
 ) -> TransportHealth {
     let mismatches = json_mismatches(body, path_mode, expect);
-    let diagnostic_mismatches = json_mismatches(body, path_mode, diagnostic_expect);
     TransportHealth {
         transport_ready: true,
         healthy: mismatches.is_empty(),
-        detail: if !mismatches.is_empty() {
-            let diagnostics = if diagnostic_mismatches.is_empty() {
-                String::new()
-            } else {
-                format!(
-                    "; diagnostic mismatch: {}",
-                    diagnostic_mismatches.join("; ")
-                )
-            };
-            format!(
-                "HTTP JSON required mismatch: {}{diagnostics}",
-                mismatches.join("; ")
-            )
-        } else if diagnostic_expect.is_empty() {
+        detail: if mismatches.is_empty() {
             format!("HTTP JSON matched {} expected field(s)", expect.len())
-        } else if diagnostic_mismatches.is_empty() {
-            format!(
-                "HTTP JSON matched {} required and {} diagnostic field(s)",
-                expect.len(),
-                diagnostic_expect.len()
-            )
         } else {
-            format!(
-                "HTTP JSON matched {} required field(s); diagnostic mismatch: {}",
-                expect.len(),
-                diagnostic_mismatches.join("; ")
-            )
+            format!("HTTP JSON required mismatch: {}", mismatches.join("; "))
         },
+        observed: observed_values(body, path_mode, observe),
     }
+}
+
+fn observed_values(
+    body: &serde_json::Value,
+    path_mode: JsonPathMode,
+    fields: &[String],
+) -> BTreeMap<String, serde_json::Value> {
+    fields
+        .iter()
+        .filter_map(|field| {
+            let value = match path_mode {
+                JsonPathMode::Shallow => body.get(field),
+                JsonPathMode::JsonPointer => body.pointer(field),
+            };
+            value.cloned().map(|value| (field.clone(), value))
+        })
+        .collect()
 }
 
 fn json_mismatches(
@@ -168,6 +166,7 @@ fn failed_transport(detail: String) -> TransportHealth {
         transport_ready: false,
         healthy: false,
         detail,
+        observed: BTreeMap::new(),
     }
 }
 
@@ -353,7 +352,7 @@ mod tests {
     }
 
     #[test]
-    fn diagnostic_json_mismatch_does_not_fail_required_readiness() {
+    fn observed_json_values_do_not_affect_required_readiness() {
         let body = serde_json::json!({
             "status": "ok",
             "runtime": "go",
@@ -363,30 +362,35 @@ mod tests {
             ("runtime".to_owned(), serde_json::json!("go")),
             ("status".to_owned(), serde_json::json!("ok")),
         ]);
-        let diagnostic = BTreeMap::from([("version".to_owned(), serde_json::json!("1.0.0-dev.8"))]);
+        let observe = vec!["version".to_owned()];
 
-        let result = evaluate_json_body(&body, JsonPathMode::Shallow, &required, &diagnostic);
+        let result = evaluate_json_body(&body, JsonPathMode::Shallow, &required, &observe);
 
         assert!(result.transport_ready);
         assert!(result.healthy);
+        assert_eq!(result.detail, "HTTP JSON matched 2 expected field(s)");
         assert_eq!(
-            result.detail,
-            "HTTP JSON matched 2 required field(s); diagnostic mismatch: version: value did not match"
+            result.observed.get("version"),
+            Some(&serde_json::json!("1.0.0-dev.9"))
         );
     }
 
     #[test]
-    fn required_json_mismatch_still_fails_with_diagnostic_context() {
+    fn required_json_mismatch_still_fails_while_observing_values() {
         let body = serde_json::json!({"status": "starting", "version": "dev.9"});
         let required = BTreeMap::from([("status".to_owned(), serde_json::json!("ok"))]);
-        let diagnostic = BTreeMap::from([("version".to_owned(), serde_json::json!("dev.8"))]);
+        let observe = vec!["version".to_owned()];
 
-        let result = evaluate_json_body(&body, JsonPathMode::Shallow, &required, &diagnostic);
+        let result = evaluate_json_body(&body, JsonPathMode::Shallow, &required, &observe);
 
         assert!(!result.healthy);
         assert_eq!(
             result.detail,
-            "HTTP JSON required mismatch: status: value did not match; diagnostic mismatch: version: value did not match"
+            "HTTP JSON required mismatch: status: value did not match"
+        );
+        assert_eq!(
+            result.observed.get("version"),
+            Some(&serde_json::json!("dev.9"))
         );
     }
 
@@ -405,12 +409,7 @@ mod tests {
             ("/bridge~1status".to_owned(), serde_json::json!("ready")),
         ]);
 
-        let result = evaluate_json_body(
-            &body,
-            JsonPathMode::JsonPointer,
-            &required,
-            &BTreeMap::new(),
-        );
+        let result = evaluate_json_body(&body, JsonPathMode::JsonPointer, &required, &[]);
 
         assert!(result.healthy);
         assert_eq!(result.detail, "HTTP JSON matched 3 expected field(s)");

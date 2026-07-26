@@ -68,7 +68,7 @@ if ($sidecar.health.status -ne 'healthy') {
 }
 
 $arguments = @(
-    'bridge',
+    'extension',
     'validate',
     '--actor', $Actor,
     '--request-id', $RequestId
@@ -84,7 +84,7 @@ $validationJson = ($validationOutput | Out-String).Trim()
 try {
     $validation = $validationJson | ConvertFrom-Json -ErrorAction Stop
 } catch {
-    Stop-IntegrationValidation -Message 'bridge validate returned invalid JSON.'
+    Stop-IntegrationValidation -Message 'extension validate returned invalid JSON.'
 }
 if ($validationExitCode -ne 0 -or $validation.validation.status -ne 'passed') {
     $category = [string] $validation.validation.operation.errorCategory
@@ -101,7 +101,7 @@ if ($validationExitCode -ne 0 -or $validation.validation.status -ne 'passed') {
         Write-Host "[integration] Detail: $message" -ForegroundColor Yellow
     }
     $failure = if ($category) { $category } else { 'validation_failed' }
-    Stop-IntegrationValidation -Message "bridge validate failed ($failure) with exit code $validationExitCode."
+    Stop-IntegrationValidation -Message "extension validate failed ($failure) with exit code $validationExitCode."
 }
 
 Write-Host '[integration] AkuWorkspace integration validation passed.' -ForegroundColor Green

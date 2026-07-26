@@ -26,9 +26,9 @@ Usage:\n\
   aku-supervisor live-logs <service> [--stream <both|stdout|stderr>] [--tail <n>] [--timezone <local|utc>] [--json] [--config <path>]\n\
   aku-supervisor <start|stop|restart> <service> [--reason <text>] [--actor <user|codex>] [--request-id <id>] [--json] [--config <path>]\n\
   aku-supervisor supervisor shutdown --reason <text> --request-id <id> [--actor <user|codex>] [--json] [--config <path>]\n\
-  aku-supervisor bridge reload --reason <text> --request-id <id> [--actor <user|codex>] [--wait|--no-wait] [--json] [--config <path>]\n\
-  aku-supervisor bridge status --request-id <id> [--json] [--config <path>]\n\
-  aku-supervisor bridge validate --request-id <id> [--actor <user|codex>] [--config <path>]\n\
+  aku-supervisor extension reload --reason <text> --request-id <id> [--actor <user|codex>] [--wait|--no-wait] [--json] [--config <path>]\n\
+  aku-supervisor extension status --request-id <id> [--json] [--config <path>]\n\
+  aku-supervisor extension validate --request-id <id> [--actor <user|codex>] [--config <path>]\n\
   aku-supervisor mcp-proxy [--config <path>]\n\
   aku-supervisor registration-mcp [--config <path>]\n\
   aku-supervisor registration capabilities [--json] [--config <path>]\n\
@@ -46,7 +46,7 @@ enum Command {
         config: Option<PathBuf>,
         timezone: DisplayTimezone,
     },
-    BridgeValidate {
+    ExtensionValidate {
         actor: ApiActor,
         request_id: String,
         config: Option<PathBuf>,
@@ -121,7 +121,7 @@ enum RemoteCommand {
         config: Option<PathBuf>,
         json: bool,
     },
-    BridgeReload {
+    ExtensionReload {
         reason: String,
         actor: ApiActor,
         request_id: String,
@@ -129,7 +129,7 @@ enum RemoteCommand {
         wait: bool,
         json: bool,
     },
-    BridgeStatus {
+    ExtensionStatus {
         request_id: String,
         config: Option<PathBuf>,
         json: bool,
@@ -155,11 +155,11 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
             ExitCode::SUCCESS
         }
         Ok(Command::Run { config, timezone }) => run_foreground(config, timezone),
-        Ok(Command::BridgeValidate {
+        Ok(Command::ExtensionValidate {
             actor,
             request_id,
             config,
-        }) => run_bridge_validate(actor, &request_id, config.as_ref()),
+        }) => run_extension_validate(actor, &request_id, config.as_ref()),
         Ok(Command::McpProxy { config }) => match crate::adapters::mcp_proxy::run(config) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
@@ -238,14 +238,14 @@ fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, Strin
         [events, rest @ ..] if events == "events" => parse_remote_events(rest),
         [logs, rest @ ..] if logs == "logs" => parse_remote_logs(rest),
         [logs, rest @ ..] if logs == "live-logs" => parse_live_logs(rest),
-        [bridge, reload, rest @ ..] if bridge == "bridge" && reload == "reload" => {
-            parse_bridge_reload(rest)
+        [extension, reload, rest @ ..] if extension == "extension" && reload == "reload" => {
+            parse_extension_reload(rest)
         }
-        [bridge, status, rest @ ..] if bridge == "bridge" && status == "status" => {
-            parse_bridge_status(rest)
+        [extension, status, rest @ ..] if extension == "extension" && status == "status" => {
+            parse_extension_status(rest)
         }
-        [bridge, validate, rest @ ..] if bridge == "bridge" && validate == "validate" => {
-            parse_bridge_validate(rest)
+        [extension, validate, rest @ ..] if extension == "extension" && validate == "validate" => {
+            parse_extension_validate(rest)
         }
         [supervisor, shutdown, rest @ ..]
             if supervisor == "supervisor" && shutdown == "shutdown" =>
@@ -470,7 +470,7 @@ fn print_registration_result(
     }
 }
 
-fn parse_bridge_validate(arguments: &[OsString]) -> Result<Command, String> {
+fn parse_extension_validate(arguments: &[OsString]) -> Result<Command, String> {
     let mut actor = ApiActor::User;
     let mut actor_seen = false;
     let mut request_id = None;
@@ -509,14 +509,15 @@ fn parse_bridge_validate(arguments: &[OsString]) -> Result<Command, String> {
             }
         }
     }
-    Ok(Command::BridgeValidate {
+    Ok(Command::ExtensionValidate {
         actor,
-        request_id: request_id.ok_or_else(|| "bridge validate requires --request-id".to_owned())?,
+        request_id: request_id
+            .ok_or_else(|| "extension validate requires --request-id".to_owned())?,
         config,
     })
 }
 
-fn parse_bridge_reload(arguments: &[OsString]) -> Result<Command, String> {
+fn parse_extension_reload(arguments: &[OsString]) -> Result<Command, String> {
     let mut wait = true;
     let mut wait_option_seen = false;
     let mut mutation_options = Vec::new();
@@ -536,7 +537,7 @@ fn parse_bridge_reload(arguments: &[OsString]) -> Result<Command, String> {
             _ => mutation_options.push(argument.clone()),
         }
     }
-    let mut mutation_arguments = vec![OsString::from("aku-bridge")];
+    let mut mutation_arguments = vec![OsString::from("chrome-extension")];
     mutation_arguments.extend(mutation_options);
     let parsed = parse_remote_mutation(&OsString::from("restart"), &mutation_arguments, false)?;
     let Command::Remote(RemoteCommand::Mutate {
@@ -551,9 +552,9 @@ fn parse_bridge_reload(arguments: &[OsString]) -> Result<Command, String> {
         unreachable!("synthetic lifecycle parse must return a mutation")
     };
     let request_id = request_id.ok_or_else(|| {
-        "bridge reload requires --request-id for relay idempotency and audit".to_owned()
+        "extension reload requires --request-id for relay idempotency and audit".to_owned()
     })?;
-    Ok(Command::Remote(RemoteCommand::BridgeReload {
+    Ok(Command::Remote(RemoteCommand::ExtensionReload {
         reason,
         actor,
         request_id,
@@ -621,7 +622,7 @@ fn parse_registry_status(arguments: &[OsString]) -> Result<Command, String> {
     }))
 }
 
-fn parse_bridge_status(arguments: &[OsString]) -> Result<Command, String> {
+fn parse_extension_status(arguments: &[OsString]) -> Result<Command, String> {
     let mut request_id = None;
     let mut config = None;
     let mut json = false;
@@ -655,8 +656,9 @@ fn parse_bridge_status(arguments: &[OsString]) -> Result<Command, String> {
             }
         }
     }
-    Ok(Command::Remote(RemoteCommand::BridgeStatus {
-        request_id: request_id.ok_or_else(|| "bridge status requires --request-id".to_owned())?,
+    Ok(Command::Remote(RemoteCommand::ExtensionStatus {
+        request_id: request_id
+            .ok_or_else(|| "extension status requires --request-id".to_owned())?,
         config,
         json,
     }))
@@ -1009,12 +1011,12 @@ fn run_remote(command: RemoteCommand) -> ExitCode {
     }
 }
 
-fn run_bridge_validate(
+fn run_extension_validate(
     actor: ApiActor,
     request_id: &str,
     explicit_config: Option<&PathBuf>,
 ) -> ExitCode {
-    match bridge_validation(actor, request_id, explicit_config.cloned()) {
+    match extension_validation(actor, request_id, explicit_config.cloned()) {
         Ok((configuration, address, report)) => {
             println!(
                 "{}",
@@ -1023,7 +1025,7 @@ fn run_bridge_validate(
                     "controlApi": format!("http://{address}"),
                     "validation": report,
                 }))
-                .expect("bridge validation JSON serialization cannot fail")
+                .expect("extension validation JSON serialization cannot fail")
             );
             ExitCode::from(report.exit_code)
         }
@@ -1035,7 +1037,7 @@ fn run_bridge_validate(
                     "controlApi": serde_json::Value::Null,
                     "validation": {
                         "schemaVersion": 1,
-                        "command": "bridge_validate",
+                        "command": "extension_validate",
                         "status": "error",
                         "exitCode": 1,
                         "requestId": request_id,
@@ -1048,14 +1050,14 @@ fn run_bridge_validate(
                         }
                     }
                 }))
-                .expect("bridge validation error JSON serialization cannot fail")
+                .expect("extension validation error JSON serialization cannot fail")
             );
             ExitCode::FAILURE
         }
     }
 }
 
-fn bridge_validation(
+fn extension_validation(
     actor: ApiActor,
     request_id: &str,
     explicit_config: Option<PathBuf>,
@@ -1063,7 +1065,7 @@ fn bridge_validation(
     (
         PathBuf,
         std::net::SocketAddr,
-        crate::application::BridgeValidationReport,
+        crate::application::ExtensionValidationReport,
     ),
     String,
 > {
@@ -1083,13 +1085,13 @@ fn bridge_validation(
     let address = format!("{}:{}", config.control.host, config.control.port)
         .parse::<std::net::SocketAddr>()
         .map_err(|error| format!("invalid control address: {error}"))?;
-    ensure_fresh_bridge_validation_request(address, &token, request_id)?;
-    let reason = format!("release gate bridge validation {request_id}");
+    ensure_fresh_extension_validation_request(address, &token, request_id)?;
+    let reason = format!("release gate extension validation {request_id}");
     let initial = control_request_with_retry(
         address,
         &token,
         "POST",
-        "/v1/cooperative-actions/aku-bridge/reload-self",
+        "/v1/cooperative-actions/chrome-extension/reload-self",
         Some(&serde_json::json!({
             "actor": actor,
             "reason": reason,
@@ -1097,7 +1099,7 @@ fn bridge_validation(
         })),
         true,
     )?;
-    let reload = config.cooperative_actions.aku_bridge_reload.as_ref();
+    let reload = config.cooperative_actions.chrome_extension_reload.as_ref();
     let timeout = reload.map_or(25_000, |value| value.timeout_ms.saturating_add(5_000));
     let poll_interval = reload.map_or(250, |value| value.poll_interval_ms);
     let terminal = wait_for_cooperative_operation(
@@ -1116,7 +1118,7 @@ fn bridge_validation(
         address,
         &token,
         "GET",
-        "/v1/cooperative-actions/aku-bridge/active",
+        "/v1/cooperative-actions/chrome-extension/active",
         None,
         true,
     )?;
@@ -1143,7 +1145,7 @@ fn bridge_validation(
             audit_records.push(record);
         }
     }
-    let report = crate::application::validate_bridge_release(
+    let report = crate::application::validate_extension_release(
         request_id,
         validation_actor(actor),
         operation,
@@ -1153,7 +1155,7 @@ fn bridge_validation(
     Ok((resolved.path().to_owned(), address, report))
 }
 
-fn ensure_fresh_bridge_validation_request(
+fn ensure_fresh_extension_validation_request(
     address: std::net::SocketAddr,
     token: &crate::adapters::runtime_token::RuntimeToken,
     request_id: &str,
@@ -1161,13 +1163,13 @@ fn ensure_fresh_bridge_validation_request(
     use crate::adapters::control_http::{ControlClientError, client_request};
 
     const MAX_ATTEMPTS: usize = 5;
-    let target = format!("/v1/cooperative-actions/aku-bridge/requests/{request_id}");
+    let target = format!("/v1/cooperative-actions/chrome-extension/requests/{request_id}");
     for attempt in 1..=MAX_ATTEMPTS {
         match client_request(address, token, "GET", &target, None) {
             Err(ControlClientError::Rejected { status: 404, .. }) => return Ok(()),
             Ok(_) => {
                 return Err(format!(
-                    "bridge validate requires a fresh request ID; {request_id} already exists"
+                    "extension validate requires a fresh request ID; {request_id} already exists"
                 ));
             }
             Err(error) if error.is_transient() && attempt < MAX_ATTEMPTS => {
@@ -1420,8 +1422,8 @@ fn remote_request(command: RemoteCommand) -> Result<(), String> {
         | RemoteCommand::Events { config, .. }
         | RemoteCommand::Logs { config, .. }
         | RemoteCommand::Mutate { config, .. }
-        | RemoteCommand::BridgeReload { config, .. }
-        | RemoteCommand::BridgeStatus { config, .. }
+        | RemoteCommand::ExtensionReload { config, .. }
+        | RemoteCommand::ExtensionStatus { config, .. }
         | RemoteCommand::SupervisorShutdown { config, .. } => config.clone(),
     };
     let json_output = match &command {
@@ -1431,8 +1433,8 @@ fn remote_request(command: RemoteCommand) -> Result<(), String> {
         | RemoteCommand::Events { json, .. }
         | RemoteCommand::Logs { json, .. }
         | RemoteCommand::Mutate { json, .. }
-        | RemoteCommand::BridgeReload { json, .. }
-        | RemoteCommand::BridgeStatus { json, .. }
+        | RemoteCommand::ExtensionReload { json, .. }
+        | RemoteCommand::ExtensionStatus { json, .. }
         | RemoteCommand::SupervisorShutdown { json, .. } => *json,
         RemoteCommand::SimpleStatus { .. } => false,
     };
@@ -1478,7 +1480,7 @@ fn remote_request(command: RemoteCommand) -> Result<(), String> {
         }
     }
     if let Some(request_id) = wait_request_id {
-        let reload = config.cooperative_actions.aku_bridge_reload.as_ref();
+        let reload = config.cooperative_actions.chrome_extension_reload.as_ref();
         let timeout = reload.map_or(25_000, |value| value.timeout_ms.saturating_add(5_000));
         let poll_interval = reload.map_or(250, |value| value.poll_interval_ms);
         response = wait_for_cooperative_operation(
@@ -1503,7 +1505,7 @@ fn remote_request(command: RemoteCommand) -> Result<(), String> {
             .unwrap_or("cooperative_action_failed");
         let message = response["operation"]["message"]
             .as_str()
-            .unwrap_or("AkuBridge reload_self failed");
+            .unwrap_or("Chrome extension cooperative reload failed");
         return Err(format!("{category}: {message}"));
     }
     Ok(())
@@ -1604,7 +1606,7 @@ fn prepare_remote_request(
                 retry_safe,
             )
         }
-        RemoteCommand::BridgeReload {
+        RemoteCommand::ExtensionReload {
             reason,
             actor,
             request_id,
@@ -1614,7 +1616,7 @@ fn prepare_remote_request(
             let wait_request_id = wait.then(|| request_id.clone());
             (
                 "POST",
-                "/v1/cooperative-actions/aku-bridge/reload-self".to_owned(),
+                "/v1/cooperative-actions/chrome-extension/reload-self".to_owned(),
                 Some(serde_json::json!({
                     "actor": actor,
                     "reason": reason,
@@ -1624,9 +1626,9 @@ fn prepare_remote_request(
                 true,
             )
         }
-        RemoteCommand::BridgeStatus { request_id, .. } => (
+        RemoteCommand::ExtensionStatus { request_id, .. } => (
             "GET",
-            format!("/v1/cooperative-actions/aku-bridge/requests/{request_id}"),
+            format!("/v1/cooperative-actions/chrome-extension/requests/{request_id}"),
             None,
             None,
             true,
@@ -1720,7 +1722,7 @@ fn wait_for_cooperative_operation(
     {
         if std::time::Instant::now() >= deadline {
             return Err(format!(
-                "timed out waiting for cooperative operation {request_id}; query it with bridge status"
+                "timed out waiting for cooperative operation {request_id}; query it with extension status"
             ));
         }
         std::thread::sleep(std::time::Duration::from_millis(poll_interval_ms));
@@ -1728,7 +1730,7 @@ fn wait_for_cooperative_operation(
             address,
             token,
             "GET",
-            &format!("/v1/cooperative-actions/aku-bridge/requests/{request_id}"),
+            &format!("/v1/cooperative-actions/chrome-extension/requests/{request_id}"),
             None,
             true,
         )?;
@@ -2157,10 +2159,10 @@ mod tests {
     }
 
     #[test]
-    fn bridge_reload_requires_a_bounded_request_id() {
+    fn extension_reload_requires_a_bounded_request_id() {
         assert!(
             parse(args(&[
-                "bridge",
+                "extension",
                 "reload",
                 "--reason",
                 "load extension build",
@@ -2169,7 +2171,7 @@ mod tests {
         );
         assert_eq!(
             parse(args(&[
-                "bridge",
+                "extension",
                 "reload",
                 "--reason",
                 "load extension build",
@@ -2178,7 +2180,7 @@ mod tests {
                 "--request-id",
                 "bridge-reload-1",
             ])),
-            Ok(Command::Remote(RemoteCommand::BridgeReload {
+            Ok(Command::Remote(RemoteCommand::ExtensionReload {
                 reason: "load extension build".to_owned(),
                 actor: ApiActor::Codex,
                 request_id: "bridge-reload-1".to_owned(),
@@ -2250,16 +2252,16 @@ mod tests {
     }
 
     #[test]
-    fn bridge_status_and_machine_output_are_explicit() {
+    fn extension_status_and_machine_output_are_explicit() {
         assert_eq!(
             parse(args(&[
-                "bridge",
+                "extension",
                 "status",
                 "--request-id",
                 "bridge-reload-1",
                 "--json",
             ])),
-            Ok(Command::Remote(RemoteCommand::BridgeStatus {
+            Ok(Command::Remote(RemoteCommand::ExtensionStatus {
                 request_id: "bridge-reload-1".to_owned(),
                 config: None,
                 json: true,
@@ -2353,11 +2355,11 @@ mod tests {
     }
 
     #[test]
-    fn bridge_validate_requires_identity_and_has_machine_contract() {
-        assert!(parse(args(&["bridge", "validate"])).is_err());
+    fn extension_validate_requires_identity_and_has_machine_contract() {
+        assert!(parse(args(&["extension", "validate"])).is_err());
         assert_eq!(
             parse(args(&[
-                "bridge",
+                "extension",
                 "validate",
                 "--actor",
                 "codex",
@@ -2366,7 +2368,7 @@ mod tests {
                 "--config",
                 "services.json",
             ])),
-            Ok(Command::BridgeValidate {
+            Ok(Command::ExtensionValidate {
                 actor: ApiActor::Codex,
                 request_id: "release-gate-1".to_owned(),
                 config: Some(PathBuf::from("services.json")),
@@ -2374,7 +2376,7 @@ mod tests {
         );
         assert!(
             parse(args(&[
-                "bridge",
+                "extension",
                 "validate",
                 "--request-id",
                 "release-gate-1",

@@ -21,7 +21,7 @@ The copyable template is
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "control": {
     "host": "127.0.0.1",
     "port": 47900,
@@ -91,16 +91,17 @@ deeper readiness recovery.
 
 | Field | Requirement |
 |---|---|
-| `version` | Must be `1` for the current contract. |
+| `version` | Must be `2` for the current contract. |
 | `control.host` | Must be the explicit loopback address `127.0.0.1`. |
 | `control.port` | Nonzero and unique among concurrently running Supervisor instances. |
 | `control.tokenFile` | Relative path below `.runtime`; the platform adapter creates and protects the token. |
 | `control.mcp.enabled` | Optional read-only MCP endpoint on the same authenticated listener. |
 | `control.mcp.allowedOrigins` | Exact trusted browser origins; native stdio MCP normally leaves this empty. |
 
-`cooperativeActions` is not required for ordinary programs. It currently
-contains only the AkuWorkspace-specific AkuBridge reload adapter and should be
-omitted from generic profiles.
+`cooperativeActions` is not required for ordinary programs.
+`chromeExtensionReload` configures one cooperative self-reload relay with a
+profile-owned `target`; AkuSupervisor core does not know which extension product
+occupies that target. Omit it when the profile has no browser extension.
 
 ## Observability fields
 
@@ -193,24 +194,17 @@ Use shallow HTTP JSON matching for a stronger existing contract. Omitting
   "timeoutMs": 3000,
   "startupDeadlineMs": 20000,
   "expect": {
-    "status": "ok",
-    "runtime": "go",
-    "bridgeContractVersion": 2,
-    "provider": "openai"
+    "status": "ok"
   },
-  "diagnosticExpect": {
-    "version": "1.0.0-dev.8"
-  }
+  "observe": ["version", "runtime", "provider", "bridgeContractVersion"]
 }
 ```
 
 Fields in `expect` are readiness requirements: any mismatch makes the service
-`unhealthy` and can fail start/restart. Optional `diagnosticExpect` fields are
-volatile identity assertions. Their mismatch is retained in health detail but
-does not fail readiness. Keep runtime, protocol/bridge contract, provider, and
-other compatibility requirements in `expect`; use `diagnosticExpect` for a
-development build/version that changes frequently. A field may not appear in
-both maps.
+`unhealthy` and can fail start/restart. Optional `observe` entries select
+volatile metadata to expose under `health.observed`. They are observations, not
+assertions, and therefore never change readiness. Put a field in `expect` only
+when a mismatch truly means that Supervisor must reject the service.
 
 When an application already exposes nested health JSON, select RFC 6901 JSON
 Pointer lookup instead of modifying its codebase solely for AkuSupervisor:
@@ -230,9 +224,7 @@ Pointer lookup instead of modifying its codebase solely for AkuSupervisor:
       "compatible": true
     }
   },
-  "diagnosticExpect": {
-    "/build/version": "1.0.0-dev.8"
-  }
+  "observe": ["/build/version", "/runtime/provider"]
 }
 ```
 

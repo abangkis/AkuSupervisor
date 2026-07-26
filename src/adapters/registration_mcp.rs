@@ -517,9 +517,9 @@ mod tests {
                 .is_some_and(|description| description.contains("fails health"))
         );
         assert!(
-            http_json["properties"]["diagnosticExpect"]["description"]
+            http_json["properties"]["observe"]["description"]
                 .as_str()
-                .is_some_and(|description| description.contains("remain healthy"))
+                .is_some_and(|description| description.contains("never affect health"))
         );
         assert_eq!(http_json["properties"]["pathMode"]["default"], "shallow");
         assert!(

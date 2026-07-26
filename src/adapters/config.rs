@@ -12,7 +12,7 @@ use crate::application::{
     HealthCheckSpec, JsonPathMode, LaunchSpec, ServiceRegistration, ServiceRestartPolicy,
 };
 
-pub const CONFIG_VERSION: u32 = 1;
+pub const CONFIG_VERSION: u32 = 2;
 
 /// Versioned `AkuSupervisor` configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,13 +63,14 @@ impl ConsoleEvents {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CooperativeActionsConfig {
     #[serde(default)]
-    pub aku_bridge_reload: Option<AkuBridgeReloadConfig>,
+    pub chrome_extension_reload: Option<ChromeExtensionReloadConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct AkuBridgeReloadConfig {
-    pub sidecar_origin: String,
+pub struct ChromeExtensionReloadConfig {
+    pub relay_origin: String,
+    pub target: String,
     pub timeout_ms: u64,
     pub poll_interval_ms: u64,
 }
@@ -167,8 +168,8 @@ pub enum HealthCheck {
         )]
         path_mode: JsonPathMode,
         expect: BTreeMap<String, serde_json::Value>,
-        #[serde(default, rename = "diagnosticExpect")]
-        diagnostic_expect: BTreeMap<String, serde_json::Value>,
+        #[serde(default)]
+        observe: Vec<String>,
     },
 }
 
@@ -224,14 +225,14 @@ impl HealthCheck {
                 startup_deadline_ms,
                 path_mode,
                 expect,
-                diagnostic_expect,
+                observe,
             } => HealthCheckSpec::HttpJson {
                 url: url.clone(),
                 timeout: Duration::from_millis(*timeout_ms),
                 startup_deadline: Duration::from_millis(*startup_deadline_ms),
                 path_mode: *path_mode,
                 expect: expect.clone(),
-                diagnostic_expect: diagnostic_expect.clone(),
+                observe: observe.clone(),
             },
         }
     }
@@ -444,34 +445,41 @@ impl SupervisorConfig {
 }
 
 fn validate_cooperative_actions(actions: &CooperativeActionsConfig, issues: &mut Vec<ConfigIssue>) {
-    let Some(reload) = &actions.aku_bridge_reload else {
+    let Some(reload) = &actions.chrome_extension_reload else {
         return;
     };
     let valid_origin = reload
-        .sidecar_origin
+        .relay_origin
         .strip_prefix("http://")
         .filter(|authority| !authority.contains('/'))
         .and_then(|authority| authority.parse::<std::net::SocketAddr>().ok())
         .is_some_and(|address| address.ip().is_loopback());
     if !valid_origin {
         issues.push(ConfigIssue::new(
-            "cooperativeActions.akuBridgeReload.sidecarOrigin",
-            "bridge_sidecar_origin_invalid",
-            "AkuBridge reload requires a pathless loopback HTTP origin with an explicit port",
+            "cooperativeActions.chromeExtensionReload.relayOrigin",
+            "extension_relay_origin_invalid",
+            "Chrome extension reload requires a pathless loopback HTTP relay origin with an explicit port",
+        ));
+    }
+    if reload.target.trim().is_empty() {
+        issues.push(ConfigIssue::new(
+            "cooperativeActions.chromeExtensionReload.target",
+            "extension_reload_target_invalid",
+            "Chrome extension reload target must not be empty",
         ));
     }
     if !(1_000..=60_000).contains(&reload.timeout_ms) {
         issues.push(ConfigIssue::new(
-            "cooperativeActions.akuBridgeReload.timeoutMs",
-            "bridge_reload_timeout_invalid",
-            "AkuBridge reload timeout must be between 1000 and 60000 milliseconds",
+            "cooperativeActions.chromeExtensionReload.timeoutMs",
+            "extension_reload_timeout_invalid",
+            "Chrome extension reload timeout must be between 1000 and 60000 milliseconds",
         ));
     }
     if reload.poll_interval_ms == 0 || reload.poll_interval_ms > reload.timeout_ms {
         issues.push(ConfigIssue::new(
-            "cooperativeActions.akuBridgeReload.pollIntervalMs",
-            "bridge_reload_poll_invalid",
-            "AkuBridge reload poll interval must be non-zero and no greater than its timeout",
+            "cooperativeActions.chromeExtensionReload.pollIntervalMs",
+            "extension_reload_poll_invalid",
+            "Chrome extension reload poll interval must be non-zero and no greater than its timeout",
         ));
     }
 }
@@ -557,10 +565,10 @@ fn validate_health(health: &HealthCheck, prefix: &str, issues: &mut Vec<ConfigIs
             startup_deadline_ms,
             path_mode,
             expect,
-            diagnostic_expect,
+            observe,
         } => {
             validate_http_fields(url, *timeout_ms, *startup_deadline_ms, prefix, issues);
-            validate_http_json_expectations(*path_mode, expect, diagnostic_expect, prefix, issues);
+            validate_http_json_expectations(*path_mode, expect, observe, prefix, issues);
         }
     }
 }
@@ -568,7 +576,7 @@ fn validate_health(health: &HealthCheck, prefix: &str, issues: &mut Vec<ConfigIs
 fn validate_http_json_expectations(
     path_mode: JsonPathMode,
     expect: &BTreeMap<String, serde_json::Value>,
-    diagnostic_expect: &BTreeMap<String, serde_json::Value>,
+    observe: &[String],
     prefix: &str,
     issues: &mut Vec<ConfigIssue>,
 ) {
@@ -583,7 +591,6 @@ fn validate_http_json_expectations(
         JsonPathMode::Shallow => {
             if expect
                 .values()
-                .chain(diagnostic_expect.values())
                 .any(|value| value.is_array() || value.is_object())
             {
                 issues.push(ConfigIssue::new(
@@ -594,34 +601,39 @@ fn validate_http_json_expectations(
             }
         }
         JsonPathMode::JsonPointer => {
-            for (field, expectations) in
-                [("expect", expect), ("diagnosticExpect", diagnostic_expect)]
-            {
-                for pointer in expectations.keys() {
-                    if !valid_json_pointer(pointer) {
-                        issues.push(ConfigIssue::new(
-                            format!("{prefix}.health.{field}"),
-                            "health_json_pointer_invalid",
-                            format!("invalid RFC 6901 JSON Pointer: {pointer}"),
-                        ));
-                    }
+            for pointer in expect.keys() {
+                if !valid_json_pointer(pointer) {
+                    issues.push(ConfigIssue::new(
+                        format!("{prefix}.health.expect"),
+                        "health_json_pointer_invalid",
+                        format!("invalid RFC 6901 JSON Pointer: {pointer}"),
+                    ));
+                }
+            }
+            for pointer in observe {
+                if !valid_json_pointer(pointer) {
+                    issues.push(ConfigIssue::new(
+                        format!("{prefix}.health.observe"),
+                        "health_json_pointer_invalid",
+                        format!("invalid RFC 6901 JSON Pointer: {pointer}"),
+                    ));
                 }
             }
         }
     }
-    let overlapping = expect
-        .keys()
-        .filter(|key| diagnostic_expect.contains_key(*key))
-        .cloned()
-        .collect::<Vec<_>>();
-    if !overlapping.is_empty() {
+    if path_mode == JsonPathMode::Shallow && observe.iter().any(String::is_empty) {
         issues.push(ConfigIssue::new(
-            format!("{prefix}.health.diagnosticExpect"),
-            "health_expect_overlap",
-            format!(
-                "diagnostic fields must not duplicate required fields: {}",
-                overlapping.join(", ")
-            ),
+            format!("{prefix}.health.observe"),
+            "health_observe_empty",
+            "shallow HTTP JSON observation fields must not be empty",
+        ));
+    }
+    let unique = observe.iter().collect::<BTreeSet<_>>();
+    if unique.len() != observe.len() {
+        issues.push(ConfigIssue::new(
+            format!("{prefix}.health.observe"),
+            "health_observe_duplicate",
+            "HTTP JSON observation fields must be unique",
         ));
     }
 }
@@ -936,7 +948,7 @@ mod tests {
             "shutdownGraceMs": 1000
         });
         let input = format!(
-            r#"{{"version":1,"control":{{"host":"127.0.0.1","port":11121,"tokenFile":".runtime/control-token"}},"services":{{"fixture":{service},"fixture":{service}}}}}"#
+            r#"{{"version":2,"control":{{"host":"127.0.0.1","port":11121,"tokenFile":".runtime/control-token"}},"services":{{"fixture":{service},"fixture":{service}}}}}"#
         );
 
         let error = SupervisorConfig::parse_json(&input).expect_err("duplicate ID must fail");
@@ -983,7 +995,7 @@ mod tests {
     }
 
     #[test]
-    fn http_json_diagnostic_expect_is_optional_for_legacy_configs() {
+    fn http_json_observe_is_optional() {
         let health: HealthCheck = serde_json::from_value(json!({
             "type": "http-json",
             "url": "http://127.0.0.1:49001/health",
@@ -991,36 +1003,12 @@ mod tests {
             "startupDeadlineMs": 5000,
             "expect": {"status": "ok"}
         }))
-        .expect("legacy HTTP JSON health must parse");
+        .expect("HTTP JSON health without observations must parse");
 
         match health {
-            HealthCheck::HttpJson {
-                diagnostic_expect, ..
-            } => assert!(diagnostic_expect.is_empty()),
+            HealthCheck::HttpJson { observe, .. } => assert!(observe.is_empty()),
             other => panic!("expected HTTP JSON health, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn http_json_rejects_required_and_diagnostic_key_overlap() {
-        let (_directory, mut config) = valid_config();
-        let service = config.services.get_mut("fixture").expect("fixture service");
-        service.health = HealthCheck::HttpJson {
-            url: "http://127.0.0.1:49001/health".to_owned(),
-            timeout_ms: 1_000,
-            startup_deadline_ms: 5_000,
-            path_mode: JsonPathMode::Shallow,
-            expect: BTreeMap::from([("status".to_owned(), json!("ok"))]),
-            diagnostic_expect: BTreeMap::from([("status".to_owned(), json!("stale"))]),
-        };
-
-        let codes = config
-            .validation_issues()
-            .into_iter()
-            .map(|issue| issue.code)
-            .collect::<Vec<_>>();
-
-        assert!(codes.contains(&"health_expect_overlap".to_owned()));
     }
 
     #[test]
@@ -1033,7 +1021,7 @@ mod tests {
             startup_deadline_ms: 5_000,
             path_mode: JsonPathMode::JsonPointer,
             expect: BTreeMap::from([("/runtime/version".to_owned(), json!({"major": 1}))]),
-            diagnostic_expect: BTreeMap::new(),
+            observe: vec!["/runtime/build".to_owned()],
         };
         assert!(config.validation_issues().is_empty());
 

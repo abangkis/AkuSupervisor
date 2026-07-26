@@ -25,7 +25,7 @@ fn stable_promotion_is_core_only_bounded_and_fail_closed() {
     assert!(script.contains("exit 1"));
     assert!(script.contains("AkuWorkspace integration validation is separate and was not run."));
     assert!(script.contains("validate-akuworkspace-integration.ps1"));
-    assert!(!script.contains("bridge validate"));
+    assert!(!script.contains("extension validate"));
     assert!(!script.contains("$sidecar"));
 }
 
@@ -68,7 +68,7 @@ fn akuworkspace_integration_gate_is_explicit_and_never_promotes() {
         .expect("integration validation must inspect supervised AkuSidecar");
     let validation = script
         .find("'validate'")
-        .expect("integration validation must invoke bridge validate");
+        .expect("integration validation must invoke extension validate");
     let exit_gate = script
         .find("$validationExitCode -ne 0")
         .expect("integration validation must enforce the command exit code");

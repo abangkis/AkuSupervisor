@@ -3,7 +3,7 @@
 //! The visible CLI is the first adapter. HTTP, journal persistence, and MCP are
 //! added only at their roadmap gates.
 
-pub mod aku_bridge_reload;
+pub mod chrome_extension_reload;
 pub mod config;
 pub mod config_path;
 pub mod console_time;

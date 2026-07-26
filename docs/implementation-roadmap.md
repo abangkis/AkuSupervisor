@@ -336,7 +336,7 @@ Current checkpoint:
   heartbeat, terminal state, relay ID, and stage-specific failure categories;
 - [x] Codex is retained as structured actor identity instead of a generic
   agent;
-- [x] `--json`, `--wait`, `--no-wait`, and `bridge status` provide automation-
+- [x] `--json`, `--wait`, `--no-wait`, and `extension status` provide automation-
   safe CLI control;
 - [x] transient control transport failures receive bounded retry only when the
   request is read-only or request-ID idempotent;
@@ -394,7 +394,7 @@ processes alive. The normal stable Supervisor remained active throughout.
 
 Status: **Completed and live-validated on 2026-07-14**
 
-- [x] `bridge validate` performs a fresh cooperative reload and emits one
+- [x] `extension validate` performs a fresh cooperative reload and emits one
   deterministic JSON result;
 - [x] the gate verifies six ordered audit stages, structured actor/request
   identity, expected/observed heartbeat equality, and no active zombie action;
@@ -809,8 +809,8 @@ the default development supervisor.
 - [x] defer an explicit restart until the prior owned tree is proven empty;
 - [x] persist bounded, single-line, known-secret-redacted lifecycle failure
   detail in the journal; and
-- [x] separate stable HTTP JSON readiness (`expect`) from optional volatile
-  development identity (`diagnosticExpect`) without weakening the hard
+- [x] separate stable HTTP JSON readiness (`expect`) from non-authoritative
+  volatile metadata observation (`observe`) without weakening the hard
   contract; and
 - [x] add opt-in RFC 6901 JSON Pointer matching for nested existing health
   responses while preserving shallow scalar matching as the default.

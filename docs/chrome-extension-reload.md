@@ -1,4 +1,4 @@
-# AkuBridge Cooperative Reload
+# Cooperative Chrome Extension Reload
 
 Status: **Completed - Gate 5 passed on 2026-07-14**
 
@@ -6,22 +6,23 @@ Reliability follow-up: **Gate 5.1 passed on 2026-07-14**
 
 ## Contract
 
-AkuSupervisor exposes exactly one browser cooperative action:
+AkuSupervisor exposes exactly one browser cooperative action. The active
+profile owns the target identity; AkuWorkspace currently maps it to AkuBridge:
 
 ```text
 reload_self(target = aku-bridge)
 ```
 
 The authenticated control route is
-`POST /v1/cooperative-actions/aku-bridge/reload-self`. The CLI is
-`aku-supervisor bridge reload`. Both require a bounded reason, actor, and
+`POST /v1/cooperative-actions/chrome-extension/reload-self`. The CLI is
+`aku-supervisor extension reload`. Both require a bounded reason, actor, and
 request ID. The request ID provides replay protection at the Supervisor and
 Sidecar boundaries.
 
 The POST starts a single-flight background operation and returns `202` while it
 is running. Progress remains queryable at
-`GET /v1/cooperative-actions/aku-bridge/requests/{requestId}` or through
-`aku-supervisor bridge status --request-id <id>`. The CLI waits for terminal
+`GET /v1/cooperative-actions/chrome-extension/requests/{requestId}` or through
+`aku-supervisor extension status --request-id <id>`. The CLI waits for terminal
 status by default and supports `--no-wait`. A second request ID is rejected
 with `action_in_progress`; replaying the same request ID returns its current or
 terminal snapshot without a second reload.
@@ -117,7 +118,7 @@ Gate 5 passes only after a real Chrome validation proves:
 The repeatable machine gate is:
 
 ```powershell
-.\target\dev\aku-supervisor.exe bridge validate `
+.\target\dev\aku-supervisor.exe extension validate `
   --actor codex `
   --request-id bridge-release-20260714-001
 ```
@@ -134,7 +135,7 @@ Live evidence on 2026-07-14:
 - the first handler-capable unpacked build was bootstrapped once manually;
 - AkuBridge announced `aku-bridge-0.5.18-source-fidelity-v20` with
   `reload_self` in its capabilities;
-- `aku-supervisor bridge reload` completed in one request and observed a
+- `aku-supervisor extension reload` completed in one request and observed a
   heartbeat timestamp newer than the pre-action heartbeat;
 - the cooperative journal stored consecutive `requested` and `completed`
   records with the same request ID and relay action ID;

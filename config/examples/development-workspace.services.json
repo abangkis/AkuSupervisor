@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "control": {
     "host": "127.0.0.1",
     "port": 47910,
@@ -13,8 +13,9 @@
     "consoleEvents": "lifecycle"
   },
   "cooperativeActions": {
-    "akuBridgeReload": {
-      "sidecarOrigin": "http://127.0.0.1:47911",
+    "chromeExtensionReload": {
+      "relayOrigin": "http://127.0.0.1:47911",
+      "target": "example-browser-extension",
       "timeoutMs": 20000,
       "pollIntervalMs": 250
     }

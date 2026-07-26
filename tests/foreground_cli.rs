@@ -29,7 +29,7 @@ fn foreground_cli_runs_registered_lifecycle_and_cleans_up() {
     let config_path = config_directory.join("services.json");
     let control_port = available_port();
     let config = json!({
-        "version": 1,
+        "version": 2,
         "control": {
             "host": "127.0.0.1",
             "port": control_port,
@@ -140,7 +140,7 @@ fn authenticated_remote_shutdown_uses_foreground_cleanup_and_audit() {
     let config_path = config_directory.join("services.json");
     let control_port = available_port();
     let config = json!({
-        "version": 1,
+        "version": 2,
         "control": {
             "host": "127.0.0.1",
             "port": control_port,

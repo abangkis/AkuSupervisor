@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "control": {
     "host": "127.0.0.1",
     "port": 47900,

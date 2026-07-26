@@ -55,7 +55,7 @@ session resumed and completed X plus LinkedIn without a replacement run.
 | Approach | Strongest fit | Missing boundary for AkuWorkspace |
 |---|---|---|
 | `node --watch`, nodemon, or an npm watcher | Fast restart of a disposable development process after source changes | A restart can interrupt a persisted job at an arbitrary stage. It normally has no health contract, complete Windows-tree ownership, durable audit, or cooperative browser action |
-| PM2 or another application process manager | Mature daemon restart, log, clustering, and Node-oriented production operations | It does not by itself define AkuBridge reload acceptance, source-aware health, SQLite-preserving development handoff, or the project's authenticated local control and MCP inspection boundary |
+| PM2 or another application process manager | Mature daemon restart, log, clustering, and Node-oriented production operations | It does not by itself define cooperative extension reload acceptance, source-aware health, SQLite-preserving development handoff, or the project's authenticated local control and MCP inspection boundary |
 | Docker/Compose restart and health policies | Reproducible isolation, deployable images, and service-level restart | The signed-in host Chrome profile and unpacked extension live outside the container. Container restart does not coordinate that browser state, and container isolation is heavier than the current local pilot requires |
 | `systemd`, Windows Service/NSSM, `supervisord`, or an IDE task runner | OS service startup or convenient local task launch | Generic lifecycle ownership does not provide AkuWorkspace's staged development handoff, bounded old-tree cleanup, cooperative extension reload, or one canonical cross-service audit trail |
 | AkuSupervisor | Visible local ownership of AkuSidecar and AkuBridge development operations | It is intentionally not a container platform, cluster scheduler, or remote production orchestrator; only the Windows platform adapter is implemented today |
@@ -68,8 +68,8 @@ AkuSupervisor's differentiators are therefore the combination of:
 - HTTP JSON health that distinguishes transport readiness from process presence;
 - durable lifecycle events and bounded stdout/stderr access;
 - an authenticated local control API with stateless read-only MCP inspection;
-- cooperative AkuBridge reload with requested, delivered, accepted, heartbeat,
-  and completion evidence; and
+- cooperative Chrome extension self-reload with profile-owned target identity,
+  requested, delivered, accepted, heartbeat, and completion evidence; and
 - a development handoff that builds a staged Supervisor, keeps the old instance
   available until the build succeeds, restores previously running services,
   and keeps stable promotion as a separate explicit release action.
@@ -159,9 +159,9 @@ cargo run -- live-logs akusidecar --stream stderr --tail 20
 cargo run -- live-logs akusidecar --timezone utc
 cargo run -- supervisor shutdown --reason "operator requested shutdown" --request-id "supervisor-shutdown-001"
 cargo run -- restart akusidecar --actor codex --reason "source changed"
-cargo run -- bridge reload --actor codex --reason "load updated unpacked extension" --request-id "bridge-reload-001"
-cargo run -- bridge status --request-id "bridge-reload-001" --json
-cargo run -- bridge validate --actor codex --request-id "bridge-release-001"
+cargo run -- extension reload --actor codex --reason "load updated unpacked extension" --request-id "extension-reload-001"
+cargo run -- extension status --request-id "extension-reload-001" --json
+cargo run -- extension validate --actor codex --request-id "extension-release-001"
 cargo run -- registration capabilities
 cargo run -- registration-mcp
 cargo fmt --check
@@ -415,17 +415,19 @@ committed file will be loaded on the next normal startup.
 current. If disk and runtime diverge, it prepends one bounded `REGISTRY WARNING`
 with state, active revision, disk revision, and diagnostic detail.
 
-After the Gate 5 build has been loaded into Chrome once, either the user or
-Codex can request the only browser-side mutation exposed by AkuSupervisor:
+After a compatible extension build has been loaded into Chrome once, either the
+user or Codex can request the only browser-side mutation exposed by
+AkuSupervisor:
 
 ```powershell
-.\target\aku-supervisor.exe bridge reload `
+.\target\aku-supervisor.exe extension reload `
   --actor codex `
   --reason "load updated AkuBridge build" `
   --request-id "bridge-reload-20260714-001"
 ```
 
-The command relays `reload_self` through the open AkuBrowser tab, stores one
+The command invokes the profile-selected cooperative `reload_self` target. For
+AkuWorkspace, the relay travels through the open AkuBrowser tab, stores one
 short-lived originating-tab marker, invokes `chrome.runtime.reload()`, and lets
 the new worker invoke `chrome.tabs.reload()` for only that local tab. It
 succeeds only after Sidecar observes the expected new build heartbeat.
@@ -434,13 +436,13 @@ compatible AkuBridge capability handshake. An AkuBrowser URL opened in a
 browser without the extension remains passive and cannot consume the action.
 The eligible background AkuBrowser tab therefore does not depend on a
 one-second page timer. The CLI waits by default; use `--no-wait` and later
-`bridge status --request-id <id>` when asynchronous control is preferable.
+`extension status --request-id <id>` when asynchronous control is preferable.
 Transport failures are retried with bounded backoff only for reads and
 idempotent requests; mutations without a request ID are never retried.
 Use `--json` on any remote command for one machine-readable JSON envelope with
 the configuration path, control API, and response. It does not expose arbitrary
 extension commands, Chrome management, CDP, tab closure, or whole-browser restart. See the
-[AkuBridge reload design](docs/aku-bridge-reload.md).
+[cooperative extension reload design](docs/chrome-extension-reload.md).
 
 `user` is the default client actor. A user CLI mutation without `--reason`
 receives a bounded reason such as `user CLI start request` at the CLI boundary;
@@ -534,9 +536,9 @@ The operational AkuWorkspace profile is deliberately local at:
 It normally registers AkuSidecar, Geofu BE, the Geofu plugin development
 server, and the daily GeoLibre LAN mode, but their paths and application
 versions belong to the workstation rather than this repository. Use the
-human-gated registration MCP to review and update that file. An optional
-`config\akuworkspace.services.json` working copy is ignored by Git so local
-version changes do not create AkuSupervisor commits.
+human-gated registration MCP to review and update that file. Do not maintain a
+second operational working copy in this repository: the active local profile
+is the sole operational source of truth.
 
 [`config/examples/development-workspace.services.json`](config/examples/development-workspace.services.json)
 is the tracked, machine-independent contract fixture. It uses illustrative
@@ -555,12 +557,12 @@ starts successfully but misses its health contract remains Supervisor-owned and
 enters `unhealthy`, distinct from `spawn_failed`. A later successful probe
 returns it to `running`.
 
-`http-json` health separates stable readiness from volatile identity. Its
-default `pathMode` is `shallow`, preserving the original top-level scalar
-contract. Set `pathMode` to `json-pointer` when an existing application exposes
-readiness under nested JSON paths. `expect` entries are mandatory and fail
-health; optional `diagnosticExpect` entries (for example a frequently changing
-development version) only annotate health detail when they differ. The current
+`http-json` health keeps readiness and observation separate. Its default
+`pathMode` is `shallow`, preserving the top-level scalar contract. Set
+`pathMode` to `json-pointer` when an existing application exposes readiness
+under nested JSON paths. `expect` entries are mandatory and fail health.
+Optional `observe` paths copy volatile metadata such as versions into
+`health.observed`; observed values never affect lifecycle state. The current
 semantic HTTP probes accept loopback `http://` endpoints; use `tcp-connect` or
 expose a separate loopback HTTP health endpoint for an HTTPS-only development
 server.
@@ -600,7 +602,7 @@ single-line, known-secret-redacted `errorDetail`.
 - [Testing guide](docs/testing-guide.md)
 - [Platform portability boundary](docs/platform-portability.md)
 - [MCP integration notes](docs/mcp-integration-notes.md)
-- [AkuBridge cooperative reload](docs/aku-bridge-reload.md)
+- [Cooperative Chrome extension reload](docs/chrome-extension-reload.md)
 - [Geofu BE portability proof](docs/geofu-be-portability.md)
 - [Geofu plugin portability proof](docs/geofu-plugin-portability.md)
 - [GeoLibre portability proof](docs/geolibre-portability.md)

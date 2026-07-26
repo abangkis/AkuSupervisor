@@ -33,7 +33,7 @@ fn terminal_tree_is_reaped_and_on_failure_is_capped_and_audited() {
     fs::create_dir_all(&config_directory).expect("create config directory");
     let config_path = config_directory.join("services.json");
     let config = json!({
-        "version": 1,
+        "version": 2,
         "control": {
             "host": "127.0.0.1",
             "port": available_port(),
@@ -106,7 +106,7 @@ fn registration_change_preserves_running_service_and_supervisor_process() {
     fs::write(&registration_audit, []).expect("create empty registration audit");
     let config_path = config_directory.join("services.json");
     let config = json!({
-        "version": 1,
+        "version": 2,
         "control": {
             "host": "127.0.0.1",
             "port": available_port(),

@@ -373,7 +373,9 @@ fn route(
         return json_response(200, &json!({ "registry": reconciliation.snapshot() }));
     }
 
-    if request.method == "GET" && request.target == "/v1/cooperative-actions/aku-bridge/active" {
+    if request.method == "GET"
+        && request.target == "/v1/cooperative-actions/chrome-extension/active"
+    {
         if !request_is_authorized(request, token) {
             return error_response(401, "unauthorized", "valid bearer token required");
         }
@@ -381,7 +383,7 @@ fn route(
             return error_response(
                 404,
                 "cooperative_action_disabled",
-                "AkuBridge reload_self is not configured",
+                "Chrome extension reload is not configured",
             );
         };
         return match cooperative.active() {
@@ -400,7 +402,7 @@ fn route(
             return error_response(
                 404,
                 "cooperative_action_disabled",
-                "AkuBridge reload_self is not configured",
+                "Chrome extension reload is not configured",
             );
         };
         return match cooperative.get(request_id) {
@@ -668,7 +670,7 @@ fn route_mutation(
         Err(error) => return error_response(400, "invalid_reason", &error.to_string()),
     };
 
-    if request.target == "/v1/cooperative-actions/aku-bridge/reload-self" {
+    if request.target == "/v1/cooperative-actions/chrome-extension/reload-self" {
         return route_cooperative_reload(
             cooperative,
             mutation.actor,
@@ -792,7 +794,7 @@ fn route_cooperative_reload(
         return error_response(
             404,
             "cooperative_action_disabled",
-            "AkuBridge reload_self is not configured",
+            "Chrome extension reload is not configured",
         );
     };
     match cooperative.begin(actor.domain_actor(), reason, request_id) {
@@ -812,14 +814,14 @@ fn route_cooperative_reload(
         Err(CooperativeOperationError::ActionInProgress(_)) => error_response(
             409,
             "action_in_progress",
-            "another AkuBridge cooperative action is active",
+            "another Chrome extension cooperative action is active",
         ),
         Err(error) => error_response(500, "operation_registry_unavailable", &error.to_string()),
     }
 }
 
 fn parse_cooperative_operation_target(target: &str) -> Option<&str> {
-    let request_id = target.strip_prefix("/v1/cooperative-actions/aku-bridge/requests/")?;
+    let request_id = target.strip_prefix("/v1/cooperative-actions/chrome-extension/requests/")?;
     valid_request_id(request_id).then_some(request_id)
 }
 
@@ -1700,7 +1702,11 @@ mod tests {
     }
 
     impl CooperativeActionControl for FakeCooperativeControl {
-        fn reload_aku_bridge(
+        fn target(&self) -> &'static str {
+            "fixture-extension"
+        }
+
+        fn execute(
             &self,
             _actor: Actor,
             _reason: Reason,
@@ -1709,7 +1715,7 @@ mod tests {
         ) -> Result<CooperativeActionOutcome, CooperativeActionError> {
             *self.reloads.lock().expect("reload lock") += 1;
             Ok(CooperativeActionOutcome {
-                target: "aku-bridge".to_owned(),
+                target: "fixture-extension".to_owned(),
                 action: "reload_self".to_owned(),
                 status: CooperativeActionStatus::Completed,
                 relay_action_id: Some(request_id.to_owned()),
@@ -2003,7 +2009,7 @@ mod tests {
         let manager = CooperativeOperationManager::new(cooperative.clone());
         let request = HttpRequest {
             method: "POST".to_owned(),
-            target: "/v1/cooperative-actions/aku-bridge/reload-self".to_owned(),
+            target: "/v1/cooperative-actions/chrome-extension/reload-self".to_owned(),
             authorization: Some(format!("Bearer {}", "a".repeat(64))),
             accept: None,
             content_type: None,
@@ -2037,7 +2043,7 @@ mod tests {
         assert_eq!(*control.mutations.lock().expect("mutation lock"), 0);
         let status_request = HttpRequest {
             method: "GET".to_owned(),
-            target: "/v1/cooperative-actions/aku-bridge/requests/bridge-1".to_owned(),
+            target: "/v1/cooperative-actions/chrome-extension/requests/bridge-1".to_owned(),
             authorization: Some(format!("Bearer {}", "a".repeat(64))),
             accept: None,
             content_type: None,
@@ -2067,7 +2073,7 @@ mod tests {
         );
         let active_request = HttpRequest {
             method: "GET".to_owned(),
-            target: "/v1/cooperative-actions/aku-bridge/active".to_owned(),
+            target: "/v1/cooperative-actions/chrome-extension/active".to_owned(),
             authorization: Some(format!("Bearer {}", "a".repeat(64))),
             accept: None,
             content_type: None,

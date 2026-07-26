@@ -19,16 +19,17 @@ use crate::domain::{Actor, Reason};
 const MAX_RESPONSE_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug)]
-pub struct AkuBridgeReloadClient {
+pub struct ChromeExtensionReloadClient {
     address: SocketAddr,
     origin: String,
     timeout: Duration,
     poll_interval: Duration,
     audit: Mutex<CooperativeAudit>,
     configuration_fingerprint: String,
+    target: String,
 }
 
-impl AkuBridgeReloadClient {
+impl ChromeExtensionReloadClient {
     /// Creates a loopback-only cooperative reload adapter and its audit sink.
     ///
     /// # Errors
@@ -40,6 +41,7 @@ impl AkuBridgeReloadClient {
         poll_interval: Duration,
         audit_path: &Path,
         configuration_fingerprint: String,
+        target: String,
     ) -> Result<Self, CooperativeActionError> {
         let address = parse_loopback_origin(origin)?;
         Ok(Self {
@@ -49,6 +51,7 @@ impl AkuBridgeReloadClient {
             poll_interval,
             audit: Mutex::new(CooperativeAudit::open(audit_path)?),
             configuration_fingerprint,
+            target,
         })
     }
 
@@ -157,6 +160,7 @@ impl AkuBridgeReloadClient {
                     return Ok(outcome_from_action(
                         action,
                         CooperativeActionStatus::Completed,
+                        &self.target,
                     ));
                 }
                 Some("failed") => {
@@ -165,7 +169,7 @@ impl AkuBridgeReloadClient {
                         action
                             .get("message")
                             .and_then(Value::as_str)
-                            .unwrap_or("AkuBridge reload_self failed"),
+                            .unwrap_or("Chrome extension cooperative reload failed"),
                     )
                     .with_context(
                         Some(action_id.clone()),
@@ -225,7 +229,7 @@ impl AkuBridgeReloadClient {
             if started.elapsed() >= self.timeout {
                 return Err(CooperativeActionError::new(
                     "relay_timeout",
-                    "AkuBridge reload_self did not produce the expected heartbeat before the supervisor deadline",
+                    "Chrome extension reload did not produce the expected heartbeat before the supervisor deadline",
                 )
                 .with_context(Some(action_id.clone()), last_observed_build_id));
             }
@@ -293,7 +297,7 @@ impl AkuBridgeReloadClient {
         audit.append(CooperativeAuditRecord {
             sequence: 0,
             timestamp: unix_timestamp(),
-            target: "aku-bridge".to_owned(),
+            target: self.target.clone(),
             action: "reload_self".to_owned(),
             actor,
             reason: reason.as_str().to_owned(),
@@ -340,7 +344,7 @@ impl AkuBridgeReloadClient {
         audit.append(CooperativeAuditRecord {
             sequence: 0,
             timestamp: unix_timestamp(),
-            target: "aku-bridge".to_owned(),
+            target: self.target.clone(),
             action: "reload_self".to_owned(),
             actor,
             reason: reason.as_str().to_owned(),
@@ -359,8 +363,12 @@ impl AkuBridgeReloadClient {
     }
 }
 
-impl CooperativeActionControl for AkuBridgeReloadClient {
-    fn reload_aku_bridge(
+impl CooperativeActionControl for ChromeExtensionReloadClient {
+    fn target(&self) -> &str {
+        &self.target
+    }
+
+    fn execute(
         &self,
         actor: Actor,
         reason: Reason,
@@ -395,9 +403,10 @@ fn bridge_headers<'a>(token: &'a str, contract: &'a str) -> [(&'static str, &'a 
 fn outcome_from_action(
     action: &Value,
     status: CooperativeActionStatus,
+    target: &str,
 ) -> CooperativeActionOutcome {
     CooperativeActionOutcome {
-        target: "aku-bridge".to_owned(),
+        target: target.to_owned(),
         action: "reload_self".to_owned(),
         status,
         relay_action_id: string_field(action, "id"),
@@ -405,7 +414,7 @@ fn outcome_from_action(
         expected_build_id: string_field(action, "expectedBuildId"),
         observed_build_id: string_field(action, "observedBuildId"),
         message: string_field(action, "message")
-            .unwrap_or_else(|| "AkuBridge reload_self completed".to_owned()),
+            .unwrap_or_else(|| "Chrome extension cooperative reload completed".to_owned()),
     }
 }
 
@@ -463,7 +472,7 @@ fn evidenced_intermediate_stages(
 const fn intermediate_stage_message(stage: CooperativeActionStage) -> &'static str {
     match stage {
         CooperativeActionStage::Delivered => "AkuBrowser relay page claimed the cooperative action",
-        CooperativeActionStage::Accepted => "AkuBridge accepted reload_self",
+        CooperativeActionStage::Accepted => "Chrome extension accepted reload_self",
         _ => "Sidecar reported an intermediate cooperative-action milestone",
     }
 }
@@ -487,19 +496,19 @@ fn parse_loopback_origin(origin: &str) -> Result<SocketAddr, CooperativeActionEr
         .ok_or_else(|| {
             CooperativeActionError::new(
                 "invalid_configuration",
-                "AkuBridge Sidecar origin must be an HTTP origin without a path",
+                "extension relay origin must be an HTTP origin without a path",
             )
         })?;
     let address = authority.parse::<SocketAddr>().map_err(|_| {
         CooperativeActionError::new(
             "invalid_configuration",
-            "AkuBridge Sidecar origin must contain an explicit loopback port",
+            "extension relay origin must contain an explicit loopback port",
         )
     })?;
     if !address.ip().is_loopback() {
         return Err(CooperativeActionError::new(
             "invalid_configuration",
-            "AkuBridge Sidecar origin must be loopback",
+            "extension relay origin must be loopback",
         ));
     }
     Ok(address)

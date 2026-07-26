@@ -26,7 +26,7 @@ pub enum HealthCheckSpec {
         startup_deadline: Duration,
         path_mode: JsonPathMode,
         expect: BTreeMap<String, serde_json::Value>,
-        diagnostic_expect: BTreeMap<String, serde_json::Value>,
+        observe: Vec<String>,
     },
 }
 
@@ -94,6 +94,7 @@ pub struct HealthSnapshot {
     pub transport_ready: Option<bool>,
     pub checked_at_unix_ms: Option<u64>,
     pub detail: Option<String>,
+    pub observed: BTreeMap<String, serde_json::Value>,
 }
 
 impl HealthSnapshot {
@@ -105,6 +106,7 @@ impl HealthSnapshot {
             transport_ready: None,
             checked_at_unix_ms: None,
             detail: None,
+            observed: BTreeMap::new(),
         }
     }
 
@@ -116,6 +118,7 @@ impl HealthSnapshot {
             transport_ready,
             checked_at_unix_ms: Some(unix_milliseconds()),
             detail: Some(detail),
+            observed: BTreeMap::new(),
         }
     }
 
@@ -127,7 +130,14 @@ impl HealthSnapshot {
             transport_ready,
             checked_at_unix_ms: Some(unix_milliseconds()),
             detail: Some(detail),
+            observed: BTreeMap::new(),
         }
+    }
+
+    #[must_use]
+    pub fn with_observed(mut self, observed: BTreeMap<String, serde_json::Value>) -> Self {
+        self.observed = observed;
+        self
     }
 
     #[must_use]
@@ -142,6 +152,7 @@ pub struct TransportHealth {
     pub transport_ready: bool,
     pub healthy: bool,
     pub detail: String,
+    pub observed: BTreeMap<String, serde_json::Value>,
 }
 
 /// Portable boundary for transport-specific health evaluation.

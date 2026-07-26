@@ -693,7 +693,7 @@ fn print_startup(
         "Human timestamp display: {} (persistent logs and JSON remain UTC)",
         console_timezone.as_str()
     );
-    if config.cooperative_actions.aku_bridge_reload.is_some() {
+    if config.cooperative_actions.chrome_extension_reload.is_some() {
         println!(
             "Cooperative action audit: {}",
             cooperative_audit_path.display()

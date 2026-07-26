@@ -164,7 +164,7 @@ Windows MVP safety requirements.
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "control": {
     "host": "127.0.0.1",
     "port": 47900,
@@ -445,15 +445,14 @@ bounded periodic monitor refreshes health independently of status reads. A
 spawned process that fails health remains owned and transitions to `unhealthy`;
 a later passing observation returns it to `running`.
 
-For `http-json`, `expect` is the hard readiness contract.
-`diagnosticExpect` is for volatile development identity such as a build
-version. Diagnostic mismatches remain visible in `health.detail` while status
-stays `healthy`; keys must not overlap the hard contract. Omitted `pathMode`
-means `shallow`. `pathMode: "json-pointer"` supports nested scalar, array, and
-object comparisons without requiring source changes in the supervised
-application. Semantic HTTP checks remain restricted to explicit loopback
-`http://` URLs; HTTPS-only services use TCP readiness or a separate loopback
-health endpoint.
+For `http-json`, `expect` is the hard readiness contract. Optional `observe`
+paths expose volatile development identity such as a build version under
+`health.observed` without turning it into a compatibility assertion. Omitted
+`pathMode` means `shallow`. `pathMode: "json-pointer"` supports nested scalar,
+array, and object comparisons without requiring source changes in the
+supervised application. Semantic HTTP checks remain restricted to explicit
+loopback `http://` URLs; HTTPS-only services use TCP readiness or a separate
+loopback health endpoint.
 
 The loopback HTTP adapter accepts bounded HTTP/1.1 responses with either a
 direct body or standard chunked transfer framing. Chunk sizes and terminators

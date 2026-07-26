@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+#[cfg(test)]
+use super::config::CONFIG_VERSION;
 use super::config::{ConfigIssue, ServiceConfig, SupervisorConfig};
 use super::config_path::{ConfigPathError, resolve_config_path};
 use super::control_http::{ControlClientError, client_request, client_request_until};
@@ -1245,7 +1247,7 @@ fn service_schema() -> Value {
                 {"type":"object", "additionalProperties":false, "required":["type"], "properties":{"type":{"const":"process"}}},
                 {"type":"object", "additionalProperties":false, "required":["type","host","port","timeoutMs","startupDeadlineMs"], "properties":{"type":{"const":"tcp-connect"},"host":{"type":"string","description":"Explicit loopback IP."},"port":{"type":"integer","minimum":1,"maximum":65535},"timeoutMs":{"type":"integer","minimum":1},"startupDeadlineMs":{"type":"integer","minimum":1}}},
                 {"type":"object", "additionalProperties":false, "required":["type","url","expectedStatus","timeoutMs","startupDeadlineMs"], "properties":{"type":{"const":"http-status"},"url":{"type":"string","description":"Loopback http:// URL."},"expectedStatus":{"type":"integer","minimum":100,"maximum":599},"timeoutMs":{"type":"integer","minimum":1},"startupDeadlineMs":{"type":"integer","minimum":1}}},
-                {"type":"object", "additionalProperties":false, "required":["type","url","timeoutMs","startupDeadlineMs","expect"], "properties":{"type":{"const":"http-json"},"url":{"type":"string","description":"Loopback http:// URL."},"timeoutMs":{"type":"integer","minimum":1},"startupDeadlineMs":{"type":"integer","minimum":1},"pathMode":{"type":"string","enum":["shallow","json-pointer"],"default":"shallow","description":"Omit for top-level scalar fields, or use json-pointer for RFC 6901 nested lookup."},"expect":{"type":"object","minProperties":1,"description":"Stable readiness entries; any mismatch fails health. Values must be scalar in shallow mode and may be any JSON value in json-pointer mode."},"diagnosticExpect":{"type":"object","minProperties":1,"description":"Optional volatile identity entries using the selected path mode; mismatches remain healthy and are reported in health detail."}}}
+                {"type":"object", "additionalProperties":false, "required":["type","url","timeoutMs","startupDeadlineMs","expect"], "properties":{"type":{"const":"http-json"},"url":{"type":"string","description":"Loopback http:// URL."},"timeoutMs":{"type":"integer","minimum":1},"startupDeadlineMs":{"type":"integer","minimum":1},"pathMode":{"type":"string","enum":["shallow","json-pointer"],"default":"shallow","description":"Omit for top-level scalar fields, or use json-pointer for RFC 6901 nested lookup."},"expect":{"type":"object","minProperties":1,"description":"Stable readiness entries; any mismatch fails health. Values must be scalar in shallow mode and may be any JSON value in json-pointer mode."},"observe":{"type":"array","uniqueItems":true,"items":{"type":"string"},"description":"Optional JSON fields exposed as observed metadata. They never affect health."}}}
             ]},
             "ports": {"type":"array", "items":{"type":"integer","minimum":1,"maximum":65535}, "uniqueItems":true, "default":[]},
             "restartPolicy": {"type":"string", "enum":["manual","on-failure"]},
@@ -1578,7 +1580,7 @@ mod tests {
                 shutdown_grace_ms: 1_000,
             };
             let config = SupervisorConfig {
-                version: 1,
+                version: CONFIG_VERSION,
                 control: ControlConfig {
                     host: "127.0.0.1".to_owned(),
                     port: 47_999,

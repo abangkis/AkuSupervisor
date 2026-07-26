@@ -180,17 +180,18 @@ unrelated TOML preservation, and an idempotent second run. It uses only a unique
 temporary config and host; the active workspace `.codex\config.toml` is never
 written by the test.
 
-For AkuBridge reload, the CLI waits for the terminal heartbeat by default:
+For cooperative Chrome extension reload, the CLI waits for the terminal
+heartbeat by default:
 
 ```powershell
-.\target\aku-supervisor.exe bridge reload --actor codex `
+.\target\aku-supervisor.exe extension reload --actor codex `
   --reason "load updated extension" --request-id "bridge-reload-1"
 ```
 
 To separate submission from observation, add `--no-wait`, then query:
 
 ```powershell
-.\target\aku-supervisor.exe bridge status --request-id "bridge-reload-1" --json
+.\target\aku-supervisor.exe extension status --request-id "bridge-reload-1" --json
 ```
 
 `--json` emits one JSON envelope and no human metadata on stdout. During an
@@ -298,11 +299,11 @@ between reads even when no lifecycle command is issued. HTTP health is still a
 transport/contract check; AkuSidecar's real Codex reasoning invocation remains
 an application-level readiness validation.
 
-For `http-json`, deliberately change a `diagnosticExpect` version while leaving
-the required `expect` fields intact. The snapshot must stay `healthy` and place
-the version mismatch in `health.detail`. Changing a required field must still
-produce `unhealthy`. Lifecycle failures persist the bounded single-line detail
-as `errorDetail` in `supervisor.jsonl`; configured secrets must be redacted.
+For `http-json`, add a volatile version to `observe`. The snapshot must expose
+its current value under `health.observed` without changing health. Changing a
+required `expect` field must still produce `unhealthy`. Lifecycle failures
+persist the bounded single-line detail as `errorDetail` in `supervisor.jsonl`;
+configured secrets must be redacted.
 Repeat the contract in JSON Pointer mode with a nested object, the empty root
 pointer, and a key that uses `~0` or `~1`; invalid pointers and shallow nested
 values must fail configuration validation before a process is started.
@@ -535,7 +536,7 @@ contact AkuSidecar or AkuBridge. The optional AkuWorkspace integration gate is:
 Run this separately when a change touches cooperative reload or another
 AkuSidecar/AkuBridge boundary. The integration script never copies the stable
 binary. It requires `akusidecar` to already be `running / healthy`, then invokes
-the machine-readable `bridge validate` command.
+the machine-readable `extension validate` command.
 
 For that optional gate, `relay_page_stale` means Sidecar remained healthy but no open AkuBrowser page
 requested the queued cooperative action before its deadline. Keep the watcher
@@ -549,7 +550,7 @@ codex` when Codex owns the validation, and `-RequestId` only when an external
 system supplies a guaranteed-fresh ID. Otherwise it creates a unique bounded
 ID.
 
-The separate integration script runs `bridge validate`. Its JSON
+The separate integration script runs `extension validate`. Its JSON
 contract contains `schemaVersion`, `status`, `exitCode`, the structured actor,
 request ID, terminal operation, and five named checks. The six required audit
 stages are `requested`, `relay_created`, `delivered`, `accepted`,

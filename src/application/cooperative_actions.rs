@@ -47,13 +47,16 @@ pub struct CooperativeActionOutcome {
 }
 
 pub trait CooperativeActionControl: Send + Sync {
-    /// Requests the single bounded `AkuBridge` self-reload operation.
+    /// Returns the configured cooperative target.
+    fn target(&self) -> &str;
+
+    /// Requests the single bounded cooperative action.
     ///
     /// # Errors
     ///
-    /// Returns a categorized error when the authenticated relay, extension
-    /// acknowledgement, or expected post-reload heartbeat cannot be proven.
-    fn reload_aku_bridge(
+    /// Returns a categorized error when the authenticated relay, target
+    /// acknowledgement, or expected completion evidence cannot be proven.
+    fn execute(
         &self,
         actor: Actor,
         reason: Reason,

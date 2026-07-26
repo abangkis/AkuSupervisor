@@ -741,18 +741,21 @@ where
                         |cap| check.timeout().expect("HTTP health has a timeout").min(cap),
                     );
                     let transport = self.health_probe.probe(check, timeout);
+                    let observed = transport.observed;
                     if transport.healthy {
                         HealthSnapshot::healthy(
                             true,
                             Some(transport.transport_ready),
                             transport.detail,
                         )
+                        .with_observed(observed)
                     } else {
                         HealthSnapshot::unhealthy(
                             true,
                             Some(transport.transport_ready),
                             transport.detail,
                         )
+                        .with_observed(observed)
                     }
                 }
             }
@@ -1363,6 +1366,7 @@ mod tests {
                 transport_ready: true,
                 healthy: true,
                 detail: "fixture healthy".to_owned(),
+                observed: std::collections::BTreeMap::new(),
             }
         }
     }
@@ -1384,6 +1388,7 @@ mod tests {
                     "fixture health mismatch"
                 }
                 .to_owned(),
+                observed: std::collections::BTreeMap::new(),
             }
         }
     }

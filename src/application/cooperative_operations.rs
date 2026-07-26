@@ -59,7 +59,7 @@ impl CooperativeOperationManager {
         }
     }
 
-    /// Starts or replays the one bounded cooperative operation.
+    /// Starts or replays the configured bounded cooperative operation.
     ///
     /// # Errors
     ///
@@ -83,7 +83,7 @@ impl CooperativeOperationManager {
             }
             let operation = CooperativeOperationSnapshot {
                 request_id: request_id.to_owned(),
-                target: "aku-bridge".to_owned(),
+                target: self.control.target().to_owned(),
                 action: "reload_self".to_owned(),
                 actor,
                 reason: reason.clone(),
@@ -93,7 +93,7 @@ impl CooperativeOperationManager {
                 expected_build_id: None,
                 observed_build_id: None,
                 error_category: None,
-                message: "authenticated reload_self operation accepted".to_owned(),
+                message: "authenticated cooperative reload operation accepted".to_owned(),
             };
             state.active_request_id = Some(request_id.to_owned());
             state.insert(operation);
@@ -153,9 +153,7 @@ impl CooperativeOperationManager {
         let progress = move |update: CooperativeActionProgress| {
             progress_manager.update_progress(&progress_request_id, update);
         };
-        let result = self
-            .control
-            .reload_aku_bridge(actor, reason, request_id, &progress);
+        let result = self.control.execute(actor, reason, request_id, &progress);
         if let Ok(mut state) = self.inner.lock()
             && let Some(operation) = state.operations.get_mut(request_id)
         {
@@ -299,7 +297,11 @@ mod tests {
     }
 
     impl CooperativeActionControl for BlockingControl {
-        fn reload_aku_bridge(
+        fn target(&self) -> &'static str {
+            "fixture-extension"
+        }
+
+        fn execute(
             &self,
             _actor: Actor,
             _reason: Reason,
@@ -322,7 +324,7 @@ mod tests {
                 state = condition.wait(state).expect("gate wait");
             }
             Ok(CooperativeActionOutcome {
-                target: "aku-bridge".to_owned(),
+                target: "fixture-extension".to_owned(),
                 action: "reload_self".to_owned(),
                 status: CooperativeActionStatus::Completed,
                 relay_action_id: Some("relay-1".to_owned()),

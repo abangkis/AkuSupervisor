@@ -7,7 +7,7 @@
   "required": ["version", "control", "services"],
   "properties": {
     "version": {
-      "const": 1
+      "const": 2
     },
     "control": {
       "$ref": "#/$defs/control"
@@ -48,14 +48,18 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "akuBridgeReload": {
+        "chromeExtensionReload": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["sidecarOrigin", "timeoutMs", "pollIntervalMs"],
+          "required": ["relayOrigin", "target", "timeoutMs", "pollIntervalMs"],
           "properties": {
-            "sidecarOrigin": {
+            "relayOrigin": {
               "type": "string",
               "pattern": "^http://(?:127\\.0\\.0\\.1|\\[::1\\]):[0-9]+$"
+            },
+            "target": {
+              "type": "string",
+              "minLength": 1
             },
             "timeoutMs": {
               "type": "integer",
@@ -283,10 +287,13 @@
               "type": "object",
               "minProperties": 1
             },
-            "diagnosticExpect": {
-              "description": "Optional volatile identity fields. Mismatches are reported in health detail but do not fail readiness.",
-              "type": "object",
-              "minProperties": 1
+            "observe": {
+              "description": "Optional JSON fields exposed as observed metadata. They never affect health.",
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string"
+              }
             }
           }
         }

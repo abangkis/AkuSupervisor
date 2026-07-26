@@ -42,7 +42,7 @@ fn generic_development_example_matches_the_typed_contract() {
     ))
     .expect("generic development example must parse");
 
-    assert!(config.cooperative_actions.aku_bridge_reload.is_some());
+    assert!(config.cooperative_actions.chrome_extension_reload.is_some());
     assert!(!config.control.mcp.enabled);
     assert_eq!(
         config.observability.console_events,
@@ -52,9 +52,9 @@ fn generic_development_example_matches_the_typed_contract() {
     assert_eq!(
         config
             .cooperative_actions
-            .aku_bridge_reload
+            .chrome_extension_reload
             .as_ref()
-            .map(|reload| reload.sidecar_origin.as_str()),
+            .map(|reload| reload.relay_origin.as_str()),
         Some("http://127.0.0.1:47911")
     );
     assert_eq!(config.control.port, 47_910);
@@ -122,7 +122,7 @@ fn immutable_windows_example_requires_no_cooperative_target_contract() {
     ))
     .expect("checked-in immutable-program example must parse");
 
-    assert!(config.cooperative_actions.aku_bridge_reload.is_none());
+    assert!(config.cooperative_actions.chrome_extension_reload.is_none());
     assert!(!config.control.mcp.enabled);
     let service = config
         .services
