@@ -56,10 +56,14 @@ fn mcp_host_status_is_read_only_and_hash_based() {
 
     assert!(script.contains("Get-FileHash"));
     assert!(script.contains("'CURRENT'"));
+    assert!(script.contains("'CORE_ONLY_CHANGE'"));
     assert!(script.contains("'OUTDATED'"));
     assert!(script.contains("'MISSING'"));
     assert!(script.contains("sha256-$sourceHash"));
-    assert!(script.contains("'content-addressed-default'"));
+    assert!(script.contains("'configured-default'"));
+    assert!(script.contains("mcp-contract --json"));
+    assert!(script.contains("sourceContractFingerprint"));
+    assert!(script.contains("hostContractFingerprint"));
     assert!(script.contains("restartCodexRequired"));
     assert!(!script.contains("Copy-Item"));
     assert!(!script.contains("Move-Item"));
@@ -77,13 +81,20 @@ fn codex_mcp_bootstrap_requires_a_hash_bound_preview_before_atomic_apply() {
     assert!(installer.contains("$currentHash"));
     assert!(installer.contains("$proposedHash"));
     assert!(installer.contains("$sourceHash"));
+    assert!(installer.contains("$sourceContract.fingerprint"));
     assert!(installer.contains("sha256-$sourceHash"));
+    assert!(installer.contains("'configured-contract-match'"));
+    assert!(installer.contains("'CORE_ONLY_CHANGE'"));
     assert!(installer.contains("Codex configuration changed after approval validation"));
     assert!(installer.contains("[System.IO.File]::Replace"));
     assert!(installer.contains("stage-mcp-host.ps1"));
     assert!(installer.contains("ExpectedSourceHash = $sourceHash"));
     assert!(!installer.contains("Stop-Process"));
     assert!(staging.contains("Source executable hash no longer matches the approved proposal."));
+    assert!(
+        staging
+            .contains("Source MCP contract fingerprint no longer matches the approved proposal.")
+    );
 }
 
 #[test]

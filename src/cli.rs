@@ -31,6 +31,7 @@ Usage:\n\
   aku-supervisor extension validate --request-id <id> [--actor <user|codex>] [--config <path>]\n\
   aku-supervisor mcp-proxy [--config <path>]\n\
   aku-supervisor registration-mcp [--config <path>]\n\
+  aku-supervisor mcp-contract [--json]\n\
   aku-supervisor registration capabilities [--json] [--config <path>]\n\
   aku-supervisor registration show <draft-id> [--json] [--config <path>]\n\
   aku-supervisor registration approve <draft-id> [--commit] [--config <path>]\n\
@@ -42,6 +43,9 @@ Without --config, AkuSupervisor checks AKU_SUPERVISOR_CONFIG and then the defaul
 enum Command {
     Help,
     Version,
+    McpContract {
+        json: bool,
+    },
     Run {
         config: Option<PathBuf>,
         timezone: DisplayTimezone,
@@ -154,6 +158,20 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
             println!("aku-supervisor {VERSION}");
             ExitCode::SUCCESS
         }
+        Ok(Command::McpContract { json }) => {
+            match crate::adapters::mcp_contract::report() {
+                Ok(report) if json => println!("{report}"),
+                Ok(report) => println!(
+                    "MCP contract: {}",
+                    report["fingerprint"].as_str().unwrap_or("unavailable")
+                ),
+                Err(error) => {
+                    eprintln!("error: MCP contract serialization failed: {error}");
+                    return ExitCode::FAILURE;
+                }
+            }
+            ExitCode::SUCCESS
+        }
         Ok(Command::Run { config, timezone }) => run_foreground(config, timezone),
         Ok(Command::ExtensionValidate {
             actor,
@@ -214,6 +232,10 @@ fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, Strin
         }),
         [flag] if flag == "--help" || flag == "-h" => Ok(Command::Help),
         [flag] if flag == "--version" || flag == "-V" => Ok(Command::Version),
+        [contract] if contract == "mcp-contract" => Ok(Command::McpContract { json: false }),
+        [contract, json] if contract == "mcp-contract" && json == "--json" => {
+            Ok(Command::McpContract { json: true })
+        }
         [run, rest @ ..] if run == "run" => parse_run(rest),
         [flag, ..] if flag == "--config" || flag == "--timezone" => parse_run(&arguments),
         [proxy] if proxy == "mcp-proxy" => Ok(Command::McpProxy { config: None }),
@@ -1892,6 +1914,19 @@ mod tests {
     #[test]
     fn version_flag_selects_version() {
         assert_eq!(parse(args(&["--version"])), Ok(Command::Version));
+    }
+
+    #[test]
+    fn mcp_contract_command_has_human_and_machine_modes() {
+        assert_eq!(
+            parse(args(&["mcp-contract"])),
+            Ok(Command::McpContract { json: false })
+        );
+        assert_eq!(
+            parse(args(&["mcp-contract", "--json"])),
+            Ok(Command::McpContract { json: true })
+        );
+        assert!(parse(args(&["mcp-contract", "--verbose"])).is_err());
     }
 
     #[test]

@@ -135,6 +135,56 @@ pub struct RegistrationAuthority {
     registration_directory: PathBuf,
 }
 
+#[must_use]
+pub(crate) fn capability_contract() -> Value {
+    json!({
+        "schemaVersion": REGISTRATION_SCHEMA_VERSION,
+        "authority": "human-gated-registration",
+        "supportedOperations": ["register", "update", "unregister"],
+        "workflow": [
+            "Call supervisor_registration_get_schema and supervisor_registration_get_capabilities.",
+            "Validate the complete service object with supervisor_registration_validate_service.",
+            "Prepare a revision-bound draft with supervisor_registration_prepare_change.",
+            "Ask the user to run the returned approvalCommand in a real interactive terminal; its --commit flag completes the mutation after approval.",
+            "After the user reports completion, call supervisor_registration_commit_change idempotently to retrieve or confirm the final result; the mutation does not depend on this follow-up."
+        ],
+        "safety": {
+            "approvalAvailableThroughMcp": false,
+            "approvalRequiresInteractiveTerminal": true,
+            "approvalShowsFullBeforeAndAfterConfiguration": true,
+            "approvalCommandCommits": true,
+            "agentCommitRequiredAfterApprovalCommand": false,
+            "mcpCommitIsIdempotent": true,
+            "approvalBoundToProposalHash": true,
+            "draftLifetimeMs": DRAFT_LIFETIME_MS,
+            "optimisticConcurrency": "exact base revision",
+            "atomicConfigurationReplace": true,
+            "registerInitialState": "stopped",
+            "autoStart": false,
+            "automaticRegistryReconciliation": true,
+            "boundedRuntimeAcknowledgmentMs": RECONCILIATION_ACK_TIMEOUT.as_millis(),
+            "reconciliationOutcomes": ["applied", "pending", "deferred", "rejected", "offline"],
+            "unrelatedServicesRestarted": false,
+            "updateAndUnregisterRequireObservedStoppedState": true,
+            "arbitraryShellCommands": false,
+            "secretEnvironmentKeys": "rejected"
+        },
+        "mcpTools": [
+            "supervisor_registration_get_capabilities",
+            "supervisor_registration_get_schema",
+            "supervisor_registration_validate_service",
+            "supervisor_registration_prepare_change",
+            "supervisor_registration_get_draft",
+            "supervisor_registration_commit_change"
+        ],
+        "humanCommands": {
+            "inspect": "aku-supervisor registration show <draft-id>",
+            "approveAndCommit": "aku-supervisor registration approve <draft-id> --commit",
+            "approveOnly": "aku-supervisor registration approve <draft-id>"
+        }
+    })
+}
+
 impl RegistrationAuthority {
     /// Opens the registration authority for one existing Supervisor profile.
     ///
@@ -171,54 +221,19 @@ impl RegistrationAuthority {
     pub fn capabilities(&self) -> Result<Value, RegistrationError> {
         let config = self.current_config()?;
         let revision = config.fingerprint().map_err(config_error)?;
-        Ok(json!({
-            "schemaVersion": REGISTRATION_SCHEMA_VERSION,
-            "authority": "human-gated-registration",
-            "configurationPath": self.configuration_path,
-            "currentRevision": revision,
-            "supportedOperations": ["register", "update", "unregister"],
-            "workflow": [
-                "Call supervisor_registration_get_schema and supervisor_registration_get_capabilities.",
-                "Validate the complete service object with supervisor_registration_validate_service.",
-                "Prepare a revision-bound draft with supervisor_registration_prepare_change.",
-                "Ask the user to run the returned approvalCommand in a real interactive terminal; its --commit flag completes the mutation after approval.",
-                "After the user reports completion, call supervisor_registration_commit_change idempotently to retrieve or confirm the final result; the mutation does not depend on this follow-up."
-            ],
-            "safety": {
-                "approvalAvailableThroughMcp": false,
-                "approvalRequiresInteractiveTerminal": true,
-                "approvalShowsFullBeforeAndAfterConfiguration": true,
-                "approvalCommandCommits": true,
-                "agentCommitRequiredAfterApprovalCommand": false,
-                "mcpCommitIsIdempotent": true,
-                "approvalBoundToProposalHash": true,
-                "draftLifetimeMs": DRAFT_LIFETIME_MS,
-                "optimisticConcurrency": "exact base revision",
-                "atomicConfigurationReplace": true,
-                "registerInitialState": "stopped",
-                "autoStart": false,
-                "automaticRegistryReconciliation": true,
-                "boundedRuntimeAcknowledgmentMs": RECONCILIATION_ACK_TIMEOUT.as_millis(),
-                "reconciliationOutcomes": ["applied", "pending", "deferred", "rejected", "offline"],
-                "unrelatedServicesRestarted": false,
-                "updateAndUnregisterRequireObservedStoppedState": true,
-                "arbitraryShellCommands": false,
-                "secretEnvironmentKeys": "rejected"
-            },
-            "mcpTools": [
-                "supervisor_registration_get_capabilities",
-                "supervisor_registration_get_schema",
-                "supervisor_registration_validate_service",
-                "supervisor_registration_prepare_change",
-                "supervisor_registration_get_draft",
-                "supervisor_registration_commit_change"
-            ],
-            "humanCommands": {
-                "inspect": "aku-supervisor registration show <draft-id>",
-                "approveAndCommit": "aku-supervisor registration approve <draft-id> --commit",
-                "approveOnly": "aku-supervisor registration approve <draft-id>"
-            }
-        }))
+        let mut capabilities = capability_contract();
+        let Some(object) = capabilities.as_object_mut() else {
+            return Err(RegistrationError::new(
+                "registration_contract_invalid",
+                "compiled registration capability contract is not an object",
+            ));
+        };
+        object.insert(
+            "configurationPath".to_owned(),
+            json!(self.configuration_path),
+        );
+        object.insert("currentRevision".to_owned(), json!(revision));
+        Ok(capabilities)
     }
 
     #[must_use]

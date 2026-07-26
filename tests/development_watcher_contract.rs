@@ -49,6 +49,8 @@ fn watcher_requires_executable_release_without_force_killing_an_owner() {
     assert!(script.contains("Show-McpHostGuidance"));
     assert!(script.contains("get-mcp-host-status.ps1"));
     assert!(script.contains("MCP host status: CURRENT"));
+    assert!(script.contains("MCP host status: CORE_ONLY_CHANGE"));
+    assert!(script.contains("MCP restaging and Codex restart are not required."));
     assert!(script.contains("Registration tools or schema exposed to agents may be stale."));
     assert!(script.contains("install-codex-mcp.ps1"));
     assert!(script.contains(

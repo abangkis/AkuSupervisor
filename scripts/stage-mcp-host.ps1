@@ -7,7 +7,9 @@ param(
 
     [string] $DestinationPath,
 
-    [string] $ExpectedSourceHash
+    [string] $ExpectedSourceHash,
+
+    [string] $ExpectedContractFingerprint
 )
 
 Set-StrictMode -Version Latest
@@ -97,12 +99,23 @@ if ($LASTEXITCODE -ne 0 -or $versionOutput -notmatch '^aku-supervisor\s+\S+$') {
     Stop-Staging -Message 'Source executable failed its bounded version preflight.'
 }
 Assert-RegistrationDiscovery -Executable $sourceExecutable
+$sourceContract = (& $sourceExecutable mcp-contract --json | Out-String).Trim() | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0 -or $sourceContract.fingerprint -notmatch '^sha256:[a-f0-9]{64}$') {
+    Stop-Staging -Message 'Source executable does not expose a valid MCP contract fingerprint.'
+}
 $sourceHash = (Get-FileHash -LiteralPath $sourceExecutable -Algorithm SHA256).Hash
 if (-not [string]::IsNullOrWhiteSpace($ExpectedSourceHash)) {
     $normalizedExpectedHash = $ExpectedSourceHash.Replace('sha256:', '').ToUpperInvariant()
     if (-not [System.StringComparer]::Ordinal.Equals($sourceHash, $normalizedExpectedHash)) {
         Stop-Staging -Message 'Source executable hash no longer matches the approved proposal.'
     }
+}
+if (-not [string]::IsNullOrWhiteSpace($ExpectedContractFingerprint) -and
+    -not [StringComparer]::Ordinal.Equals(
+        $sourceContract.fingerprint,
+        $ExpectedContractFingerprint.ToLowerInvariant()
+    )) {
+    Stop-Staging -Message 'Source MCP contract fingerprint no longer matches the approved proposal.'
 }
 $hostExecutable = if (-not [string]::IsNullOrWhiteSpace($DestinationPath)) {
     [System.IO.Path]::GetFullPath($DestinationPath)
@@ -150,11 +163,16 @@ try {
 
 $hostVersion = (& $hostExecutable --version | Out-String).Trim()
 $hostHash = (Get-FileHash -LiteralPath $hostExecutable -Algorithm SHA256).Hash
-if ($LASTEXITCODE -ne 0 -or $hostVersion -ne $versionOutput -or $hostHash -ne $sourceHash) {
-    Stop-Staging -Message 'Staged MCP host failed final version or hash verification.'
+$hostContract = (& $hostExecutable mcp-contract --json | Out-String).Trim() | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0 -or
+    $hostVersion -ne $versionOutput -or
+    $hostHash -ne $sourceHash -or
+    $hostContract.fingerprint -ne $sourceContract.fingerprint) {
+    Stop-Staging -Message 'Staged MCP host failed final version, hash, or contract verification.'
 }
 
 Write-Host "[mcp-host] Staged dedicated MCP host: $hostExecutable" -ForegroundColor Green
 Write-Host "[mcp-host] Version: $hostVersion" -ForegroundColor DarkGray
 Write-Host "[mcp-host] SHA-256: $hostHash" -ForegroundColor DarkGray
+Write-Host "[mcp-host] Contract: $($hostContract.fingerprint)" -ForegroundColor DarkGray
 Write-Host '[mcp-host] Point Codex MCP entries at this immutable executable. Restart Codex only after its configuration is changed to select this version.' -ForegroundColor Yellow

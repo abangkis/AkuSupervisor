@@ -35,6 +35,28 @@ fn version_matches_cargo_package() {
 }
 
 #[test]
+fn mcp_contract_is_configuration_independent_and_machine_readable() {
+    let output = binary()
+        .args(["mcp-contract", "--json"])
+        .env_remove("AKU_SUPERVISOR_CONFIG")
+        .output()
+        .expect("AkuSupervisor binary should report its MCP contract");
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("MCP contract should be JSON");
+    assert_eq!(report["schemaVersion"], 1);
+    assert!(
+        report["fingerprint"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("sha256:"))
+    );
+    assert!(report["contract"]["readOnly"]["tools"].is_array());
+    assert!(report["contract"]["registration"]["serviceSchema"].is_object());
+}
+
+#[test]
 fn unsupported_commands_fail_closed() {
     let output = binary()
         .arg("start")

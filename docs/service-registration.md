@@ -76,9 +76,12 @@ Codex tasks/agents in that workspace. Initial MCP discovery cannot install
 itself, so each new workspace needs this one explicit bootstrap and human
 approval.
 The development watcher and stable promotion print `MCP host status` as
-`CURRENT`, `OUTDATED`, or `MISSING`; an outdated or missing host may expose
-stale registration tools or schemas until the installer is applied and Codex
-is restarted.
+`CURRENT`, `CORE_ONLY_CHANGE`, `OUTDATED`, or `MISSING`. `CORE_ONLY_CHANGE`
+means the installed agent contract is already current, so neither restaging nor
+a Codex restart is needed. An outdated or missing host may expose stale
+registration tools or schemas until the installer is applied and Codex is
+restarted. A legacy host without `mcp-contract --json` is conservatively
+classified as outdated and requires a one-time migration.
 
 The agent does not need this document during normal registration. Tool
 descriptions, strict input schemas, structured failures, the current revision,

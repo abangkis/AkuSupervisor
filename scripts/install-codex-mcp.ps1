@@ -101,6 +101,69 @@ function Remove-TargetSections {
     return $preserved.TrimEnd()
 }
 
+function Get-ConfiguredMcpHost {
+    param([Parameter(Mandatory)] [AllowEmptyString()] [string] $Content)
+
+    $paths = @()
+    foreach ($sectionName in $sectionNames) {
+        $matches = [Text.RegularExpressions.Regex]::Matches(
+            $Content,
+            (Get-SectionPattern -SectionName $sectionName)
+        )
+        if ($matches.Count -ne 1) {
+            return $null
+        }
+        $command = [Text.RegularExpressions.Regex]::Match(
+            $matches[0].Value,
+            '(?m)^command[ \t]*=[ \t]*"((?:\\.|[^"])*)"'
+        )
+        if (-not $command.Success) {
+            return $null
+        }
+        $paths += $command.Groups[1].Value.Replace('\\', '\').Replace('\"', '"')
+    }
+    if (-not [StringComparer]::OrdinalIgnoreCase.Equals($paths[0], $paths[1])) {
+        throw 'AkuSupervisor read-only and registration MCP entries select different hosts.'
+    }
+    return [IO.Path]::GetFullPath($paths[0])
+}
+
+function Get-McpContract {
+    param(
+        [Parameter(Mandatory)] [string] $Executable,
+        [switch] $AllowUnavailable
+    )
+
+    $previousErrorPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $output = @(& $Executable mcp-contract --json 2>&1)
+        $contractExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorPreference
+    }
+    $raw = (($output | Where-Object { $_ -is [string] -and $_.TrimStart().StartsWith('{') }) -join "`n").Trim()
+    if ($contractExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($raw)) {
+        if ($AllowUnavailable) {
+            return $null
+        }
+        Stop-Install -Message "Source executable does not expose the MCP contract report: $Executable"
+    }
+    try {
+        $report = $raw | ConvertFrom-Json
+        if ($report.schemaVersion -ne 1 -or
+            $report.fingerprint -notmatch '^sha256:[a-f0-9]{64}$') {
+            throw 'unexpected MCP contract report'
+        }
+        return $report
+    } catch {
+        if ($AllowUnavailable) {
+            return $null
+        }
+        Stop-Install -Message "Invalid MCP contract report from ${Executable}: $($_.Exception.Message)"
+    }
+}
+
 function Stop-Install {
     param([Parameter(Mandatory)] [string] $Message)
 
@@ -121,10 +184,7 @@ if ($LASTEXITCODE -ne 0 -or $sourceVersion -notmatch '^aku-supervisor\s+\S+$') {
     Stop-Install -Message 'Source executable failed its bounded version preflight.'
 }
 $sourceHash = (Get-FileHash -LiteralPath $sourceFullPath -Algorithm SHA256).Hash.ToLowerInvariant()
-if ([string]::IsNullOrWhiteSpace($HostPath)) {
-    $HostPath = Join-Path $repository "target\mcp\sha256-$sourceHash\aku-supervisor-mcp.exe"
-}
-$hostFullPath = [System.IO.Path]::GetFullPath($HostPath)
+$sourceContract = Get-McpContract -Executable $sourceFullPath
 $currentContent = if (Test-Path -LiteralPath $configFullPath -PathType Leaf) {
     [System.IO.File]::ReadAllText($configFullPath)
 } else {
@@ -134,10 +194,32 @@ $currentContent = if (Test-Path -LiteralPath $configFullPath -PathType Leaf) {
 try {
     $currentTargetSections = Get-TargetSections -Content $currentContent
     $preservedContent = Remove-TargetSections -Content $currentContent
+    $configuredHost = Get-ConfiguredMcpHost -Content $currentContent
 } catch {
     Stop-Install -Message $_.Exception.Message
 }
 
+$hostSelection = 'explicit'
+if ([string]::IsNullOrWhiteSpace($HostPath)) {
+    $configuredContract = if ($null -ne $configuredHost -and
+        (Test-Path -LiteralPath $configuredHost -PathType Leaf)) {
+        Get-McpContract -Executable $configuredHost -AllowUnavailable
+    } else {
+        $null
+    }
+    if ($null -ne $configuredContract -and
+        [StringComparer]::Ordinal.Equals(
+            $sourceContract.fingerprint,
+            $configuredContract.fingerprint
+        )) {
+        $HostPath = $configuredHost
+        $hostSelection = 'configured-contract-match'
+    } else {
+        $HostPath = Join-Path $repository "target\mcp\sha256-$sourceHash\aku-supervisor-mcp.exe"
+        $hostSelection = 'content-addressed-contract-upgrade'
+    }
+}
+$hostFullPath = [System.IO.Path]::GetFullPath($HostPath)
 $hostToml = ConvertTo-TomlString -Value $hostFullPath
 $targetSections = @"
 [mcp_servers.aku_supervisor]
@@ -189,13 +271,32 @@ $currentHostHash = if (Test-Path -LiteralPath $hostFullPath -PathType Leaf) {
 } else {
     $null
 }
-$hostChanged = $currentHostHash -ne $sourceHash
+$currentHostContract = if ($null -eq $currentHostHash) {
+    $null
+} else {
+    Get-McpContract -Executable $hostFullPath -AllowUnavailable
+}
+$hostChanged = $null -eq $currentHostContract -or
+    -not [StringComparer]::Ordinal.Equals(
+        $sourceContract.fingerprint,
+        $currentHostContract.fingerprint
+    )
+$hostStatus = if ($null -eq $currentHostHash) {
+    'MISSING'
+} elseif ([StringComparer]::Ordinal.Equals($sourceHash, $currentHostHash)) {
+    'CURRENT'
+} elseif (-not $hostChanged) {
+    'CORE_ONLY_CHANGE'
+} else {
+    'OUTDATED'
+}
 $restartCodexRequired = $configurationChanged -or $hostChanged
 $approvalBinding = @(
     $configFullPath,
     $currentHash,
     $proposedHash,
     $sourceHash,
+    $sourceContract.fingerprint,
     $hostFullPath
 ) -join "`n"
 $approvalHash = Get-TextHash -Text $approvalBinding
@@ -212,7 +313,11 @@ $plan = [ordered]@{
     sourcePath = $sourceFullPath
     sourceVersion = $sourceVersion
     sourceHash = "sha256:$sourceHash"
+    sourceContractFingerprint = $sourceContract.fingerprint
     hostPath = $hostFullPath
+    hostSelection = $hostSelection
+    hostStatus = $hostStatus
+    hostContractFingerprint = if ($null -eq $currentHostContract) { $null } else { $currentHostContract.fingerprint }
     currentConfigHash = "sha256:$currentHash"
     proposedConfigHash = "sha256:$proposedHash"
     configurationChanged = $configurationChanged
@@ -232,7 +337,9 @@ if (-not $Apply) {
         Write-Host '[codex-mcp] PLAN ONLY: no files were changed.' -ForegroundColor Cyan
         Write-Host "[codex-mcp] Codex config: $configFullPath"
         Write-Host "[codex-mcp] Source: $sourceFullPath ($sourceVersion)"
+        Write-Host "[codex-mcp] Source MCP contract: $($sourceContract.fingerprint)" -ForegroundColor DarkGray
         Write-Host "[codex-mcp] Dedicated host: $hostFullPath"
+        Write-Host "[codex-mcp] Host status: $hostStatus"
         Write-Host "[codex-mcp] Current config: sha256:$currentHash" -ForegroundColor DarkGray
         Write-Host "[codex-mcp] Proposed config: sha256:$proposedHash" -ForegroundColor DarkGray
         Write-Host "[codex-mcp] Codex restart required after apply: $restartCodexRequired"
@@ -255,11 +362,14 @@ $stageArguments = @{
     SourcePath = $sourceFullPath
     DestinationPath = $hostFullPath
     ExpectedSourceHash = $sourceHash
+    ExpectedContractFingerprint = $sourceContract.fingerprint
 }
-$stageOutput = @(& (Join-Path $PSScriptRoot 'stage-mcp-host.ps1') @stageArguments *>&1)
-if ($LASTEXITCODE -ne 0) {
-    $stageText = ($stageOutput | ForEach-Object { $_.ToString() }) -join [Environment]::NewLine
-    Stop-Install -Message "Dedicated MCP host staging failed: $stageText"
+if ($hostChanged) {
+    $stageOutput = @(& (Join-Path $PSScriptRoot 'stage-mcp-host.ps1') @stageArguments *>&1)
+    if ($LASTEXITCODE -ne 0) {
+        $stageText = ($stageOutput | ForEach-Object { $_.ToString() }) -join [Environment]::NewLine
+        Stop-Install -Message "Dedicated MCP host staging failed: $stageText"
+    }
 }
 
 $configDirectory = Split-Path -Parent $configFullPath
@@ -305,15 +415,22 @@ $result = [ordered]@{
     configHash = "sha256:$observedHash"
     hostPath = $hostFullPath
     hostHash = "sha256:$((Get-FileHash -LiteralPath $hostFullPath -Algorithm SHA256).Hash.ToLowerInvariant())"
+    hostContractFingerprint = (Get-McpContract -Executable $hostFullPath).fingerprint
     unrelatedEntriesPreserved = $true
     restartCodexRequired = $restartCodexRequired
 }
 if ($Json) {
     $result | ConvertTo-Json -Compress
 } else {
-    Write-Host '[codex-mcp] Dedicated MCP host staged and Codex configuration applied.' -ForegroundColor Green
+    if ($hostChanged) {
+        Write-Host '[codex-mcp] Dedicated MCP host staged and Codex configuration applied.' -ForegroundColor Green
+    } else {
+        Write-Host '[codex-mcp] MCP contract was already current; no host copy was required.' -ForegroundColor Green
+        Write-Host '[codex-mcp] Codex configuration apply completed.' -ForegroundColor Green
+    }
     Write-Host "[codex-mcp] Configuration: $configFullPath"
     Write-Host "[codex-mcp] MCP host: $hostFullPath"
+    Write-Host "[codex-mcp] MCP contract: $((Get-McpContract -Executable $hostFullPath).fingerprint)" -ForegroundColor DarkGray
     if ($restartCodexRequired) {
         Write-Host '[codex-mcp] Restart Codex to activate the approved MCP configuration or host.' -ForegroundColor Yellow
     } else {

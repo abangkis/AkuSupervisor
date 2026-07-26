@@ -82,8 +82,14 @@ function Show-McpHostGuidance {
         Write-Host "[watch] MCP host: $($mcpStatus.hostPath)" -ForegroundColor DarkGray
         return
     }
+    if ($mcpStatus.status -eq 'CORE_ONLY_CHANGE') {
+        Write-Host '[watch] MCP host status: CORE_ONLY_CHANGE (binary differs; agent contract is current).' -ForegroundColor Green
+        Write-Host "[watch] MCP contract: $($mcpStatus.sourceContractFingerprint)" -ForegroundColor DarkGray
+        Write-Host '[watch] MCP restaging and Codex restart are not required.' -ForegroundColor Green
+        return
+    }
 
-    Write-Host "[watch] MCP host status: $($mcpStatus.status) (does not match this development build)." -ForegroundColor Yellow
+    Write-Host "[watch] MCP host status: $($mcpStatus.status) (agent contract does not match this development build)." -ForegroundColor Yellow
     Write-Host "[watch] Expected immutable MCP host: $($mcpStatus.hostPath)" -ForegroundColor DarkGray
     Write-Host '[watch] Registration tools or schema exposed to agents may be stale.' -ForegroundColor Yellow
     Write-Host '[watch] After promoting the core build, refresh the dedicated host:' -ForegroundColor Yellow

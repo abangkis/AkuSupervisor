@@ -206,9 +206,20 @@ Before copying, staging performs a real registration MCP initialize, tool-list,
 and schema call against a deliberately absent profile. A candidate that couples
 discovery back to runtime configuration is rejected before the installed host
 is touched.
-The watcher and core promotion surface a read-only hash comparison as
-`CURRENT`, `OUTDATED`, or `MISSING`, preventing a stale dedicated host from
-remaining invisible after a schema-affecting build.
+The watcher and core promotion compare both binary identity and the deterministic
+agent-visible contract reported by `aku-supervisor mcp-contract --json`:
+
+- `CURRENT` means binary and contract match.
+- `CORE_ONLY_CHANGE` means only binary identity differs; the existing host is
+  reused and Codex does not need to restart.
+- `OUTDATED` means the contract differs or a legacy host cannot report it.
+- `MISSING` means the selected host file is absent.
+
+The contract covers initialization metadata, protocol versions, tools and input
+schemas, registration capabilities, and the full service schema. Package
+version is excluded. A manual contract revision covers agent-visible behavior
+that cannot be derived from those documents and must be incremented with such a
+semantic change.
 Old content-addressed hosts are not deleted automatically. This is deliberate:
 the filesystem cannot prove that every external agent has released a previous
 executable. Retention cleanup is therefore a separate future policy rather than
@@ -218,7 +229,10 @@ part of staging or promotion.
 primitive. Its default mode is read-only planning. It exposes only the current
 and proposed AkuSupervisor MCP sections, binds a short approval code to both
 config hashes plus the source hash and paths, rejects stale approval, preserves
-unrelated TOML entries, and replaces the selected Codex config atomically. Its
+unrelated TOML entries, and replaces the selected Codex config atomically. The
+approval binding also includes the MCP contract fingerprint. When the currently
+configured host reports the same contract, the installer keeps that path and
+does not copy the core binary. Its
 integration fixture uses temporary config and host paths, including a simulated
 concurrent edit, so verification never mutates the active Codex configuration.
 This is deliberately a host/workspace operation rather than an MCP tool: an MCP

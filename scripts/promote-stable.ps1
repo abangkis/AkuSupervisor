@@ -55,8 +55,14 @@ function Show-McpHostStatus {
         Write-Host "[release] MCP host: $($mcpStatus.hostPath)" -ForegroundColor DarkGray
         return
     }
+    if ($mcpStatus.status -eq 'CORE_ONLY_CHANGE') {
+        Write-Host '[release] MCP host status: CORE_ONLY_CHANGE (binary differs; agent contract is current).' -ForegroundColor Green
+        Write-Host "[release] MCP contract: $($mcpStatus.sourceContractFingerprint)" -ForegroundColor DarkGray
+        Write-Host '[release] MCP restaging and Codex restart are not required.' -ForegroundColor Green
+        return
+    }
 
-    Write-Host "[release] MCP host status: $($mcpStatus.status) (does not match stable core)." -ForegroundColor Yellow
+    Write-Host "[release] MCP host status: $($mcpStatus.status) (agent contract does not match stable core)." -ForegroundColor Yellow
     Write-Host "[release] Expected immutable MCP host: $($mcpStatus.hostPath)" -ForegroundColor DarkGray
     Write-Host '[release] Registration tools or schema exposed to agents may be stale.' -ForegroundColor Yellow
     Write-Host '[release] Run .\scripts\install-codex-mcp.ps1, apply its reviewed command, and restart Codex when instructed.' -ForegroundColor Yellow

@@ -16,6 +16,12 @@ fn installer() -> PathBuf {
         .join("install-codex-mcp.ps1")
 }
 
+fn status_script() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("scripts")
+        .join("get-mcp-host-status.ps1")
+}
+
 fn supervisor() -> &'static str {
     env!("CARGO_BIN_EXE_aku-supervisor")
 }
@@ -72,6 +78,26 @@ fn successful_json(output: &Output) -> Value {
         String::from_utf8_lossy(&output.stderr)
     );
     serde_json::from_slice(&output.stdout).expect("installer stdout should be one JSON document")
+}
+
+fn invoke_status(source: &Path, host: &Path) -> Output {
+    Command::new("powershell.exe")
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+        ])
+        .arg(status_script())
+        .arg("-SourcePath")
+        .arg(source)
+        .arg("-HostPath")
+        .arg(host)
+        .arg("-Json")
+        .output()
+        .expect("MCP host status should run")
 }
 
 #[test]
@@ -195,6 +221,89 @@ fn default_mcp_host_path_is_content_addressed_and_plan_only_is_read_only() {
         fs::read_to_string(&config).expect("read config"),
         "model = \"preserve-me\"\n"
     );
+}
+
+#[test]
+fn core_only_binary_change_reuses_the_configured_contract_without_restart() {
+    let directory = TestDirectory::create();
+    let config = directory.path.join("workspace").join("config.toml");
+    let host = directory.path.join("mcp").join("aku-supervisor-mcp.ps1");
+    fs::create_dir_all(host.parent().expect("host should have a parent"))
+        .expect("create host directory");
+    fs::create_dir_all(config.parent().expect("config should have a parent"))
+        .expect("create config directory");
+    fs::write(&config, "model = \"preserve-me\"\n").expect("write initial config");
+    let initial_plan = successful_json(&invoke_installer(&config, &host, &[]));
+    let target_sections = initial_plan["proposedTargetSections"]
+        .as_str()
+        .expect("proposed target sections");
+    fs::write(
+        &config,
+        format!("model = \"preserve-me\"\n\n{target_sections}\n"),
+    )
+    .expect("write installed-shape config");
+
+    let source_report = Command::new(supervisor())
+        .args(["mcp-contract", "--json"])
+        .output()
+        .expect("read source MCP contract");
+    let source_contract = successful_json(&source_report);
+    let fingerprint = source_contract["fingerprint"]
+        .as_str()
+        .expect("source fingerprint");
+    fs::write(
+        &host,
+        format!(
+            "param([Parameter(ValueFromRemainingArguments=$true)][string[]]$Rest)\n\
+             '{{\"schemaVersion\":1,\"fingerprint\":\"{fingerprint}\"}}'\n"
+        ),
+    )
+    .expect("write contract-compatible host fixture");
+
+    let status = successful_json(&invoke_status(Path::new(supervisor()), &host));
+    assert_eq!(status["status"], "CORE_ONLY_CHANGE");
+    assert_eq!(status["restartCodexRequired"], false);
+    assert_ne!(status["sourceHash"], status["hostHash"]);
+    assert_eq!(
+        status["sourceContractFingerprint"],
+        status["hostContractFingerprint"]
+    );
+
+    let before = fs::read_to_string(&config).expect("read config before plan");
+    let plan = successful_json(&invoke_installer_with_default_host(&config, &[]));
+    assert_eq!(plan["hostSelection"], "configured-contract-match");
+    assert_eq!(plan["hostStatus"], "CORE_ONLY_CHANGE");
+    assert_eq!(plan["configurationChanged"], false);
+    assert_eq!(plan["hostChanged"], false);
+    assert_eq!(plan["restartCodexRequired"], false);
+    assert_eq!(
+        PathBuf::from(plan["hostPath"].as_str().expect("host path")),
+        host
+    );
+    assert_eq!(
+        fs::read_to_string(&config).expect("read config after plan"),
+        before
+    );
+
+    fs::write(
+        &host,
+        "param([Parameter(ValueFromRemainingArguments=$true)][string[]]$Rest)\n\
+         '{\"schemaVersion\":1,\"fingerprint\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\"}'\n",
+    )
+    .expect("write contract-mismatched host fixture");
+    let outdated = successful_json(&invoke_status(Path::new(supervisor()), &host));
+    assert_eq!(outdated["status"], "OUTDATED");
+    assert_eq!(outdated["restartCodexRequired"], true);
+
+    let upgrade = successful_json(&invoke_installer_with_default_host(&config, &[]));
+    assert_eq!(
+        upgrade["hostSelection"],
+        "content-addressed-contract-upgrade"
+    );
+    assert_eq!(upgrade["hostStatus"], "MISSING");
+    assert_eq!(upgrade["configurationChanged"], true);
+    assert_eq!(upgrade["hostChanged"], true);
+    assert_eq!(upgrade["restartCodexRequired"], true);
 }
 
 #[test]

@@ -163,6 +163,22 @@ fn list_tools(params: &Value) -> Result<Value, McpFailure> {
     ] }))
 }
 
+pub(crate) fn contract_surface() -> Value {
+    let mut initialized = initialize(&json!({"protocolVersion": MCP_PROTOCOL_VERSION}))
+        .expect("the internal MCP contract initialize request is valid");
+    initialized["serverInfo"]
+        .as_object_mut()
+        .expect("MCP serverInfo is an object")
+        .remove("version");
+    let tools = list_tools(&json!({})).expect("the internal MCP tool-list request is valid");
+    json!({
+        "initialize": initialized,
+        "methods": ["initialize", "ping", "tools/list", "tools/call"],
+        "supportedProtocolVersions": SUPPORTED_PROTOCOL_VERSIONS,
+        "tools": tools["tools"]
+    })
+}
+
 fn tool(name: &str, title: &str, description: &str, input_schema: &Value) -> Value {
     json!({
         "name": name,

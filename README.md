@@ -386,11 +386,22 @@ long-lived agent may still be executing them. `stage-mcp-host.ps1` remains the
 lower-level maintenance primitive when config registration is already known to
 be correct.
 Ordinary core-only changes require no MCP restaging. The development watcher
-and stable promotion nevertheless report the dedicated host as `CURRENT`,
-`OUTDATED`, or `MISSING` by comparing it with the selected build. An outdated
-result is conservative: review the MCP impact, then use
-`install-codex-mcp.ps1` whenever agents must receive changed tools, schemas, or
-host-side configuration compatibility.
+and stable promotion report the dedicated host as:
+
+- `CURRENT`: binary and MCP contract are identical.
+- `CORE_ONLY_CHANGE`: binary differs but the agent-visible MCP contract is
+  identical; no restaging or Codex restart is required.
+- `OUTDATED`: the advertised contract differs or the selected legacy host
+  cannot report one.
+- `MISSING`: the selected host file is absent.
+
+`aku-supervisor mcp-contract --json` emits the deterministic contract document
+and SHA-256 fingerprint used by this decision. It includes initialize metadata,
+supported protocol versions, tool definitions and input schemas, registration
+capabilities, and the complete service schema, while deliberately excluding
+the package/binary version. Agent-visible behavior not represented by those
+documents must increment `MCP_CONTRACT_REVISION` in
+`src/adapters/mcp_contract.rs`.
 
 Generic service onboarding uses a second MCP identity, `registration-mcp`.
 It self-describes the full schema and workflow, creates revision-bound drafts,

@@ -140,6 +140,24 @@ fn list_tools(params: &Value) -> Result<Value, String> {
     ]}))
 }
 
+pub(crate) fn contract_surface() -> Value {
+    let mut initialized = initialize(&json!({"protocolVersion": MCP_PROTOCOL_VERSION}))
+        .expect("the internal registration MCP initialize request is valid");
+    initialized["serverInfo"]
+        .as_object_mut()
+        .expect("registration MCP serverInfo is an object")
+        .remove("version");
+    let tools =
+        list_tools(&json!({})).expect("the internal registration MCP tool-list request is valid");
+    json!({
+        "initialize": initialized,
+        "methods": ["initialize", "ping", "tools/list", "tools/call"],
+        "tools": tools["tools"],
+        "capabilities": super::registration::capability_contract(),
+        "serviceSchema": RegistrationAuthority::schema()
+    })
+}
+
 fn tool(
     name: &str,
     title: &str,
