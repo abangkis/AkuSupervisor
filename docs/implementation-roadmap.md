@@ -877,6 +877,31 @@ Gate 10:
 - an open stream does not block `status`, `start`, `stop`, or `restart`; and
 - no Windows type appears in the hub, protocol, or CLI implementation.
 
+### Phase 11 - Runtime instance authority and remote shutdown
+
+Status: **Implemented**
+
+- [x] publish authenticated runtime identity with PID, executable, mode,
+  watcher PID, fingerprint, version, address, and instance ID;
+- [x] retain one portable OS-released file lock for Supervisor ownership;
+- [x] retain a watcher-owned lease across development child handoffs;
+- [x] reject stable or foreign development instances while that watcher lease
+  is active;
+- [x] add authenticated, request-ID-bound `supervisor shutdown`;
+- [x] route remote shutdown through ordinary owned-service cleanup and audit;
+- [x] make `dev.ps1` distinguish its exited child from a replacement process
+  that later owns the control port; and
+- [ ] run standard-library lock interoperability and remote-shutdown fixtures
+  on native Linux and macOS implementations.
+
+Gate 11:
+
+- stale JSON metadata never grants ownership without its live OS lock;
+- abrupt process exit releases authority without manual lock-file deletion;
+- no remote request bypasses owned-service cleanup;
+- a conflicting shutdown request fails closed; and
+- watcher handoff cannot be stolen during the temporary control-port gap.
+
 ## 5. Cross-phase testing strategy
 
 Every phase must preserve:

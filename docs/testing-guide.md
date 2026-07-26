@@ -414,6 +414,12 @@ and `Cargo.lock`, with a short debounce. Its rebuild sequence is:
 7. copy the staged build over the constant development executable;
 8. launch it and restore the previously running services.
 
+The watcher holds `.runtime/development-watcher.lock` for its entire lifetime
+and publishes `.runtime/development-watcher.json`. Every development child must
+present the matching watcher ID and PID inherited through its environment.
+Consequently, another watcher or a stable Supervisor cannot take ownership
+during the brief port gap between development instances.
+
 The startup and post-rebuild banner distinguishes the two executable roles:
 
 - `Active executable` is always `target\dev\aku-supervisor.exe` while the
@@ -437,8 +443,17 @@ verified toolchain instead of merely trusting that a rustup proxy exists.
 The signal exists only when the watcher sets
 `AKU_SUPERVISOR_DEV_SHUTDOWN_FILE`. AkuSupervisor accepts only an absolute path
 whose filename is exactly `shutdown-request`, consumes at most 1 KiB, and uses
-the ordinary cleanup path. No development shutdown HTTP endpoint or arbitrary
-command execution is exposed.
+the ordinary cleanup path. This private watcher handoff is separate from the
+authenticated public control command:
+
+```powershell
+.\target\dev\aku-supervisor.exe supervisor shutdown `
+  --reason "return ownership to development watcher" `
+  --request-id "supervisor-shutdown-001"
+```
+
+The remote command exposes no arbitrary command execution. It accepts one
+bounded shutdown intent and routes it through the same owned-service cleanup.
 
 Press Ctrl+C in the watcher terminal to request the same graceful shutdown. If
 cleanup exceeds the configured timeout, the watcher refuses to kill the
@@ -451,6 +466,14 @@ read/write sharing before replacing it. If an older, portless Supervisor still
 holds the image, startup fails closed and reports the matching PID when Windows
 allows its path to be inspected. Stop only that confirmed PID manually, then
 start the watcher again; the script never force-kills it automatically.
+
+Runtime ownership is additionally held by
+`.runtime/supervisor-instance.lock`; its sibling
+`.runtime/supervisor-instance.json` contains non-secret diagnostics. If the
+watched PID exits and another instance takes the port, `dev.ps1` queries
+`instance-status --json` and reports both identities instead of calling the
+event a generic crash. OS file locks are released automatically after abrupt
+exit, so stale JSON cannot retain authority.
 
 An existing read-only MCP proxy may legitimately hold the development image.
 After compiling, the watcher compares SHA-256 hashes: if staged and development

@@ -291,10 +291,18 @@ The implementation must test npm's Windows process chain (`npm.cmd -> cmd.exe ->
 
 ### 10.4 Supervisor shutdown
 
-On Ctrl+C, interactive `quit`, input closure, or watcher termination, the
-required behavior is to stop every child service started by the current
-supervisor instance, prove its owned process trees are empty, and only then
-exit. This is the foreground-owner contract, not a configurable default.
+On Ctrl+C, interactive `quit`, input closure, watcher termination, or an
+authenticated `supervisor shutdown` request, the required behavior is to stop
+every child service started by the current supervisor instance, prove its
+owned process trees are empty, and only then exit. All entry points converge
+on this foreground-owner contract; remote shutdown is not an abrupt
+process-termination API.
+
+Remote shutdown requires the control bearer token, an explicit bounded reason,
+actor identity, and request ID. The server acknowledges the request before
+closing its listener, then records the supplied actor and reason on each owned
+service cleanup event. One request is single-flight and idempotent; a
+conflicting request ID fails with `shutdown_in_progress`.
 
 A successful development watcher handoff uses the same cleanup mechanism for
 the old instance and then explicitly restores the services observed running
@@ -353,6 +361,7 @@ File watching remains the responsibility of the service command, such as Node `-
 
 ```text
 GET  /v1/health
+GET  /v1/instance
 GET  /v1/services
 GET  /v1/services/:id
 GET  /v1/events?after=<sequence>&limit=<n>
@@ -360,7 +369,14 @@ GET  /v1/registry
 POST /v1/services/:id/start
 POST /v1/services/:id/stop
 POST /v1/services/:id/restart
+POST /v1/supervisor/shutdown
 ```
+
+`GET /v1/instance` and `POST /v1/supervisor/shutdown` require the bearer token.
+The instance response identifies the PID, executable, stable/development mode,
+watcher PID when present, config fingerprint, control address, version, and
+instance ID. This is the authoritative diagnostic response when a control port
+is active.
 
 ### 12.3 Read-only MCP adapter
 

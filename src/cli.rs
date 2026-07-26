@@ -18,11 +18,13 @@ Usage:\n\
   aku-supervisor run --config <path>\n\
   aku-supervisor status [--json] [--config <path>]\n\
   aku-supervisor simple-status [--config <path>]\n\
+  aku-supervisor instance-status [--json] [--config <path>]\n\
   aku-supervisor registry-status [--json] [--config <path>]\n\
   aku-supervisor events [--after <sequence>] [--limit <n>] [--json] [--config <path>]\n\
   aku-supervisor logs <service> [--stream <stdout|stderr>] [--tail <n>] [--json] [--config <path>]\n\
   aku-supervisor live-logs <service> [--stream <both|stdout|stderr>] [--tail <n>] [--json] [--config <path>]\n\
   aku-supervisor <start|stop|restart> <service> [--reason <text>] [--actor <user|codex>] [--request-id <id>] [--json] [--config <path>]\n\
+  aku-supervisor supervisor shutdown --reason <text> --request-id <id> [--actor <user|codex>] [--json] [--config <path>]\n\
   aku-supervisor bridge reload --reason <text> --request-id <id> [--actor <user|codex>] [--wait|--no-wait] [--json] [--config <path>]\n\
   aku-supervisor bridge status --request-id <id> [--json] [--config <path>]\n\
   aku-supervisor bridge validate --request-id <id> [--actor <user|codex>] [--config <path>]\n\
@@ -86,6 +88,10 @@ enum RemoteCommand {
     SimpleStatus {
         config: Option<PathBuf>,
     },
+    InstanceStatus {
+        config: Option<PathBuf>,
+        json: bool,
+    },
     RegistryStatus {
         config: Option<PathBuf>,
         json: bool,
@@ -121,6 +127,13 @@ enum RemoteCommand {
         json: bool,
     },
     BridgeStatus {
+        request_id: String,
+        config: Option<PathBuf>,
+        json: bool,
+    },
+    SupervisorShutdown {
+        reason: String,
+        actor: ApiActor,
         request_id: String,
         config: Option<PathBuf>,
         json: bool,
@@ -220,6 +233,7 @@ fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, Strin
         [registration, rest @ ..] if registration == "registration" => parse_registration(rest),
         [status, rest @ ..] if status == "status" => parse_remote_status(rest),
         [status, rest @ ..] if status == "simple-status" => parse_simple_status(rest),
+        [status, rest @ ..] if status == "instance-status" => parse_instance_status(rest),
         [status, rest @ ..] if status == "registry-status" => parse_registry_status(rest),
         [events, rest @ ..] if events == "events" => parse_remote_events(rest),
         [logs, rest @ ..] if logs == "logs" => parse_remote_logs(rest),
@@ -232,6 +246,11 @@ fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, Strin
         }
         [bridge, validate, rest @ ..] if bridge == "bridge" && validate == "validate" => {
             parse_bridge_validate(rest)
+        }
+        [supervisor, shutdown, rest @ ..]
+            if supervisor == "supervisor" && shutdown == "shutdown" =>
+        {
+            parse_supervisor_shutdown(rest)
         }
         [action, rest @ ..] if action == "start" || action == "stop" || action == "restart" => {
             parse_remote_mutation(action, rest, true)
@@ -519,6 +538,40 @@ fn parse_simple_status(arguments: &[OsString]) -> Result<Command, String> {
         );
     }
     Ok(Command::Remote(RemoteCommand::SimpleStatus { config }))
+}
+
+fn parse_instance_status(arguments: &[OsString]) -> Result<Command, String> {
+    let (config, json) = parse_output_options(arguments)?;
+    Ok(Command::Remote(RemoteCommand::InstanceStatus {
+        config,
+        json,
+    }))
+}
+
+fn parse_supervisor_shutdown(arguments: &[OsString]) -> Result<Command, String> {
+    let mut mutation_arguments = vec![OsString::from("supervisor")];
+    mutation_arguments.extend_from_slice(arguments);
+    let parsed = parse_remote_mutation(&OsString::from("stop"), &mutation_arguments, false)?;
+    let Command::Remote(RemoteCommand::Mutate {
+        reason,
+        actor,
+        request_id,
+        config,
+        json,
+        ..
+    }) = parsed
+    else {
+        unreachable!("synthetic lifecycle parse must return a mutation")
+    };
+    Ok(Command::Remote(RemoteCommand::SupervisorShutdown {
+        reason,
+        actor,
+        request_id: request_id.ok_or_else(|| {
+            "supervisor shutdown requires --request-id for idempotency and audit".to_owned()
+        })?,
+        config,
+        json,
+    }))
 }
 
 fn parse_registry_status(arguments: &[OsString]) -> Result<Command, String> {
@@ -1300,21 +1353,25 @@ fn remote_request(command: RemoteCommand) -> Result<(), String> {
     let explicit_config = match &command {
         RemoteCommand::Status { config, .. }
         | RemoteCommand::SimpleStatus { config }
+        | RemoteCommand::InstanceStatus { config, .. }
         | RemoteCommand::RegistryStatus { config, .. }
         | RemoteCommand::Events { config, .. }
         | RemoteCommand::Logs { config, .. }
         | RemoteCommand::Mutate { config, .. }
         | RemoteCommand::BridgeReload { config, .. }
-        | RemoteCommand::BridgeStatus { config, .. } => config.clone(),
+        | RemoteCommand::BridgeStatus { config, .. }
+        | RemoteCommand::SupervisorShutdown { config, .. } => config.clone(),
     };
     let json_output = match &command {
         RemoteCommand::Status { json, .. }
         | RemoteCommand::RegistryStatus { json, .. }
+        | RemoteCommand::InstanceStatus { json, .. }
         | RemoteCommand::Events { json, .. }
         | RemoteCommand::Logs { json, .. }
         | RemoteCommand::Mutate { json, .. }
         | RemoteCommand::BridgeReload { json, .. }
-        | RemoteCommand::BridgeStatus { json, .. } => *json,
+        | RemoteCommand::BridgeStatus { json, .. }
+        | RemoteCommand::SupervisorShutdown { json, .. } => *json,
         RemoteCommand::SimpleStatus { .. } => false,
     };
     let simple_status = matches!(&command, RemoteCommand::SimpleStatus { .. });
@@ -1414,6 +1471,7 @@ fn lifecycle_response_timeout(
     ))
 }
 
+#[allow(clippy::too_many_lines)]
 fn prepare_remote_request(
     command: RemoteCommand,
 ) -> (
@@ -1426,6 +1484,9 @@ fn prepare_remote_request(
     match command {
         RemoteCommand::Status { .. } | RemoteCommand::SimpleStatus { .. } => {
             ("GET", "/v1/services".to_owned(), None, None, true)
+        }
+        RemoteCommand::InstanceStatus { .. } => {
+            ("GET", "/v1/instance".to_owned(), None, None, true)
         }
         RemoteCommand::RegistryStatus { .. } => {
             ("GET", "/v1/registry".to_owned(), None, None, true)
@@ -1505,6 +1566,22 @@ fn prepare_remote_request(
             "GET",
             format!("/v1/cooperative-actions/aku-bridge/requests/{request_id}"),
             None,
+            None,
+            true,
+        ),
+        RemoteCommand::SupervisorShutdown {
+            reason,
+            actor,
+            request_id,
+            ..
+        } => (
+            "POST",
+            "/v1/supervisor/shutdown".to_owned(),
+            Some(serde_json::json!({
+                "actor": actor,
+                "reason": reason,
+                "requestId": request_id
+            })),
             None,
             true,
         ),
@@ -1926,6 +2003,47 @@ mod tests {
             }))
         );
         assert!(parse(args(&["start", "api", "--actor", "codex"])).is_err());
+    }
+
+    #[test]
+    fn supervisor_shutdown_requires_explicit_auditable_input() {
+        assert!(parse(args(&["supervisor", "shutdown"])).is_err());
+        assert!(
+            parse(args(&[
+                "supervisor",
+                "shutdown",
+                "--reason",
+                "replace orphan",
+            ]))
+            .is_err()
+        );
+        assert_eq!(
+            parse(args(&[
+                "supervisor",
+                "shutdown",
+                "--reason",
+                "replace orphan",
+                "--actor",
+                "codex",
+                "--request-id",
+                "supervisor-shutdown-1",
+                "--json",
+            ])),
+            Ok(Command::Remote(RemoteCommand::SupervisorShutdown {
+                reason: "replace orphan".to_owned(),
+                actor: ApiActor::Codex,
+                request_id: "supervisor-shutdown-1".to_owned(),
+                config: None,
+                json: true,
+            }))
+        );
+        assert_eq!(
+            parse(args(&["instance-status", "--json"])),
+            Ok(Command::Remote(RemoteCommand::InstanceStatus {
+                config: None,
+                json: true,
+            }))
+        );
     }
 
     #[test]

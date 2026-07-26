@@ -17,8 +17,12 @@ use crate::adapters::development_shutdown::{DevelopmentShutdown, DevelopmentShut
 use crate::adapters::http_health::LoopbackTransportHealthProbe;
 use crate::adapters::journal::{AuditedControl, FileJournal, FileJournalError};
 use crate::adapters::registration_events::RegistrationAuditTail;
+use crate::adapters::runtime_instance::{
+    RuntimeInstance, RuntimeInstanceError, RuntimeInstanceLease, RuntimeMode,
+};
 use crate::adapters::runtime_token::{RuntimeToken, RuntimeTokenError, resolve_token_path};
 use crate::adapters::service_logs::ServiceLogStore;
+use crate::adapters::supervisor_shutdown::{SupervisorShutdown, SupervisorShutdownError};
 use crate::application::{
     ControlAction, ControlMutationOutcome, CooperativeActionError, RegistryBuildError,
     RegistryReconciliationStatus, ServiceSnapshot, SupervisorControl,
@@ -62,6 +66,23 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
     let runtime_directory = token_path
         .parent()
         .ok_or_else(|| ForegroundError::RuntimeLayout(token_path.clone()))?;
+    let development_shutdown =
+        DevelopmentShutdown::from_environment().map_err(ForegroundError::DevelopmentShutdown)?;
+    let mode = if development_shutdown.request_path().is_some() {
+        RuntimeMode::DevelopmentWatcher
+    } else {
+        RuntimeMode::Stable
+    };
+    let instance = RuntimeInstance::current(
+        mode,
+        fingerprint.clone(),
+        &config.control.host,
+        config.control.port,
+    )
+    .map_err(ForegroundError::RuntimeInstance)?;
+    let instance_lease = RuntimeInstanceLease::acquire(runtime_directory, instance)
+        .map_err(ForegroundError::RuntimeInstance)?;
+    let instance = Arc::new(instance_lease.identity().clone());
     let journal_path = runtime_directory.join("supervisor.jsonl");
     let runtime_services_directory = runtime_directory.join("services");
     let journal = Arc::new(
@@ -84,8 +105,7 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
         .map_err(ForegroundError::RegistryBuild)?,
     );
     let shutdown = install_shutdown().map_err(ForegroundError::Console)?;
-    let development_shutdown =
-        DevelopmentShutdown::from_environment().map_err(ForegroundError::DevelopmentShutdown)?;
+    let supervisor_shutdown = Arc::new(SupervisorShutdown::default());
     let registry_control: Arc<dyn SupervisorControl> = registry.clone();
     let audited = Arc::new(
         AuditedControl::new(registry_control, Arc::clone(&journal), fingerprint.clone())
@@ -107,6 +127,8 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
         journal,
         Arc::clone(&logs),
         Arc::clone(&reconciliation),
+        Arc::clone(&instance),
+        Arc::clone(&supervisor_shutdown),
     )
     .map_err(ForegroundError::ControlApi)?;
     let (mut config_monitor, mut registration_monitor, mut service_monitor) =
@@ -131,6 +153,8 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
         &cooperative_audit_path,
         &runtime_services_directory,
         development_shutdown.request_path(),
+        instance.as_ref(),
+        instance_lease.path(),
     );
     print_status(control.as_ref());
     if development_shutdown.request_path().is_some() {
@@ -141,7 +165,12 @@ pub fn run(resolved_config: &ResolvedConfigPath) -> Result<(), ForegroundError> 
         println!("{INTERACTIVE_HELP}");
     }
 
-    let foreground_result = wait_for_shutdown(control.as_ref(), &shutdown, &development_shutdown);
+    let foreground_result = wait_for_shutdown(
+        control.as_ref(),
+        &shutdown,
+        &development_shutdown,
+        supervisor_shutdown.as_ref(),
+    );
     let shutdown_cause = foreground_result.as_ref().map_or_else(
         |_| ShutdownCause::recovery("foreground shutdown after control-loop failure"),
         Clone::clone,
@@ -545,6 +574,7 @@ fn wait_for_shutdown(
     control: &dyn SupervisorControl,
     shutdown: &HostShutdown,
     development_shutdown: &DevelopmentShutdown,
+    supervisor_shutdown: &SupervisorShutdown,
 ) -> Result<ShutdownCause, ForegroundError> {
     let input_receiver = if development_shutdown.request_path().is_none() {
         let (input_sender, input_receiver) = mpsc::channel();
@@ -555,6 +585,20 @@ fn wait_for_shutdown(
     };
 
     loop {
+        match supervisor_shutdown.accepted() {
+            Ok(Some(request)) => {
+                println!(
+                    "\nAuthenticated Supervisor shutdown requested: {}",
+                    request.request_id
+                );
+                return Ok(ShutdownCause {
+                    actor: request.actor,
+                    reason: request.reason,
+                });
+            }
+            Ok(None) => {}
+            Err(error) => return Err(ForegroundError::SupervisorShutdown(error)),
+        }
         if shutdown.is_requested() {
             println!("\nConsole shutdown requested.");
             return Ok(ShutdownCause::user(
@@ -599,12 +643,22 @@ fn print_startup(
     cooperative_audit_path: &std::path::Path,
     services_directory: &std::path::Path,
     development_shutdown_path: Option<&std::path::Path>,
+    instance: &RuntimeInstance,
+    instance_path: &std::path::Path,
 ) {
     println!("AkuSupervisor {}", crate::VERSION);
     println!("Configuration: {}", resolved_config.path().display());
     println!("Configuration source: {}", resolved_config.source());
     println!("Fingerprint: {fingerprint}");
     println!("Control API: http://{address}");
+    println!("Supervisor instance: {}", instance.instance_id);
+    println!("Supervisor PID: {}", instance.process_id);
+    println!("Supervisor executable: {}", instance.executable.display());
+    println!("Supervisor runtime mode: {:?}", instance.mode);
+    if let Some(watcher_process_id) = instance.watcher_process_id {
+        println!("Development watcher PID: {watcher_process_id}");
+    }
+    println!("Runtime instance lease: {}", instance_path.display());
     if config.control.mcp.enabled {
         println!(
             "Read-only MCP: http://{address}{}",
@@ -922,12 +976,14 @@ pub enum ForegroundError {
     Config(ConfigError),
     RegistryBuild(RegistryBuildError),
     RuntimeToken(RuntimeTokenError),
+    RuntimeInstance(RuntimeInstanceError),
     TokenPermissions(HostTokenPermissionError),
     Journal(FileJournalError),
     CooperativeAction(CooperativeActionError),
     ControlApi(ControlHttpError),
     Console(HostShutdownError),
     DevelopmentShutdown(DevelopmentShutdownError),
+    SupervisorShutdown(SupervisorShutdownError),
     Input(io::Error),
     Cleanup(Vec<String>),
 }
@@ -946,12 +1002,14 @@ impl fmt::Display for ForegroundError {
             Self::Config(error) => error.fmt(formatter),
             Self::RegistryBuild(error) => error.fmt(formatter),
             Self::RuntimeToken(error) => error.fmt(formatter),
+            Self::RuntimeInstance(error) => error.fmt(formatter),
             Self::TokenPermissions(error) => error.fmt(formatter),
             Self::Journal(error) => error.fmt(formatter),
             Self::CooperativeAction(error) => error.fmt(formatter),
             Self::ControlApi(error) => error.fmt(formatter),
             Self::Console(error) => error.fmt(formatter),
             Self::DevelopmentShutdown(error) => error.fmt(formatter),
+            Self::SupervisorShutdown(error) => error.fmt(formatter),
             Self::Input(error) => write!(formatter, "interactive input failed: {error}"),
             Self::Cleanup(failures) => {
                 write!(formatter, "service cleanup failed: {}", failures.join("; "))

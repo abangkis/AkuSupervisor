@@ -20,10 +20,15 @@ use crate::domain::{Actor, Reason};
 use super::config::McpConfig;
 use super::journal::FileJournal;
 use super::mcp::{self, McpResponse};
+use super::runtime_instance::RuntimeInstance;
 use super::runtime_token::RuntimeToken;
 use super::service_logs::{
     LiveLogCursor, LiveLogEvent, LiveLogSelection, LiveLogSubscription, LogStream, ServiceLogError,
     ServiceLogStore,
+};
+use super::supervisor_shutdown::{
+    SupervisorShutdown, SupervisorShutdownError, SupervisorShutdownOutcome,
+    SupervisorShutdownRequest,
 };
 
 const MAX_HEADER_BYTES: usize = 16 * 1024;
@@ -74,6 +79,8 @@ impl ControlHttpServer {
         journal: Arc<FileJournal>,
         logs: Arc<ServiceLogStore>,
         reconciliation: Arc<RegistryReconciliationStatus>,
+        instance: Arc<RuntimeInstance>,
+        supervisor_shutdown: Arc<SupervisorShutdown>,
     ) -> Result<Self, ControlHttpError> {
         let listener = TcpListener::bind((host, port)).map_err(ControlHttpError::Bind)?;
         listener
@@ -97,6 +104,8 @@ impl ControlHttpServer {
                     &journal,
                     &logs,
                     &reconciliation,
+                    &instance,
+                    &supervisor_shutdown,
                     &thread_stop,
                 )
             })
@@ -158,6 +167,8 @@ fn serve(
     journal: &FileJournal,
     logs: &Arc<ServiceLogStore>,
     reconciliation: &RegistryReconciliationStatus,
+    instance: &RuntimeInstance,
+    supervisor_shutdown: &SupervisorShutdown,
     stop: &Arc<AtomicBool>,
 ) -> Result<(), ControlHttpError> {
     let mut idempotency = IdempotencyStore::default();
@@ -175,6 +186,8 @@ fn serve(
                     journal,
                     logs,
                     reconciliation,
+                    instance,
+                    supervisor_shutdown,
                     &mut idempotency,
                     stop,
                 ) {
@@ -201,6 +214,8 @@ fn handle_connection(
     journal: &FileJournal,
     logs: &Arc<ServiceLogStore>,
     reconciliation: &RegistryReconciliationStatus,
+    instance: &RuntimeInstance,
+    supervisor_shutdown: &SupervisorShutdown,
     idempotency: &mut IdempotencyStore,
     stop: &Arc<AtomicBool>,
 ) -> Result<(), RequestError> {
@@ -259,6 +274,8 @@ fn handle_connection(
         journal,
         logs,
         reconciliation,
+        instance,
+        supervisor_shutdown,
         idempotency,
     );
     write_response(stream, &response).map_err(RequestError::Write)
@@ -317,6 +334,8 @@ fn route(
     journal: &FileJournal,
     logs: &ServiceLogStore,
     reconciliation: &RegistryReconciliationStatus,
+    instance: &RuntimeInstance,
+    supervisor_shutdown: &SupervisorShutdown,
     idempotency: &mut IdempotencyStore,
 ) -> Response {
     if request.target == mcp::MCP_ENDPOINT {
@@ -338,6 +357,13 @@ fn route(
             Ok(services) => json_response(200, &json!({ "services": services })),
             Err(error) => error_response(500, "internal", error.message()),
         };
+    }
+
+    if request.method == "GET" && request.target == "/v1/instance" {
+        if !request_is_authorized(request, token) {
+            return error_response(401, "unauthorized", "valid bearer token required");
+        }
+        return json_response(200, &json!({ "instance": instance }));
     }
 
     if request.method == "GET" && request.target == "/v1/registry" {
@@ -434,7 +460,15 @@ fn route(
     }
 
     if request.method == "POST" {
-        return route_mutation(request, token, control, cooperative, idempotency);
+        return route_mutation(
+            request,
+            token,
+            control,
+            cooperative,
+            supervisor_shutdown,
+            instance,
+            idempotency,
+        );
     }
 
     error_response(404, "not_found", "route not found")
@@ -595,11 +629,14 @@ fn parse_events_target(target: &str) -> Option<(u64, usize)> {
     Some((after, limit))
 }
 
+#[allow(clippy::too_many_lines)]
 fn route_mutation(
     request: &HttpRequest,
     token: &RuntimeToken,
     control: &dyn SupervisorControl,
     cooperative: Option<&CooperativeOperationManager>,
+    supervisor_shutdown: &SupervisorShutdown,
+    instance: &RuntimeInstance,
     idempotency: &mut IdempotencyStore,
 ) -> Response {
     let Some(candidate) = request
@@ -638,6 +675,43 @@ fn route_mutation(
             reason,
             mutation.request_id.as_deref(),
         );
+    }
+
+    if request.target == "/v1/supervisor/shutdown" {
+        let Some(request_id) = mutation.request_id else {
+            return error_response(
+                400,
+                "request_id_required",
+                "Supervisor shutdown requires requestId for idempotency and audit",
+            );
+        };
+        return match supervisor_shutdown.request(SupervisorShutdownRequest {
+            actor: mutation.actor.domain_actor(),
+            reason,
+            request_id: request_id.clone(),
+        }) {
+            Ok(outcome) => json_response(
+                202,
+                &json!({
+                    "status": match outcome {
+                        SupervisorShutdownOutcome::Accepted => "accepted",
+                        SupervisorShutdownOutcome::AlreadyAccepted => "already_accepted",
+                    },
+                    "requestId": request_id,
+                    "instance": instance,
+                }),
+            ),
+            Err(SupervisorShutdownError::AlreadyInProgress) => error_response(
+                409,
+                "shutdown_in_progress",
+                "a different Supervisor shutdown request is already active",
+            ),
+            Err(SupervisorShutdownError::LockPoisoned) => error_response(
+                500,
+                "shutdown_registry_unavailable",
+                "Supervisor shutdown registry is unavailable",
+            ),
+        };
     }
 
     if let Some(request_id) = mutation.request_id.as_deref() {
@@ -1443,6 +1517,7 @@ impl std::error::Error for ControlClientError {}
 mod tests {
     use std::sync::Mutex;
 
+    use crate::adapters::runtime_instance::{RuntimeInstance, RuntimeMode};
     use crate::adapters::service_logs::LiveLogEventKind;
     use crate::application::{
         ControlError, ControlMutationOutcome, ControlMutationResult, CooperativeActionError,
@@ -1450,6 +1525,21 @@ mod tests {
     };
 
     use super::*;
+
+    fn test_instance() -> RuntimeInstance {
+        RuntimeInstance {
+            schema_version: 1,
+            instance_id: "test-instance".to_owned(),
+            process_id: std::process::id(),
+            executable: "aku-supervisor".into(),
+            mode: RuntimeMode::Stable,
+            watcher_process_id: None,
+            started_at_unix_ms: 1,
+            version: crate::VERSION.to_owned(),
+            config_fingerprint: "sha256:test".to_owned(),
+            control_api: "http://127.0.0.1:0".to_owned(),
+        }
+    }
 
     #[test]
     fn client_retry_taxonomy_excludes_rejections() {
@@ -1554,6 +1644,8 @@ mod tests {
             journal,
             Arc::clone(&logs),
             reconciliation,
+            Arc::new(test_instance()),
+            Arc::new(SupervisorShutdown::default()),
         )
         .expect("start control server");
 
@@ -1708,11 +1800,111 @@ mod tests {
             &journal,
             &logs,
             &reconciliation,
+            &test_instance(),
+            &SupervisorShutdown::default(),
             &mut IdempotencyStore::default(),
         );
 
         assert_eq!(response.status, 401);
         assert_eq!(*control.mutations.lock().expect("mutation lock"), 0);
+        std::fs::remove_file(token_path).ok();
+        std::fs::remove_file(journal_path).ok();
+    }
+
+    #[test]
+    fn supervisor_identity_and_shutdown_require_authentication_and_are_idempotent() {
+        let token_path = std::env::temp_dir().join(format!(
+            "aku-supervisor-shutdown-token-{}",
+            std::process::id()
+        ));
+        std::fs::remove_file(&token_path).ok();
+        let token =
+            RuntimeToken::load_or_create(&token_path, || Ok("a".repeat(64))).expect("create token");
+        let journal_path = token_path.with_extension("jsonl");
+        std::fs::remove_file(&journal_path).ok();
+        let journal =
+            FileJournal::open(&journal_path, Vec::<String>::new()).expect("create test journal");
+        let logs = ServiceLogStore::new(&std::env::temp_dir(), ["api".to_owned()]);
+        let control = FakeControl::default();
+        let reconciliation = RegistryReconciliationStatus::new("sha256:test".to_owned());
+        let instance = test_instance();
+        let shutdown = SupervisorShutdown::default();
+        let mut idempotency = IdempotencyStore::default();
+        let request = |authorization: Option<String>, request_id: &str| HttpRequest {
+            method: "POST".to_owned(),
+            target: "/v1/supervisor/shutdown".to_owned(),
+            authorization,
+            accept: None,
+            content_type: Some("application/json".to_owned()),
+            origin: None,
+            mcp_protocol_version: None,
+            body: serde_json::to_vec(&json!({
+                "actor": "codex",
+                "reason": "replace orphaned Supervisor",
+                "requestId": request_id
+            }))
+            .expect("serialize shutdown request"),
+        };
+        let route_request = |request: &HttpRequest,
+                             shutdown: &SupervisorShutdown,
+                             idempotency: &mut IdempotencyStore| {
+            route(
+                request,
+                &token,
+                &McpConfig::default(),
+                &control,
+                None,
+                &journal,
+                &logs,
+                &reconciliation,
+                &instance,
+                shutdown,
+                idempotency,
+            )
+        };
+
+        let identity = HttpRequest {
+            method: "GET".to_owned(),
+            target: "/v1/instance".to_owned(),
+            authorization: Some(format!("Bearer {}", "a".repeat(64))),
+            accept: None,
+            content_type: None,
+            origin: None,
+            mcp_protocol_version: None,
+            body: Vec::new(),
+        };
+        let identity_response = route_request(&identity, &shutdown, &mut idempotency);
+        assert_eq!(identity_response.status, 200);
+        let identity_payload: Value =
+            serde_json::from_slice(&identity_response.body).expect("identity JSON");
+        assert_eq!(identity_payload["instance"]["instanceId"], "test-instance");
+
+        let unauthorized = route_request(&request(None, "shutdown-1"), &shutdown, &mut idempotency);
+        assert_eq!(unauthorized.status, 401);
+        assert!(shutdown.accepted().expect("read shutdown").is_none());
+
+        let authorized_header = Some(format!("Bearer {}", "a".repeat(64)));
+        let accepted = route_request(
+            &request(authorized_header.clone(), "shutdown-1"),
+            &shutdown,
+            &mut idempotency,
+        );
+        assert_eq!(accepted.status, 202);
+        let replayed = route_request(
+            &request(authorized_header.clone(), "shutdown-1"),
+            &shutdown,
+            &mut idempotency,
+        );
+        let replayed_payload: Value =
+            serde_json::from_slice(&replayed.body).expect("replayed shutdown JSON");
+        assert_eq!(replayed_payload["status"], "already_accepted");
+        let conflict = route_request(
+            &request(authorized_header, "shutdown-2"),
+            &shutdown,
+            &mut idempotency,
+        );
+        assert_eq!(conflict.status, 409);
+
         std::fs::remove_file(token_path).ok();
         std::fs::remove_file(journal_path).ok();
     }
@@ -1763,6 +1955,8 @@ mod tests {
             &journal,
             &logs,
             &reconciliation,
+            &test_instance(),
+            &SupervisorShutdown::default(),
             &mut IdempotencyStore::default(),
         );
         assert_eq!(unauthorized.status, 401);
@@ -1776,6 +1970,8 @@ mod tests {
             &journal,
             &logs,
             &reconciliation,
+            &test_instance(),
+            &SupervisorShutdown::default(),
             &mut IdempotencyStore::default(),
         );
         assert_eq!(authorized.status, 200);
@@ -1787,6 +1983,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn authenticated_bridge_reload_uses_the_narrow_cooperative_boundary() {
         let token_path = std::env::temp_dir().join(format!(
             "aku-supervisor-bridge-token-{}",
@@ -1824,6 +2021,8 @@ mod tests {
             &journal,
             &logs,
             &reconciliation,
+            &test_instance(),
+            &SupervisorShutdown::default(),
             &mut IdempotencyStore::default(),
         );
 
@@ -1855,6 +2054,8 @@ mod tests {
             &journal,
             &logs,
             &reconciliation,
+            &test_instance(),
+            &SupervisorShutdown::default(),
             &mut IdempotencyStore::default(),
         );
         assert_eq!(status.status, 200);
@@ -1883,6 +2084,8 @@ mod tests {
             &journal,
             &logs,
             &reconciliation,
+            &test_instance(),
+            &SupervisorShutdown::default(),
             &mut IdempotencyStore::default(),
         );
         assert_eq!(active.status, 200);
@@ -1929,6 +2132,8 @@ mod tests {
             &journal,
             &logs,
             &reconciliation,
+            &test_instance(),
+            &SupervisorShutdown::default(),
             &mut idempotency,
         );
         let second = route(
@@ -1940,6 +2145,8 @@ mod tests {
             &journal,
             &logs,
             &reconciliation,
+            &test_instance(),
+            &SupervisorShutdown::default(),
             &mut idempotency,
         );
         let conflicting = HttpRequest {
@@ -1955,6 +2162,8 @@ mod tests {
             &journal,
             &logs,
             &reconciliation,
+            &test_instance(),
+            &SupervisorShutdown::default(),
             &mut idempotency,
         );
 

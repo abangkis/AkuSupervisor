@@ -27,7 +27,9 @@ fn shared_control_plane_does_not_import_windows_implementation_details() {
     for relative in [
         "src/adapters/control_http.rs",
         "src/adapters/foreground.rs",
+        "src/adapters/runtime_instance.rs",
         "src/adapters/runtime_token.rs",
+        "src/adapters/supervisor_shutdown.rs",
         "src/application/control_api.rs",
         "src/cli.rs",
     ] {

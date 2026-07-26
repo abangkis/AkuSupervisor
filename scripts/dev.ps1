@@ -22,6 +22,10 @@ $stableExecutable = Join-Path $repository 'target\aku-supervisor.exe'
 $shutdownRequest = Join-Path $devDirectory 'shutdown-request'
 $stagedExecutable = Join-Path $buildDirectory 'debug\aku-supervisor.exe'
 $supervisorProcess = $null
+$watcherLeaseStream = $null
+$watcherId = [Guid]::NewGuid().ToString('N')
+$previousWatcherId = $env:AKU_SUPERVISOR_WATCHER_ID
+$previousWatcherPid = $env:AKU_SUPERVISOR_WATCHER_PID
 $rustToolchainScript = Join-Path $PSScriptRoot 'rust-toolchain.ps1'
 . $rustToolchainScript
 
@@ -103,6 +107,111 @@ function Test-ControlPort {
     finally {
         $client.Dispose()
     }
+}
+
+function Resolve-RuntimeDirectory {
+    param(
+        [Parameter(Mandatory)] [object] $Configuration,
+        [Parameter(Mandatory)] [string] $ConfigurationPath
+    )
+
+    $tokenPath = [string] $Configuration.control.tokenFile
+    if (-not $tokenPath) {
+        throw "Configuration does not contain control.tokenFile: $ConfigurationPath"
+    }
+    if (-not [IO.Path]::IsPathRooted($tokenPath)) {
+        $tokenPath = Join-Path (Split-Path -Parent $ConfigurationPath) $tokenPath
+    }
+    return Split-Path -Parent ([IO.Path]::GetFullPath($tokenPath))
+}
+
+function Enter-DevelopmentWatcherLease {
+    param(
+        [Parameter(Mandatory)] [string] $RuntimeDirectory,
+        [Parameter(Mandatory)] [string] $ConfigurationPath
+    )
+
+    New-Item -ItemType Directory -Force $RuntimeDirectory | Out-Null
+    $lockPath = Join-Path $RuntimeDirectory 'development-watcher.lock'
+    $identityPath = Join-Path $RuntimeDirectory 'development-watcher.json'
+    $stream = [IO.FileStream]::new(
+        $lockPath,
+        [IO.FileMode]::OpenOrCreate,
+        [IO.FileAccess]::ReadWrite,
+        [IO.FileShare]::ReadWrite)
+    try {
+        $stream.Lock(0, 1)
+    } catch {
+        $stream.Dispose()
+        $owner = $null
+        try {
+            $owner = Get-Content -LiteralPath $identityPath -Raw | ConvertFrom-Json
+        } catch {
+            # The lock remains authoritative even when its diagnostic metadata is unavailable.
+        }
+        if ($null -ne $owner) {
+            throw "Another development watcher already owns this configuration: PID $($owner.watcherProcessId), repository $($owner.repository)."
+        }
+        throw "Another development watcher already owns $lockPath."
+    }
+
+    $identity = [ordered]@{
+        schemaVersion = 1
+        watcherId = $watcherId
+        watcherProcessId = $PID
+        startedAtUnixMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+        repository = $repository
+        configuration = $ConfigurationPath
+    } | ConvertTo-Json
+    $temporaryIdentity = "$identityPath.tmp-$PID"
+    [IO.File]::WriteAllText(
+        $temporaryIdentity,
+        "$identity`n",
+        [Text.UTF8Encoding]::new($false))
+    Move-Item -LiteralPath $temporaryIdentity -Destination $identityPath -Force
+
+    $script:watcherLeaseStream = $stream
+    $env:AKU_SUPERVISOR_WATCHER_ID = $watcherId
+    $env:AKU_SUPERVISOR_WATCHER_PID = [string] $PID
+    Write-Host "[watch] Watcher lease: $lockPath (PID $PID)" -ForegroundColor DarkGray
+}
+
+function Exit-DevelopmentWatcherLease {
+    if ($null -ne $script:watcherLeaseStream) {
+        try {
+            $script:watcherLeaseStream.Unlock(0, 1)
+        } catch {
+            Write-Warning "Could not explicitly unlock the development watcher lease: $($_.Exception.Message)"
+        }
+        $script:watcherLeaseStream.Dispose()
+        $script:watcherLeaseStream = $null
+    }
+    $env:AKU_SUPERVISOR_WATCHER_ID = $previousWatcherId
+    $env:AKU_SUPERVISOR_WATCHER_PID = $previousWatcherPid
+}
+
+function Get-ActiveSupervisorInstance {
+    if (-not (Test-Path -LiteralPath $devExecutable -PathType Leaf)) {
+        return $null
+    }
+    try {
+        $output = @(& $devExecutable instance-status --json --config $script:configPath 2>$null)
+        if ($LASTEXITCODE -ne 0) {
+            return $null
+        }
+        $payload = ($output -join "`n") | ConvertFrom-Json
+        return $payload.response.instance
+    } catch {
+        return $null
+    }
+}
+
+function Format-ActiveSupervisor {
+    $instance = Get-ActiveSupervisorInstance
+    if ($null -eq $instance) {
+        return 'The active listener did not expose authenticated runtime identity.'
+    }
+    return "Active instance: PID $($instance.processId), mode $($instance.mode), executable $($instance.executable), instance $($instance.instanceId)."
 }
 
 function Get-WatchFingerprint {
@@ -446,8 +555,15 @@ try {
         throw "Configuration does not contain control.host and control.port: $script:configPath"
     }
     if (Test-ControlPort -ControlHost $script:controlHost -ControlPort $script:controlPort) {
-        throw "Control port $script:controlHost`:$script:controlPort is already active. Type 'quit' in the current AkuSupervisor terminal before starting the watcher."
+        $activeDetail = Format-ActiveSupervisor
+        throw "Control port $script:controlHost`:$script:controlPort is already active. $activeDetail Use 'supervisor shutdown' from a second terminal or type 'quit' in its visible terminal before starting the watcher."
     }
+    $runtimeDirectory = Resolve-RuntimeDirectory `
+        -Configuration $configuration `
+        -ConfigurationPath $script:configPath
+    Enter-DevelopmentWatcherLease `
+        -RuntimeDirectory $runtimeDirectory `
+        -ConfigurationPath $script:configPath
 
     $script:rustToolchain = Resolve-AkuRustToolchain -Repository $repository
     $script:cargo = $script:rustToolchain.Cargo
@@ -476,7 +592,13 @@ try {
     while ($true) {
         Start-Sleep -Milliseconds $PollMilliseconds
         if ($supervisorProcess.HasExited) {
-            throw "Development supervisor exited unexpectedly with code $($supervisorProcess.ExitCode)."
+            $exitedPid = $supervisorProcess.Id
+            $exitCode = $supervisorProcess.ExitCode
+            if (Test-ControlPort -ControlHost $script:controlHost -ControlPort $script:controlPort) {
+                $activeDetail = Format-ActiveSupervisor
+                throw "Watched development Supervisor PID $exitedPid exited with code $exitCode, but another process now owns $script:controlHost`:$script:controlPort. $activeDetail"
+            }
+            throw "Development Supervisor PID $exitedPid exited unexpectedly with code $exitCode; no replacement owns the control port."
         }
 
         $latestFingerprint = Get-WatchFingerprint
@@ -520,5 +642,6 @@ finally {
             Write-Host '[watch] Development Supervisor and its owned services completed graceful shutdown.' -ForegroundColor Green
         }
     }
+    Exit-DevelopmentWatcherLease
     Pop-Location
 }

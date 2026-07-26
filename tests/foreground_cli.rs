@@ -21,6 +21,7 @@ fn process_fixture() -> &'static str {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn foreground_cli_runs_registered_lifecycle_and_cleans_up() {
     let directory = TestDirectory::create();
     let config_directory = directory.path.join("AkuSupervisor");
@@ -67,6 +68,7 @@ fn foreground_cli_runs_registered_lifecycle_and_cleans_up() {
         .spawn()
         .expect("start foreground supervisor");
     let mut guard = ChildGuard::new(child);
+    assert_supervisor_stayed_running(&mut guard);
     verify_remote_control(&directory.path);
     verify_read_only_mcp(&directory.path, control_port);
 
@@ -127,6 +129,133 @@ fn foreground_cli_runs_registered_lifecycle_and_cleans_up() {
             .expect("read captured stderr")
             .contains("process fixture stderr ready")
     );
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn authenticated_remote_shutdown_uses_foreground_cleanup_and_audit() {
+    let directory = TestDirectory::create();
+    let config_directory = directory.path.join("AkuSupervisor");
+    fs::create_dir_all(&config_directory).expect("create default config directory");
+    let config_path = config_directory.join("services.json");
+    let control_port = available_port();
+    let config = json!({
+        "version": 1,
+        "control": {
+            "host": "127.0.0.1",
+            "port": control_port,
+            "tokenFile": ".runtime/control-token",
+            "mcp": {"enabled": false, "allowedOrigins": []}
+        },
+        "services": {
+            "fixture": {
+                "label": "Process Fixture",
+                "cwd": directory.path.clone(),
+                "command": process_fixture(),
+                "args": ["--root"],
+                "environment": {},
+                "health": {"type": "process"},
+                "ports": [],
+                "restartPolicy": "manual",
+                "shutdownGraceMs": 250
+            }
+        }
+    });
+    fs::write(
+        &config_path,
+        serde_json::to_vec_pretty(&config).expect("serialize fixture config"),
+    )
+    .expect("write fixture config");
+
+    let child = Command::new(supervisor())
+        .env_remove("AKU_SUPERVISOR_CONFIG")
+        .env("LOCALAPPDATA", &directory.path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start foreground supervisor");
+    let mut guard = ChildGuard::new(child);
+    assert_supervisor_stayed_running(&mut guard);
+    wait_for_control_client(&directory.path);
+
+    let identity = run_client(&directory.path, &["instance-status", "--json"]);
+    assert!(
+        identity.status.success(),
+        "instance status failed: {identity:?}"
+    );
+    let identity_json: serde_json::Value =
+        serde_json::from_slice(&identity.stdout).expect("instance JSON");
+    assert_eq!(
+        identity_json["response"]["instance"]["mode"],
+        serde_json::Value::String("stable".to_owned())
+    );
+
+    let started = run_client(
+        &directory.path,
+        &[
+            "start",
+            "fixture",
+            "--actor",
+            "codex",
+            "--reason",
+            "remote shutdown fixture start",
+        ],
+    );
+    assert!(
+        started.status.success(),
+        "fixture start failed: {started:?}"
+    );
+    let shutdown = run_client(
+        &directory.path,
+        &[
+            "supervisor",
+            "shutdown",
+            "--actor",
+            "codex",
+            "--reason",
+            "integration remote Supervisor shutdown",
+            "--request-id",
+            "foreground-shutdown-1",
+            "--json",
+        ],
+    );
+    assert!(
+        shutdown.status.success(),
+        "remote Supervisor shutdown failed: {shutdown:?}"
+    );
+    let shutdown_json: serde_json::Value =
+        serde_json::from_slice(&shutdown.stdout).expect("shutdown JSON");
+    assert_eq!(shutdown_json["response"]["status"], "accepted");
+
+    let deadline = Instant::now() + EXIT_TIMEOUT;
+    loop {
+        if guard
+            .child_mut()
+            .try_wait()
+            .expect("query Supervisor exit")
+            .is_some()
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "Supervisor did not complete remote graceful shutdown"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+    let child = guard.disarm();
+    let output = child.wait_with_output().expect("collect Supervisor output");
+    assert!(output.status.success(), "Supervisor failed: {output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("Supervisor stdout");
+    assert!(stdout.contains("Authenticated Supervisor shutdown requested"));
+    assert!(stdout.contains("Owned service cleanup complete."));
+
+    let journal = fs::read_to_string(config_directory.join(".runtime/supervisor.jsonl"))
+        .expect("read lifecycle journal");
+    assert!(journal.contains("integration remote Supervisor shutdown"));
+    assert!(journal.contains(r#""actorType":"agent","actorId":"codex""#));
+    assert!(journal.contains(r#""ownedPidsAfter":[]"#));
 }
 
 fn assert_console_events(stdout: &str, stderr: &str) {
@@ -432,6 +561,25 @@ fn wait_for_control_client(local_app_data: &std::path::Path) -> std::process::Ou
     }
 }
 
+fn assert_supervisor_stayed_running(guard: &mut ChildGuard) {
+    thread::sleep(Duration::from_millis(250));
+    if let Some(status) = guard
+        .child_mut()
+        .try_wait()
+        .expect("query early Supervisor status")
+    {
+        let child = guard.take();
+        let output = child
+            .wait_with_output()
+            .expect("collect failed Supervisor startup");
+        panic!(
+            "Supervisor exited during startup with {status}: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
 fn run_client(local_app_data: &std::path::Path, arguments: &[&str]) -> std::process::Output {
     Command::new(supervisor())
         .args(arguments)
@@ -488,6 +636,10 @@ impl ChildGuard {
     }
 
     fn disarm(mut self) -> Child {
+        self.child.take().expect("child guard is armed")
+    }
+
+    fn take(&mut self) -> Child {
         self.child.take().expect("child guard is armed")
     }
 }

@@ -33,6 +33,13 @@ fn watcher_requires_executable_release_without_force_killing_an_owner() {
     assert!(script.contains("successful development build"));
     assert!(!script.contains("Get-Item -LiteralPath $script:configPath"));
     assert!(script.contains("development watcher stopped by user"));
+    assert!(script.contains("Enter-DevelopmentWatcherLease"));
+    assert!(script.contains("development-watcher.lock"));
+    assert!(script.contains("AKU_SUPERVISOR_WATCHER_ID"));
+    assert!(script.contains("Watched development Supervisor PID"));
+    assert!(script.contains("but another process now owns"));
+    assert!(script.contains("Active instance: PID"));
+    assert!(script.contains("Use 'supervisor shutdown' from a second terminal"));
     assert!(script.contains("Test-ConfigurationBeforeHandoff"));
     assert!(script.contains(
         "Configuration validation failed. The current supervisor and services remain active."

@@ -150,11 +150,13 @@ cargo run -- --help
 cargo run
 cargo run -- --config C:\path\to\services.json
 cargo run -- status
+cargo run -- instance-status --json
 cargo run -- registry-status
 cargo run -- events --limit 20
 cargo run -- logs akusidecar --stream stdout --tail 100
 cargo run -- live-logs akusidecar
 cargo run -- live-logs akusidecar --stream stderr --tail 20
+cargo run -- supervisor shutdown --reason "operator requested shutdown" --request-id "supervisor-shutdown-001"
 cargo run -- restart akusidecar --actor codex --reason "source changed"
 cargo run -- bridge reload --actor codex --reason "load updated unpacked extension" --request-id "bridge-reload-001"
 cargo run -- bridge status --request-id "bridge-reload-001" --json
@@ -179,11 +181,17 @@ Run the complete verification suite through the convenience script:
 ```
 
 For live AkuSupervisor development, stop any normally running instance with
-`quit`, then start the safe watcher:
+`quit` or the authenticated `supervisor shutdown` command, then start the safe
+watcher:
 
 ```powershell
 .\scripts\dev.ps1
 ```
+
+The watcher holds a lifetime lease, so another watcher or stable process cannot
+steal ownership during a development rebuild. `instance-status --json`
+identifies the active PID, executable, mode, watcher PID, and instance ID when
+diagnosing a port conflict.
 
 The default starts only AkuSupervisor. To start one or more configured services
 as soon as the development Supervisor is ready, pass their service IDs as

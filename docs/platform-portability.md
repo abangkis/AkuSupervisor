@@ -38,7 +38,11 @@ The current contracts are:
 - `ServiceLogSink`: receives already-persisted stdout/stderr bytes through a
   bounded platform-neutral contract; and
 - `LiveLogHub`: assembles lines, keeps a bounded replay ring, and fans out to
-  bounded subscribers without importing native process APIs.
+  bounded subscribers without importing native process APIs;
+- `RuntimeInstanceLease`: uses the standard-library cross-platform file-lock
+  contract for single-instance ownership and persisted diagnostics; and
+- `SupervisorShutdown`: carries one authenticated, idempotent shutdown intent
+  into the shared foreground cleanup loop.
 
 An architecture test enforces the import boundary.
 
@@ -89,13 +93,14 @@ not considered a portable guarantee.
 | Forced stop | `TerminateJobObject` | bounded `SIGKILL` through the chosen ownership boundary | bounded `SIGKILL` to verified owned group |
 | Exit observation | process handle / Job query | `pidfd` or wait primitives | `kqueue` / wait primitives |
 | Port diagnostics | IP Helper TCP tables | netlink or `/proc` adapter | `sysctl` or `libproc` adapter |
-| Supervisor shutdown | console handler | POSIX signal adapter | POSIX signal adapter |
+| Supervisor shutdown | console handler plus shared authenticated control request | POSIX signal adapter plus the same control request | POSIX signal adapter plus the same control request |
 | Per-service shutdown evidence | `TreeStopReport` from Job Object adapter | Same shared report from process-group/cgroup adapter | Same shared report from process-group adapter |
 | Secure token entropy | CNG `BCryptGenRandom` | `getrandom(2)` or equivalent OS API | `SecRandomCopyBytes` or equivalent OS API |
 | Token-file permissions | protected current-user-only DACL | mode `0600` (future) | mode `0600` (future) |
 | HTTP control/client | shared `std::net` adapter | same shared adapter | same shared adapter |
 | Loopback HTTP health | shared `std::net` adapter | same shared adapter | same shared adapter |
 | Development reload request | bounded local file signal plus PowerShell runner | same file-signal contract plus future native runner | same file-signal contract plus future native runner |
+| Runtime instance lease | shared `std::fs::File` lock plus PowerShell watcher lease | same Rust lock plus native watcher lease holder | same Rust lock plus native watcher lease holder |
 | Live service logs | Windows pipe pump persists then publishes to shared `LiveLogHub` | Unix pipe pump uses the same `ServiceLogSink` | Unix pipe pump uses the same `ServiceLogSink` |
 
 The Linux and macOS entries are design candidates, not implemented promises.
@@ -118,6 +123,7 @@ it is considered supported.
 | Foreground host composition | Compile-time host composition is extracted; the shared foreground imports only `platform::host`, whose active Windows backend supplies registry, shutdown, secure entropy, and token permissions | Implement the same host-facing constructors and aliases for a second OS without copying the foreground loop |
 | Checked-in AkuWorkspace profile | Intentionally Windows-specific data, not core logic | Supply separate profiles; do not add path rewriting to the core |
 | Development watcher | Portable Rust file-signal adapter; Windows PowerShell orchestration | Add a native runner that preserves build-first, graceful handoff, and service restoration |
+| Runtime identity and remote shutdown | Portable standard-library lease, JSON identity, authenticated HTTP route, and shared cleanup intent | Run lock interoperability and shutdown fixtures natively | Run lock interoperability and shutdown fixtures natively |
 | Live-log hub and NDJSON protocol | Portable standard-library implementation; only pipe capture is native | Connect the native process spawner to the existing `ServiceLogSink`; do not fork the protocol |
 
 The foreground-host extraction now precedes the second OS implementation.
