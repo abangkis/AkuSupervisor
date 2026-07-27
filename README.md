@@ -220,6 +220,13 @@ normal watcher banner or transition guidance. Each successful automatic start
 prints an additional ownership message, and Ctrl+C uses the same bounded
 graceful Supervisor cleanup for the service and its process tree.
 
+Positional service IDs are started sequentially in the order supplied (duplicate
+IDs are ignored after their first occurrence). The watcher waits for each
+startup contract before continuing, but an individual failure is isolated:
+its stdout, stderr, and exit code are replayed and later requests are still
+attempted. This gives predictable operator ordering without making the generic
+Supervisor depend on a project-specific dependency graph.
+
 The watcher builds into a staging target while the current supervisor remains
 available. A successful build requests normal graceful cleanup, replaces only
 the constant `target\dev\aku-supervisor.exe`, starts it again, and restores the

@@ -382,6 +382,12 @@ argument, the watcher retains its original Supervisor-only behavior. The script
 validates every requested ID against the selected configuration before building;
 `akusupervisor` is not a service ID because `dev.ps1` already starts it.
 
+Requested IDs are de-duplicated case-insensitively while preserving the first
+occurrence and the exact order supplied by the operator. The watcher starts
+them sequentially: it waits for each service's startup contract before moving
+to the next request. This provides predictable ordering for services that have
+an operational dependency without introducing a hidden dependency graph.
+
 For every later Rust source or Cargo-manifest change, the watcher first builds
 the staged binary and uses it to validate the selected configuration before
 asking the running Supervisor to stop. Configuration-only changes do not trigger
@@ -390,9 +396,12 @@ reconciles service registrations in place; malformed changes are rejected while
 the current registry and services remain active.
 
 Requested startup services are independent. If one service misses its startup
-contract, `dev.ps1` warns and continues to own the Supervisor and every service
-that did start; it does not tear down the complete development stack. Inspect
-the retained service with `status` and `logs`, then stop or restart it normally.
+contract, `dev.ps1` captures and replays that request's stdout, stderr, and
+exit code, warns, and continues with later requests while retaining the
+Supervisor and every service that did start; it does not tear down the complete
+development stack. Inspect the retained service with `status` and `logs`, then
+stop or restart it normally. The same per-service failure isolation applies
+when the watcher restores services after a successful rebuild handoff.
 After automatic startup succeeds, the standard watcher banner is still printed
 and an additional message confirms that the service is owned by the development
 Supervisor. Ctrl+C requests the ordinary graceful Supervisor shutdown, waits

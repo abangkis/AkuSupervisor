@@ -713,6 +713,9 @@ Current GeoLibre slice:
   its TLS certificate;
 - [x] one failed requested service no longer tears down the watcher and other
   successfully started services;
+- [x] positional watcher startup preserves first-seen order, de-duplicates
+  requests, captures per-service stdout/stderr and exit codes, and continues
+  after an individual startup failure (including restore after handoff);
 - [x] the focused repository-owned profile/plugin suite passes 74 tests without
   source changes; the full Windows suite baseline passes 2,584 of 2,587 tests,
   with two environment-only failures (locale and missing `bash` on `PATH`) and

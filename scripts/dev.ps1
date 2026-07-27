@@ -502,11 +502,44 @@ function Restore-RunningServices {
 
     foreach ($serviceId in $ServiceIds) {
         Write-Host "[watch] Restoring service: $serviceId" -ForegroundColor Cyan
-        & $devExecutable start $serviceId --actor user `
-            --reason 'development watcher restored running service' --config $script:configPath
-        if ($LASTEXITCODE -ne 0) {
+        $invocation = Invoke-ServiceStart -ServiceId $serviceId `
+            -Reason 'development watcher restored running service'
+        foreach ($line in @($invocation.Output)) {
+            Write-Host ([string]$line)
+        }
+        if ($invocation.ExitCode -ne 0) {
             Write-Warning "Could not restore service '$serviceId'."
         }
+    }
+}
+
+function Invoke-ServiceStart {
+    param(
+        [Parameter(Mandatory)] [string] $ServiceId,
+        [Parameter(Mandatory)] [string] $Reason
+    )
+
+    $previousErrorPreference = $ErrorActionPreference
+    $output = @()
+    $exitCode = 1
+    try {
+        # Native stderr is captured per request so one failed startup cannot
+        # terminate the watcher before the remaining requested services run.
+        $ErrorActionPreference = 'Continue'
+        $output = @(& $devExecutable start $ServiceId --actor user `
+            --reason $Reason --config $script:configPath 2>&1)
+        $exitCode = $LASTEXITCODE
+    }
+    catch {
+        $output += $_
+        $exitCode = 1
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorPreference
+    }
+    return [pscustomobject]@{
+        ExitCode = $exitCode
+        Output = @($output)
     }
 }
 
@@ -562,9 +595,12 @@ function Start-RequestedServices {
     $results = @()
     foreach ($serviceId in $ServiceIds) {
         Write-Host "[watch] Starting requested service: $serviceId" -ForegroundColor Cyan
-        & $devExecutable start $serviceId --actor user `
-            --reason 'development watcher requested startup service' --config $script:configPath
-        $startExitCode = $LASTEXITCODE
+        $invocation = Invoke-ServiceStart -ServiceId $serviceId `
+            -Reason 'development watcher requested startup service'
+        foreach ($line in @($invocation.Output)) {
+            Write-Host ([string]$line)
+        }
+        $startExitCode = $invocation.ExitCode
         $results += [pscustomobject]@{
             ServiceId = $serviceId
             ExitCode = $startExitCode
@@ -588,7 +624,13 @@ try {
     }
     $configuration = Get-Content $script:configPath -Raw | ConvertFrom-Json
     $configuredServiceIds = @($configuration.services.PSObject.Properties.Name)
-    $script:startServiceIds = @($StartService | Where-Object { $_ } | Sort-Object -Unique)
+    $seenServiceIds = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $orderedServiceIds = foreach ($serviceId in @($StartService)) {
+        if (-not [string]::IsNullOrWhiteSpace($serviceId) -and $seenServiceIds.Add($serviceId)) {
+            $serviceId
+        }
+    }
+    $script:startServiceIds = @($orderedServiceIds)
     foreach ($serviceId in $script:startServiceIds) {
         if ($serviceId -notin $configuredServiceIds) {
             $available = if ($configuredServiceIds.Count -gt 0) {

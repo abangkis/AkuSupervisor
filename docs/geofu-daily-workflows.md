@@ -43,7 +43,11 @@ copied into AkuSupervisor configuration or logs.
 
 The local AkuWorkspace profile exposes those processes as `geofu-plugin` and
 `geolibre`. When starting the watcher, service arguments also express the
-operator's intended startup order without creating a hidden dependency graph:
+operator's intended startup order without creating a hidden dependency graph.
+The first occurrence of each ID is retained and each service is started in the
+exact order supplied; the watcher waits for that service's startup contract
+before continuing. A failed request is reported with its captured output and
+does not prevent later services from being attempted:
 
 ```powershell
 .\scripts\dev.ps1 akusidecar geofu-be geofu-plugin geolibre
@@ -148,7 +152,8 @@ PFX, and constructs the LAN deep link. AkuSupervisor sets only port 6060 and
 uses a loopback TCP readiness check so supervision neither overrides the
 hardening nor needs access to the certificate passphrase. If any requested
 startup service still fails, the watcher remains active and retains other
-successful services for inspection.
+successful services for inspection. This ordering is an operator convenience,
+not an implicit dependency resolver; explicit dependency graphs remain deferred.
 
 Still deferred are dependency graphs, arbitrary pre/post hooks, one-shot task
 execution, remote deployment control, and automatic production promotion.

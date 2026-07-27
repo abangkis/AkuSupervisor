@@ -11,6 +11,9 @@ fn watcher_requires_executable_release_without_force_killing_an_owner() {
     assert!(script.contains("Development executable is in use; waiting up to"));
     assert!(script.contains("Staged executable already matches target\\dev"));
     assert!(script.contains("ValueFromRemainingArguments = $true"));
+    assert!(script.contains("HashSet[string]"));
+    assert!(script.contains("$orderedServiceIds"));
+    assert!(!script.contains("$StartService | Where-Object { $_ } | Sort-Object -Unique"));
     assert!(script.contains("Start-RequestedServices -ServiceIds $script:startServiceIds"));
     assert!(script.contains("AkuSupervisor itself is always started by dev.ps1"));
     assert!(script.contains("Resolve-AkuRustToolchain -Repository $repository"));
@@ -28,6 +31,9 @@ fn watcher_requires_executable_release_without_force_killing_an_owner() {
     assert!(script.contains("'SERVICE', 'REQUEST', 'STATE', 'HEALTH'"));
     assert!(script.contains("Failed service(s): $($failedServiceIds -join ', ')"));
     assert!(script.contains("retry a failed service from a second terminal"));
+    assert!(script.contains("function Invoke-ServiceStart"));
+    assert!(script.contains("Native stderr is captured per request"));
+    assert!(script.contains("2>&1"));
     assert!(
         script.contains("The watcher and other services remain active; inspect status and logs.")
     );
