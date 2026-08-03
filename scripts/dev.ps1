@@ -10,7 +10,8 @@ param(
     [ValidateRange(5, 120)]
     [int] $ShutdownTimeoutSeconds = 30,
     [ValidateSet('local', 'utc')]
-    [string] $Timezone = 'local'
+    [string] $Timezone = 'local',
+    [switch] $Rebuild
 )
 
 Set-StrictMode -Version Latest
@@ -31,7 +32,27 @@ $watcherId = [Guid]::NewGuid().ToString('N')
 $previousWatcherId = $env:AKU_SUPERVISOR_WATCHER_ID
 $previousWatcherPid = $env:AKU_SUPERVISOR_WATCHER_PID
 $rustToolchainScript = Join-Path $PSScriptRoot 'rust-toolchain.ps1'
+$akuWorkspaceBootstrapScript = Join-Path $PSScriptRoot 'dev-akuworkspace.ps1'
 . $rustToolchainScript
+
+function Invoke-WorkspaceServiceBootstrap {
+    param([string[]] $ServiceIds)
+
+    if (@($ServiceIds).Count -eq 0) {
+        if ($Rebuild) {
+            Write-Host '[watch] -Rebuild requested; no generated workspace service was selected.' -ForegroundColor DarkGray
+        }
+        return
+    }
+    if (-not (Test-Path $akuWorkspaceBootstrapScript -PathType Leaf)) {
+        throw "AkuWorkspace development bootstrap was not found: $akuWorkspaceBootstrapScript"
+    }
+
+    & $akuWorkspaceBootstrapScript @ServiceIds -BootstrapOnly -Rebuild:$Rebuild
+    if ($LASTEXITCODE -ne 0) {
+        throw "AkuWorkspace development bootstrap failed with exit code $LASTEXITCODE."
+    }
+}
 
 function Resolve-ConfigPath {
     if ($Config) {
@@ -650,6 +671,7 @@ try {
         $activeDetail = Format-ActiveSupervisor
         throw "Control port $script:controlHost`:$script:controlPort is already active. $activeDetail Use 'supervisor shutdown' from a second terminal or type 'quit' in its visible terminal before starting the watcher."
     }
+    Invoke-WorkspaceServiceBootstrap -ServiceIds $script:startServiceIds
     $runtimeDirectory = Resolve-RuntimeDirectory `
         -Configuration $configuration `
         -ConfigurationPath $script:configPath

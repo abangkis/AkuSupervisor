@@ -88,21 +88,43 @@ fn watcher_requires_executable_release_without_force_killing_an_owner() {
 }
 
 #[test]
-fn akuworkspace_entrypoint_bootstraps_sidecar_before_generic_supervision() {
-    let script = include_str!("../scripts/dev-akuworkspace.ps1");
+fn canonical_watcher_bootstraps_only_stale_workspace_runtime() {
+    let watcher = include_str!("../scripts/dev.ps1");
+    let workspace = include_str!("../scripts/dev-akuworkspace.ps1");
 
-    assert!(script.contains("AkuSidecar\\scripts\\build-dev.ps1"));
-    assert!(script.contains("'akusidecar' -in $requestedServices"));
-    assert!(script.contains("& $sidecarBuildScript"));
-    assert!(script.contains("& $supervisorDevScript @requestedServices @devParameters"));
-    assert!(script.contains("Timezone = $Timezone"));
+    assert!(watcher.contains("[switch] $Rebuild"));
+    assert!(watcher.contains("Invoke-WorkspaceServiceBootstrap"));
+    assert!(watcher.contains("& $akuWorkspaceBootstrapScript @ServiceIds -BootstrapOnly"));
+    let active_port_gate = watcher
+        .find("if (Test-ControlPort -ControlHost $script:controlHost")
+        .expect("active Supervisor ownership must be checked first");
+    let workspace_bootstrap = watcher
+        .rfind("Invoke-WorkspaceServiceBootstrap -ServiceIds $script:startServiceIds")
+        .expect("workspace bootstrap must be invoked by the canonical watcher");
+    assert!(active_port_gate < workspace_bootstrap);
+    assert!(workspace.contains("AkuSidecar\\scripts\\build-dev.ps1"));
+    assert!(workspace.contains("[switch] $BootstrapOnly"));
+    assert!(workspace.contains("if ('akusidecar' -in $requestedServices)"));
+    assert!(workspace.contains("Get-AkuSidecarRuntimeStatus"));
+    assert!(workspace.contains("$provenance.version"));
+    assert!(workspace.contains("$provenance.sourceCommit"));
+    assert!(workspace.contains("$provenance.sourceDirty"));
+    assert!(workspace.contains("$provenance.binarySha256"));
+    assert!(workspace.contains("if (-not $Rebuild -and $runtimeStatus.Current)"));
+    assert!(workspace.contains("& $sidecarBuildScript"));
+    assert!(workspace.contains("& $supervisorDevScript @requestedServices @devParameters"));
+    assert!(workspace.contains("Timezone = $Timezone"));
 
-    let sidecar_build = script
+    let status_gate = workspace
+        .find("if (-not $Rebuild -and $runtimeStatus.Current)")
+        .expect("workspace bootstrap must retain a current generated runtime");
+    let sidecar_build = workspace
         .find("& $sidecarBuildScript")
-        .expect("workspace entrypoint must build the Sidecar");
-    let supervisor_start = script
+        .expect("workspace adapter must be able to build the Sidecar");
+    let supervisor_start = workspace
         .find("& $supervisorDevScript")
         .expect("workspace entrypoint must delegate to the generic watcher");
+    assert!(status_gate < sidecar_build);
     assert!(sidecar_build < supervisor_start);
 }
 

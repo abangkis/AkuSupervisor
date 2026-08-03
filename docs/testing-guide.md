@@ -377,6 +377,15 @@ To start AkuSidecar automatically after the Supervisor becomes ready:
 .\scripts\dev.ps1 akusidecar
 ```
 
+This invocation validates the generated AkuSidecar development binary against
+its source version, commit, clean-worktree state, and recorded SHA-256 before
+starting the watcher. A stale or missing binary is rebuilt automatically. To
+force that bootstrap even when provenance is current:
+
+```powershell
+.\scripts\dev.ps1 akusidecar -Rebuild
+```
+
 Additional configured service IDs may be supplied positionally. With no service
 argument, the watcher retains its original Supervisor-only behavior. The script
 validates every requested ID against the selected configuration before building;
