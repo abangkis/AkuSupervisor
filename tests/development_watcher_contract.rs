@@ -95,6 +95,7 @@ fn canonical_watcher_bootstraps_only_stale_workspace_runtime() {
     assert!(watcher.contains("[switch] $Rebuild"));
     assert!(watcher.contains("Invoke-WorkspaceServiceBootstrap"));
     assert!(watcher.contains("& $akuWorkspaceBootstrapScript @ServiceIds -BootstrapOnly"));
+    assert!(watcher.contains("-Config $script:configPath"));
     let active_port_gate = watcher
         .find("if (Test-ControlPort -ControlHost $script:controlHost")
         .expect("active Supervisor ownership must be checked first");
@@ -114,6 +115,13 @@ fn canonical_watcher_bootstraps_only_stale_workspace_runtime() {
     assert!(workspace.contains("& $sidecarBuildScript"));
     assert!(workspace.contains("& $supervisorDevScript @requestedServices @devParameters"));
     assert!(workspace.contains("Timezone = $Timezone"));
+    assert!(workspace.contains("AkuBrowser\\config\\bridge-identities.json"));
+    assert!(workspace.contains("Set-AkuSidecarDevelopmentBridgeIdentity"));
+    assert!(workspace.contains("Get-BridgeIdentityProfile -ProfileName 'development'"));
+    assert!(workspace.contains("--bridge-extension-origin"));
+    assert!(workspace.contains("Channel      : DEVELOPMENT"));
+    assert!(workspace.contains("Authority    :"));
+    assert!(workspace.contains("Projection   :"));
 
     let status_gate = workspace
         .find("if (-not $Rebuild -and $runtimeStatus.Current)")

@@ -48,7 +48,7 @@ function Invoke-WorkspaceServiceBootstrap {
         throw "AkuWorkspace development bootstrap was not found: $akuWorkspaceBootstrapScript"
     }
 
-    & $akuWorkspaceBootstrapScript @ServiceIds -BootstrapOnly -Rebuild:$Rebuild
+    & $akuWorkspaceBootstrapScript @ServiceIds -BootstrapOnly -Config $script:configPath -Rebuild:$Rebuild
     if ($LASTEXITCODE -ne 0) {
         throw "AkuWorkspace development bootstrap failed with exit code $LASTEXITCODE."
     }

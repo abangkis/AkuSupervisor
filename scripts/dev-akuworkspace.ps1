@@ -21,8 +21,107 @@ $ErrorActionPreference = 'Stop'
 $supervisorRepository = Split-Path -Parent $PSScriptRoot
 $workspaceRoot = Split-Path -Parent $supervisorRepository
 $sidecarBuildScript = Join-Path $workspaceRoot 'AkuSidecar\scripts\build-dev.ps1'
+$bridgeIdentityRegistryPath = Join-Path $workspaceRoot 'AkuBrowser\config\bridge-identities.json'
 $supervisorDevScript = Join-Path $PSScriptRoot 'dev.ps1'
 $requestedServices = @($StartService | Where-Object { $_ } | Sort-Object -Unique)
+
+function Resolve-AkuSupervisorConfigPath {
+    if ($Config) {
+        if ([IO.Path]::IsPathRooted($Config)) {
+            return [IO.Path]::GetFullPath($Config)
+        }
+        return [IO.Path]::GetFullPath((Join-Path (Get-Location) $Config))
+    }
+    if ($env:AKU_SUPERVISOR_CONFIG) {
+        return [IO.Path]::GetFullPath($env:AKU_SUPERVISOR_CONFIG)
+    }
+    if (-not $env:LOCALAPPDATA) {
+        throw 'LOCALAPPDATA is unavailable; pass -Config explicitly.'
+    }
+    return Join-Path $env:LOCALAPPDATA 'AkuSupervisor\services.json'
+}
+
+function Get-BridgeIdentityProfile {
+    param([Parameter(Mandatory)] [string] $ProfileName)
+
+    if (-not (Test-Path -LiteralPath $bridgeIdentityRegistryPath -PathType Leaf)) {
+        throw "Bridge identity registry was not found: $bridgeIdentityRegistryPath"
+    }
+    $registry = Get-Content -LiteralPath $bridgeIdentityRegistryPath -Raw | ConvertFrom-Json
+    if ([int] $registry.schemaVersion -ne 1) {
+        throw "Unsupported Bridge identity registry schema: $($registry.schemaVersion)"
+    }
+    $property = $registry.profiles.PSObject.Properties[$ProfileName]
+    if ($null -eq $property) {
+        throw "Bridge identity profile '$ProfileName' was not found in $bridgeIdentityRegistryPath"
+    }
+    $identity = $property.Value
+    $extensionId = [string] $identity.extensionId
+    if ($extensionId -notmatch '^[a-p]{32}$') {
+        throw "Bridge identity profile '$ProfileName' does not contain an exact Chrome extension ID."
+    }
+    return [pscustomobject]@{
+        Profile = $ProfileName
+        Distribution = [string] $identity.distribution
+        ExtensionId = $extensionId
+        ExtensionOrigin = "chrome-extension://$extensionId/"
+        Authority = $bridgeIdentityRegistryPath
+    }
+}
+
+function Set-AkuSidecarDevelopmentBridgeIdentity {
+    $identity = Get-BridgeIdentityProfile -ProfileName 'development'
+    if ($identity.Distribution -ne 'unpacked') {
+        throw "Development Bridge identity must use unpacked distribution, found '$($identity.Distribution)'."
+    }
+
+    $configurationPath = Resolve-AkuSupervisorConfigPath
+    if (-not (Test-Path -LiteralPath $configurationPath -PathType Leaf)) {
+        throw "AkuSupervisor configuration was not found: $configurationPath"
+    }
+    $configuration = Get-Content -LiteralPath $configurationPath -Raw | ConvertFrom-Json
+    $serviceProperty = $configuration.services.PSObject.Properties['akusidecar']
+    if ($null -eq $serviceProperty) {
+        throw "AkuSupervisor configuration does not register service 'akusidecar': $configurationPath"
+    }
+
+    $currentArguments = @($serviceProperty.Value.args)
+    $nextArguments = [Collections.Generic.List[string]]::new()
+    for ($index = 0; $index -lt $currentArguments.Count; $index++) {
+        if ([string] $currentArguments[$index] -eq '--bridge-extension-origin') {
+            $index++
+            continue
+        }
+        $nextArguments.Add([string] $currentArguments[$index])
+    }
+    $nextArguments.Add('--bridge-extension-origin')
+    $nextArguments.Add($identity.ExtensionOrigin)
+    $nextArgumentArray = @($nextArguments)
+
+    $changed = (($currentArguments | ConvertTo-Json -Compress) -ne ($nextArgumentArray | ConvertTo-Json -Compress))
+    if ($changed) {
+        $serviceProperty.Value.args = $nextArgumentArray
+        $temporaryPath = "$configurationPath.tmp-$PID"
+        [IO.File]::WriteAllText(
+            $temporaryPath,
+            (($configuration | ConvertTo-Json -Depth 20) + "`n"),
+            [Text.UTF8Encoding]::new($false))
+        Move-Item -LiteralPath $temporaryPath -Destination $configurationPath -Force
+    }
+
+    Write-Host '[workspace] AkuBridge identity' -ForegroundColor Cyan
+    Write-Host '[workspace]   Channel      : DEVELOPMENT' -ForegroundColor Cyan
+    Write-Host "[workspace]   Distribution : $($identity.Distribution)" -ForegroundColor DarkGray
+    Write-Host "[workspace]   Extension ID : $($identity.ExtensionId)" -ForegroundColor Green
+    Write-Host "[workspace]   Authority    : $($identity.Authority)#profiles.$($identity.Profile)" -ForegroundColor DarkGray
+    Write-Host "[workspace]   Projection   : $configurationPath (akusidecar args)" -ForegroundColor DarkGray
+    if ($changed) {
+        Write-Host '[workspace]   Status       : refreshed generated development projection' -ForegroundColor Green
+    }
+    else {
+        Write-Host '[workspace]   Status       : current' -ForegroundColor Green
+    }
+}
 
 function Get-AkuSidecarSourceState {
     $sidecarRepository = Split-Path -Parent (Split-Path -Parent $sidecarBuildScript)
@@ -113,6 +212,7 @@ function Initialize-AkuSidecarDevelopmentRuntime {
 }
 
 if ('akusidecar' -in $requestedServices) {
+    Set-AkuSidecarDevelopmentBridgeIdentity
     Initialize-AkuSidecarDevelopmentRuntime
 }
 

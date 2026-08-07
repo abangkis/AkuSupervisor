@@ -214,6 +214,13 @@ that provenance is stale or missing. Force a rebuild when needed with:
 .\scripts\dev.ps1 akusidecar -Rebuild
 ```
 
+The same bootstrap selects AkuBrowser's named `development` Bridge identity
+from `AkuBrowser\config\bridge-identities.json` and projects its exact origin
+into the active local `services.json` arguments. Startup prints the selected
+channel, ID, authority, and projection path. The projected argument is generated
+runtime state and must not be edited as a second source of truth. Production
+identity selection is owned by AkuBrowser release tooling, not Supervisor.
+
 `dev-akuworkspace.ps1` remains as a backwards-compatible wrapper, but operators
 no longer need to choose between two normal development entrypoints.
 
