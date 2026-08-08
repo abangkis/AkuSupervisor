@@ -1,4 +1,5 @@
 use std::process::Command;
+#[cfg(windows)]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn binary() -> Command {
@@ -68,6 +69,7 @@ fn unsupported_commands_fail_closed() {
     assert!(stderr.contains("service ID is required"));
 }
 
+#[cfg(windows)]
 #[test]
 fn no_argument_reports_the_missing_default_configuration() {
     let unique = SystemTime::now()
@@ -90,4 +92,20 @@ fn no_argument_reports_the_missing_default_configuration() {
     assert!(stderr.contains("no configuration found"));
     assert!(stderr.contains("AkuSupervisor\\services.json"));
     assert!(stderr.contains("use --config <path>"));
+}
+
+#[cfg(not(windows))]
+#[test]
+fn no_argument_reports_the_unsupported_lifecycle_platform() {
+    let output = binary()
+        .env_remove("AKU_SUPERVISOR_CONFIG")
+        .output()
+        .expect("AkuSupervisor binary should run");
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr).expect("error output should be UTF-8");
+    assert!(
+        stderr.contains("no lifecycle platform adapter is implemented for this operating system")
+    );
 }
