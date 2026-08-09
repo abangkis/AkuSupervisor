@@ -231,6 +231,34 @@ volatile metadata to expose under `health.observed`. They are observations, not
 assertions, and therefore never change readiness. Put a field in `expect` only
 when a mismatch truly means that Supervisor must reject the service.
 
+For a service that depends on an internal proxy, signer, database, queue, or
+another application-owned component, prefer one loopback readiness endpoint
+that verifies the complete application path. AkuSupervisor should still use the
+generic `http-json` probe; the application owns the meaning of its fields:
+
+```json
+{
+  "type": "http-json",
+  "url": "http://127.0.0.1:8090/health/readiness",
+  "timeoutMs": 5000,
+  "startupDeadlineMs": 120000,
+  "expect": {
+    "status": "ok",
+    "runtime": "platform",
+    "proxy": "ready",
+    "signing": "verified",
+    "upstream": "ready"
+  },
+  "observe": ["database", "upstream_status"]
+}
+```
+
+This is stronger than checking the platform port and upstream endpoint
+separately: a TCP listener can remain open while routing or request signing is
+broken, and a direct upstream check can bypass the failing integration path.
+Do not put application-specific proxy or signing behavior in AkuSupervisor
+itself.
+
 When an application already exposes nested health JSON, select RFC 6901 JSON
 Pointer lookup instead of modifying its codebase solely for AkuSupervisor:
 
