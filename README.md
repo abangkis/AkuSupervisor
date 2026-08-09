@@ -66,6 +66,7 @@ AkuSupervisor's differentiators are therefore the combination of:
 - ownership and cleanup of the complete launcher/child process tree;
 - bounded graceful stop/restart with operator holds and a small recovery policy;
 - HTTP JSON health that distinguishes transport readiness from process presence;
+- stable dependency-aware startup for explicitly related managed services;
 - bounded loopback startup prerequisites checked before process creation;
 - durable lifecycle events and bounded stdout/stderr access;
 - an authenticated local control API with stateless read-only MCP inspection;
@@ -87,8 +88,8 @@ AkuSidecar preserves the application-level safety pattern introduced by the
 earlier Sidecar: it publishes a new `instanceEpoch` on every start, allowing its
 browser client to discard stale in-memory Bridge readiness and re-handshake
 without asking AkuSupervisor to understand Chrome. This is application-level
-recovery layered on top of Supervisor lifecycle ownership, not a service
-dependency graph.
+recovery layered on top of Supervisor lifecycle ownership; it is separate from
+the generic `dependsOn` lifecycle ordering between managed services.
 
 Audit identity distinguishes these paths without changing cleanup:
 
@@ -231,12 +232,13 @@ normal watcher banner or transition guidance. Each successful automatic start
 prints an additional ownership message, and Ctrl+C uses the same bounded
 graceful Supervisor cleanup for the service and its process tree.
 
-Positional service IDs are started sequentially in the order supplied (duplicate
-IDs are ignored after their first occurrence). The watcher waits for each
-startup contract before continuing, but an individual failure is isolated:
-its stdout, stderr, and exit code are replayed and later requests are still
-attempted. This gives predictable operator ordering without making the generic
-Supervisor depend on a project-specific dependency graph.
+Positional service IDs are processed sequentially in the order supplied
+(duplicate IDs are ignored after their first occurrence). Before each target,
+AkuSupervisor starts its transitive `dependsOn` services in stable topological
+order. Requested services without an ordering relationship retain the supplied
+order. The watcher waits for each startup contract before continuing, but an
+individual failure is isolated: its stdout, stderr, and exit code are replayed
+and later requests are still attempted.
 
 The watcher builds into a staging target while the current supervisor remains
 available. A successful build requests normal graceful cleanup, replaces only

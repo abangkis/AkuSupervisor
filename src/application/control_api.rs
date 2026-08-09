@@ -76,6 +76,22 @@ impl ControlError {
     }
 
     #[must_use]
+    pub(crate) fn service_not_found(service_id: &str) -> Self {
+        Self {
+            kind: ControlErrorKind::ServiceNotFound,
+            message: format!("service not found: {service_id}"),
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn with_context(&self, message: impl fmt::Display) -> Self {
+        Self {
+            kind: self.kind,
+            message: format!("{message}: {}", self.message),
+        }
+    }
+
+    #[must_use]
     pub const fn kind(&self) -> ControlErrorKind {
         self.kind
     }

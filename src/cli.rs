@@ -1546,7 +1546,7 @@ fn lifecycle_response_timeout(
         return None;
     };
     let service = config.services.get(service_id)?;
-    let startup_ms = service.health.startup_deadline_ms();
+    let startup_ms = dependency_startup_budget_ms(config, service_id)?;
     let operation_ms = match action {
         ControlAction::Start => startup_ms,
         ControlAction::Stop => service.shutdown_grace_ms,
@@ -1555,6 +1555,32 @@ fn lifecycle_response_timeout(
     Some(Duration::from_millis(
         operation_ms.saturating_add(OPERATION_MARGIN_MS),
     ))
+}
+
+fn dependency_startup_budget_ms(
+    config: &crate::adapters::config::SupervisorConfig,
+    service_id: &str,
+) -> Option<u64> {
+    fn visit(
+        config: &crate::adapters::config::SupervisorConfig,
+        service_id: &str,
+        visited: &mut std::collections::BTreeSet<String>,
+    ) -> Option<u64> {
+        if !visited.insert(service_id.to_owned()) {
+            return Some(0);
+        }
+        let service = config.services.get(service_id)?;
+        let mut budget = 0_u64;
+        for dependency in &service.depends_on {
+            budget = budget.saturating_add(visit(config, dependency, visited)?);
+        }
+        for prerequisite in &service.startup_prerequisites {
+            budget = budget.saturating_add(prerequisite.startup_deadline_ms());
+        }
+        Some(budget.saturating_add(service.health.startup_deadline_ms()))
+    }
+
+    visit(config, service_id, &mut std::collections::BTreeSet::new())
 }
 
 #[allow(clippy::too_many_lines)]
@@ -2105,6 +2131,24 @@ mod tests {
         assert_eq!(
             lifecycle_response_timeout(&config, &command(ControlAction::Restart)),
             Some(Duration::from_secs(45))
+        );
+
+        let dependent_command = |action| RemoteCommand::Mutate {
+            action,
+            service_id: "example-web".to_owned(),
+            reason: "dependency timeout contract".to_owned(),
+            actor: ApiActor::User,
+            request_id: None,
+            config: None,
+            json: false,
+        };
+        assert_eq!(
+            lifecycle_response_timeout(&config, &dependent_command(ControlAction::Start)),
+            Some(Duration::from_secs(100))
+        );
+        assert_eq!(
+            lifecycle_response_timeout(&config, &dependent_command(ControlAction::Restart)),
+            Some(Duration::from_secs(105))
         );
     }
 

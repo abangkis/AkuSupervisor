@@ -9,7 +9,7 @@ use std::thread;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use crate::adapters::config::{ConfigError, SupervisorConfig};
+use crate::adapters::config::{ConfigError, ConsoleEvents, SupervisorConfig};
 use crate::adapters::config_path::ResolvedConfigPath;
 use crate::adapters::console_time::{DisplayTimezone, format_unix_milliseconds};
 use crate::adapters::control_http::{ControlHttpError, ControlHttpServer};
@@ -25,8 +25,9 @@ use crate::adapters::runtime_token::{RuntimeToken, RuntimeTokenError, resolve_to
 use crate::adapters::service_logs::ServiceLogStore;
 use crate::adapters::supervisor_shutdown::{SupervisorShutdown, SupervisorShutdownError};
 use crate::application::{
-    ControlAction, ControlMutationOutcome, CooperativeActionError, RegistryBuildError,
-    RegistryReconciliationStatus, ServiceSnapshot, SupervisorControl,
+    ControlAction, ControlMutationOutcome, CooperativeActionError, DependencyAwareControl,
+    DependencyPlanObserver, RegistryBuildError, RegistryReconciliationStatus, ServiceSnapshot,
+    SupervisorControl, stable_shutdown_order,
 };
 use crate::domain::{Actor, Reason};
 use crate::platform::host::{
@@ -116,7 +117,12 @@ pub fn run(
             .with_console_events(config.observability.console_events)
             .with_console_timezone(console_timezone),
     );
-    let control: Arc<dyn SupervisorControl> = audited.clone();
+    let dependency_observer = Arc::new(ConsoleDependencyPlanObserver {
+        enabled: config.observability.console_events != ConsoleEvents::Off,
+        timezone: console_timezone,
+    });
+    let control: Arc<dyn SupervisorControl> =
+        Arc::new(DependencyAwareControl::new(audited.clone()).with_observer(dependency_observer));
     let cooperative_extensions =
         build_cooperative_extensions(&config, runtime_directory, &fingerprint)
             .map_err(ForegroundError::CooperativeAction)?;
@@ -140,6 +146,7 @@ pub fn run(
         start_runtime_monitors(
             &registry,
             audited,
+            Arc::clone(&control),
             logs,
             config_path,
             &config,
@@ -200,6 +207,7 @@ pub fn run(
 fn start_runtime_monitors(
     registry: &Arc<HostRegistry>,
     audited: Arc<AuditedControl>,
+    control: Arc<dyn SupervisorControl>,
     logs: Arc<ServiceLogStore>,
     config_path: &std::path::Path,
     config: &SupervisorConfig,
@@ -225,7 +233,7 @@ fn start_runtime_monitors(
         .join("registration/audit.jsonl");
     let registration_monitor =
         RegistrationEventMonitor::start(registration_audit_path, console_timezone);
-    let service_monitor = ServiceMonitor::start(Arc::clone(registry), audited);
+    let service_monitor = ServiceMonitor::start(Arc::clone(registry), audited, control);
     (config_monitor, registration_monitor, service_monitor)
 }
 
@@ -489,13 +497,65 @@ fn console_timestamp_now(timezone: DisplayTimezone) -> String {
 }
 
 #[derive(Debug)]
+struct ConsoleDependencyPlanObserver {
+    enabled: bool,
+    timezone: DisplayTimezone,
+}
+
+impl DependencyPlanObserver for ConsoleDependencyPlanObserver {
+    fn planned(
+        &self,
+        action: ControlAction,
+        target_service_id: &str,
+        direct_dependencies: &[String],
+        ordered_services: &[String],
+    ) {
+        if !self.enabled {
+            return;
+        }
+        println!(
+            "[{}] [dependency] {}",
+            console_timestamp_now(self.timezone),
+            format_dependency_plan(
+                action,
+                target_service_id,
+                direct_dependencies,
+                ordered_services
+            )
+        );
+    }
+}
+
+fn format_dependency_plan(
+    action: ControlAction,
+    target_service_id: &str,
+    direct_dependencies: &[String],
+    ordered_services: &[String],
+) -> String {
+    let action = match action {
+        ControlAction::Start => "Starting",
+        ControlAction::Restart => "Restarting",
+        ControlAction::Stop => "Stopping",
+    };
+    format!(
+        "{action} {target_service_id}; dependsOn={}; checking order: {}.",
+        direct_dependencies.join(","),
+        ordered_services.join(" -> ")
+    )
+}
+
+#[derive(Debug)]
 struct ServiceMonitor {
     stop: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
 }
 
 impl ServiceMonitor {
-    fn start(registry: Arc<HostRegistry>, audited: Arc<AuditedControl>) -> Self {
+    fn start(
+        registry: Arc<HostRegistry>,
+        audited: Arc<AuditedControl>,
+        control: Arc<dyn SupervisorControl>,
+    ) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
         let worker = thread::spawn(move || {
@@ -531,7 +591,7 @@ impl ServiceMonitor {
                                     "{restart_kind} after process tree exited {exit}"
                                 ))
                                 .expect("bounded automatic restart reason");
-                                if let Err(error) = audited.mutate(
+                                if let Err(error) = control.mutate(
                                     ControlAction::Restart,
                                     &process_exit.service_id,
                                     Actor::Recovery,
@@ -868,12 +928,11 @@ fn cleanup(
     shutdown_cause: &ShutdownCause,
 ) -> Result<(), ForegroundError> {
     let mut failures = Vec::new();
-    let service_ids = control
+    let snapshots = control
         .snapshots()
-        .map_err(|error| ForegroundError::Cleanup(vec![error.to_string()]))?
-        .into_iter()
-        .map(|snapshot| snapshot.id)
-        .collect::<Vec<_>>();
+        .map_err(|error| ForegroundError::Cleanup(vec![error.to_string()]))?;
+    let service_ids = stable_shutdown_order(&snapshots)
+        .map_err(|error| ForegroundError::Cleanup(vec![error.to_string()]))?;
     for service_id in service_ids {
         if let Err(error) = control.mutate(
             ControlAction::Stop,
@@ -1038,7 +1097,11 @@ impl std::error::Error for ForegroundError {}
 
 #[cfg(test)]
 mod tests {
-    use super::{InteractiveCommand, parse_interactive, shutdown_cause_for_development};
+    use super::{
+        InteractiveCommand, format_dependency_plan, parse_interactive,
+        shutdown_cause_for_development,
+    };
+    use crate::application::ControlAction;
     use crate::domain::Actor;
 
     #[test]
@@ -1068,6 +1131,19 @@ mod tests {
         assert_eq!(
             user_stop.reason.as_str(),
             "user stopped development watcher"
+        );
+    }
+
+    #[test]
+    fn dependency_plan_message_exposes_direct_dependency_and_execution_order() {
+        assert_eq!(
+            format_dependency_plan(
+                ControlAction::Start,
+                "ai4u-be",
+                &["ai4u-koc-be".to_owned()],
+                &["ai4u-koc-be".to_owned(), "ai4u-be".to_owned()],
+            ),
+            "Starting ai4u-be; dependsOn=ai4u-koc-be; checking order: ai4u-koc-be -> ai4u-be."
         );
     }
 }

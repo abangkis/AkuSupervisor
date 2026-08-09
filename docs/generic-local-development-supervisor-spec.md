@@ -46,7 +46,7 @@ Version 0 is not:
 
 - a PM2, systemd, Docker Compose, Kubernetes, or Windows Service replacement;
 - a production deployment orchestrator;
-- a dependency graph or distributed service scheduler;
+- a distributed service scheduler or dynamic orchestration engine;
 - a package installer;
 - a secret manager;
 - an arbitrary remote shell;
@@ -54,7 +54,9 @@ Version 0 is not:
 - responsible for starting Chrome, Brave, AkuBridge, Codex Desktop, or Codex CLI directly;
 - allowed to execute commands that are not already declared in its configuration.
 
-Automatic startup at Windows login, remote access, service groups, dependency ordering, rolling restarts, and multi-machine control are deferred.
+Automatic startup at Windows login, remote access, service groups, rolling
+restarts, and multi-machine control are deferred. Version 0 supports only a
+validated static `dependsOn` DAG for local managed-service lifecycle ordering.
 
 ## 5. User experience
 
@@ -288,6 +290,23 @@ pass application-level and live Supervisor validation before it is marked
 maintained.
 
 The implementation must test npm's Windows process chain (`npm.cmd -> cmd.exe -> node --watch -> node server`) because stopping only the leaf server allows the watcher to recreate it.
+
+### 10.3.1 Managed dependency ordering
+
+A service may declare `dependsOn` service IDs from the same validated profile.
+Start and restart resolve transitive dependencies and start them before the
+requested target. The order is a stable topological order: requested services
+without a dependency relationship preserve caller order. Automatic on-failure
+recovery follows the same rule.
+
+Configuration rejects unknown IDs, self-dependencies, duplicate edges, and
+cycles. An explicit stop is non-cascading and affects only the named service.
+Full Supervisor shutdown and development handoff stop dependents before their
+dependencies while retaining stable order among unrelated services.
+
+This bounded static DAG does not add service groups, arbitrary hooks, dynamic
+discovery, remote scheduling, or production orchestration. External listeners
+that AkuSupervisor does not own remain bounded `startupPrerequisites`.
 
 ### 10.4 Supervisor shutdown
 
@@ -565,17 +584,18 @@ type may be added. The managed Geofu program does not need source changes for
 basic supervision. Optional signal handling may be added to demonstrate a
 cooperative shutdown instead of the bounded forced fallback.
 
-Multi-service orchestration and dependency ordering remain deferred. A service
-may declare bounded loopback transport prerequisites that must pass before it
-is spawned, but those checks neither identify nor start another registered
-service and therefore do not create a dependency graph.
+The later AI4U portability proof introduced a generic static `dependsOn` DAG
+for managed services. A service may separately declare bounded loopback
+transport prerequisites that must pass before it is spawned; those checks do
+not identify or start another registered service and are not dependency edges.
 
 After the independent proof passes, one configuration may register additional
 long-running Geofu-family development modes. Every declared port still has one
 configured owner; alternative modes that share a repository default must use
-explicit port overrides or separate profiles. Startup order remains an explicit
-operator or CLI choice. Registration may declare external transport readiness
-requirements, but must not imply a managed-service dependency graph.
+explicit port overrides or separate profiles. Caller order remains authoritative
+for unrelated services; declared `dependsOn` edges constrain only related
+services. Registration may also declare external transport readiness
+requirements without turning them into managed-service dependencies.
 
 When a validated registration transaction replaces the service configuration,
 an active Supervisor must reconcile the registry in place. Unchanged entries
@@ -719,7 +739,7 @@ Expected engineering effort for the CLI/API MVP plus AkuSidecar and one Geofu pr
 
 Stop and reassess before adding any of the following:
 
-- service dependency graphs;
+- service groups or dependency behavior beyond the validated static local DAG;
 - arbitrary shell execution through the API;
 - network binding beyond loopback;
 - Windows login startup;
@@ -735,4 +755,4 @@ If these become necessary, first compare the expanded requirement with PM2, Dock
 
 The implementation thread should begin with this bounded objective:
 
-> Build a generic, configuration-driven Windows local development supervisor. The user starts it once in a visible terminal. It owns and audits registered child service process trees and exposes localhost-authenticated start, stop, restart, status, and event operations. Validate it first with the direct Go AkuSidecar/Codex process tree and preservation of SQLite, then prove portability with one independently runnable Geofu service. Do not add arbitrary command execution, dependency orchestration, background login startup, or database reset.
+> Build a generic, configuration-driven Windows local development supervisor. The user starts it once in a visible terminal. It owns and audits registered child service process trees and exposes localhost-authenticated start, stop, restart, status, and event operations. Validate it first with the direct Go AkuSidecar/Codex process tree and preservation of SQLite, then prove portability with one independently runnable Geofu service. Keep dependencies bounded to a validated static local DAG; do not add arbitrary command execution, dynamic orchestration, background login startup, or database reset.

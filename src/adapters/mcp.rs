@@ -443,6 +443,7 @@ mod tests {
             Ok(vec![ServiceSnapshot {
                 id: "api".to_owned(),
                 label: "API".to_owned(),
+                depends_on: Vec::new(),
                 lifecycle: LifecycleState::Running,
                 desired_state: DesiredState::Running,
                 operator_hold: OperatorHold::None,

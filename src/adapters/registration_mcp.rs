@@ -539,6 +539,11 @@ mod tests {
             assert!(required.iter().any(|value| value == field));
         }
         assert_eq!(schema["additionalProperties"], false);
+        assert_eq!(schema["properties"]["dependsOn"]["uniqueItems"], true);
+        assert_eq!(
+            schema["properties"]["dependsOn"]["items"]["pattern"],
+            "^[a-z0-9-]+$"
+        );
         assert_eq!(schema["properties"]["startupPrerequisites"]["maxItems"], 8);
         assert_eq!(
             schema["properties"]["startupPrerequisites"]["items"]["oneOf"]
@@ -608,6 +613,11 @@ mod tests {
         );
         for schema_response in [&responses[2], &responses[4]] {
             assert_eq!(schema_response["result"]["isError"], false);
+            assert_eq!(
+                schema_response["result"]["structuredContent"]["serviceSchema"]["properties"]["dependsOn"]
+                    ["uniqueItems"],
+                true
+            );
             assert_eq!(
                 schema_response["result"]["structuredContent"]["serviceSchema"]["properties"]["startupPrerequisites"]
                     ["maxItems"],

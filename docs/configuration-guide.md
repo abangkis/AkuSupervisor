@@ -142,16 +142,55 @@ continues to use the files beneath `.runtime/services` and the `logs` command.
 | `command` | Absolute, existing executable or supported Windows command wrapper such as `npm.cmd`. |
 | `args` | Fixed argument array; it is never replaced by API input. |
 | `environment` | Fixed string-to-string overrides. Prefer an empty object when the program already has persisted configuration. |
+| `dependsOn` | Optional managed service IDs that AkuSupervisor starts before this service. |
 | `startupPrerequisites` | Optional bounded loopback checks that must pass before the process is spawned. Maximum eight. |
 | `health` | One of the bounded health contracts below. |
 | `ports` | Ports expected to be free before start. An external owner is reported and never killed. |
 | `restartPolicy` | `manual` or the bounded `on-failure` policy. |
 | `shutdownGraceMs` | Time allowed after the native graceful signal before owned-tree forced cleanup. |
 
+## Managed service dependencies
+
+Use `dependsOn` when one registered service cannot become ready until another
+registered service has started:
+
+```json
+"dependsOn": ["database", "koc-engine"]
+```
+
+Start and restart automatically start transitive dependencies first. The
+ordering is a stable topological order: requested services that have no
+dependency relationship keep their caller-provided order. Automatic
+on-failure recovery uses the same rule. CLI response timeouts include the
+bounded startup deadlines of the complete dependency chain and each declared
+startup prerequisite. Configuration validation rejects an
+unknown service ID, a self-dependency, duplicate entries, and every cycle.
+
+During full Supervisor shutdown or development handoff, dependents stop before
+their dependencies while unrelated services retain their existing snapshot
+order. An explicit `stop <service>` remains deliberately non-cascading: it
+stops only the named service, so an operator never shuts down other processes
+implicitly.
+
+When lifecycle console events are enabled, a dependency-aware start or restart
+prints one concise plan before the ordinary lifecycle events, for example:
+
+```text
+[2026-08-09 18:30:00.000 +07:00] [dependency] Starting ai4u-be; dependsOn=ai4u-koc-be; checking order: ai4u-koc-be -> ai4u-be.
+```
+
+Services without `dependsOn` retain the existing output without this line.
+`observability.consoleEvents: "off"` suppresses the plan together with normal
+successful lifecycle console events; durable lifecycle records remain intact.
+
+`dependsOn` is for services owned by the same AkuSupervisor. Use
+`startupPrerequisites` for an external listener that AkuSupervisor must wait
+for but must not start or own.
+
 ## Startup prerequisites
 
-Use `startupPrerequisites` when a program depends on an already-managed
-external local listener, such as PostgreSQL:
+Use `startupPrerequisites` when a program depends on an external local
+listener that AkuSupervisor does not manage, such as PostgreSQL:
 
 ```json
 "startupPrerequisites": [
@@ -169,8 +208,9 @@ AkuSupervisor retries the checks within their deadlines before every start or
 restart, including automatic recovery. If a prerequisite does not become
 ready, the target service enters `failed` and no child process is created.
 These checks do not start PostgreSQL, store database credentials, or create a
-dependency graph. The agent or operator registering the service declares the
-application's prerequisites; AkuSupervisor validates and enforces them.
+managed dependency edge. The agent or operator registering the service
+declares the application's prerequisites; AkuSupervisor validates and enforces
+them.
 
 ## Health choices
 

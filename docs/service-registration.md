@@ -97,6 +97,12 @@ available from MCP:
 6. after the user responds, call `supervisor_registration_commit_change`
    idempotently to retrieve or confirm the final result
 
+The self-described service schema includes `dependsOn`. Agents should declare
+it when a managed service must start before another managed service; validation
+rejects missing references, duplicates, self-dependencies, and cycles before a
+draft can be prepared. External listeners that are not owned by AkuSupervisor
+remain `startupPrerequisites`, not `dependsOn` entries.
+
 Discovery is independent of the runtime profile. `initialize`, `tools/list`,
 and `supervisor_registration_get_schema` do not open or validate
 `services.json`, so an agent can still retrieve the current schema and diagnose

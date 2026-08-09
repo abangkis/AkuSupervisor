@@ -95,6 +95,7 @@ fn generic_development_example_matches_the_typed_contract() {
         PathBuf::from(r"C:\Program Files\nodejs\npm.cmd")
     );
     assert_eq!(web.args, ["run", "dev"]);
+    assert_eq!(web.depends_on, ["example-api"]);
     assert_eq!(web.ports, vec![49_002]);
     assert_eq!(
         web.environment.get("EXAMPLE_PORT").map(String::as_str),
@@ -159,6 +160,7 @@ fn typed_configuration_serializes_with_contract_field_names() {
                 command: PathBuf::from(r"C:\fixture\service.exe"),
                 args: Vec::new(),
                 environment: BTreeMap::new(),
+                depends_on: Vec::new(),
                 startup_prerequisites: Vec::new(),
                 health: HealthCheck::HttpStatus {
                     url: "http://127.0.0.1:49001/health".to_owned(),
@@ -197,5 +199,12 @@ fn typed_configuration_serializes_with_contract_field_names() {
             .pointer("/services/fixture/restartPolicy")
             .and_then(serde_json::Value::as_str),
         Some("manual")
+    );
+    assert_eq!(
+        value
+            .pointer("/services/fixture/dependsOn")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len),
+        Some(0)
     );
 }

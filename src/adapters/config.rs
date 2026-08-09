@@ -108,6 +108,9 @@ pub struct ServiceConfig {
     pub args: Vec<String>,
     #[serde(default)]
     pub environment: BTreeMap<String, String>,
+    /// Other managed services that must be started before this service.
+    #[serde(default)]
+    pub depends_on: Vec<String>,
     #[serde(default)]
     pub startup_prerequisites: Vec<StartupPrerequisite>,
     pub health: HealthCheck,
@@ -132,6 +135,17 @@ pub enum StartupPrerequisite {
 }
 
 impl StartupPrerequisite {
+    /// Maximum time allowed for this prerequisite to become ready.
+    #[must_use]
+    pub const fn startup_deadline_ms(&self) -> u64 {
+        match self {
+            Self::TcpConnect {
+                startup_deadline_ms,
+                ..
+            } => *startup_deadline_ms,
+        }
+    }
+
     fn to_spec(&self) -> HealthCheckSpec {
         match self {
             Self::TcpConnect {
@@ -353,6 +367,7 @@ impl SupervisorConfig {
             ));
         }
         validate_cooperative_actions(&self.cooperative_actions, &mut issues);
+        validate_service_dependencies(&self.services, &mut issues);
 
         let mut claimed_ports = BTreeMap::from([(self.control.port, "control".to_owned())]);
         for (service_id, service) in &self.services {
@@ -447,6 +462,7 @@ impl SupervisorConfig {
                     service.ports.clone(),
                     Duration::from_millis(service.shutdown_grace_ms),
                 )
+                .with_dependencies(service.depends_on.iter().cloned())
                 .with_startup_prerequisites(
                     service
                         .startup_prerequisites
@@ -480,6 +496,7 @@ impl SupervisorConfig {
                     service.ports.clone(),
                     Duration::from_millis(service.shutdown_grace_ms),
                 )
+                .with_dependencies(service.depends_on.iter().cloned())
                 .with_startup_prerequisites(
                     service
                         .startup_prerequisites
@@ -489,6 +506,93 @@ impl SupervisorConfig {
             })
             .collect()
     }
+}
+
+fn validate_service_dependencies(
+    services: &BTreeMap<String, ServiceConfig>,
+    issues: &mut Vec<ConfigIssue>,
+) {
+    for (service_id, service) in services {
+        let path = format!("services.{service_id}.dependsOn");
+        let mut unique = BTreeSet::new();
+        for dependency in &service.depends_on {
+            if dependency == service_id {
+                issues.push(ConfigIssue::new(
+                    &path,
+                    "service_dependency_self",
+                    format!("service {service_id} cannot depend on itself"),
+                ));
+            } else if !services.contains_key(dependency) {
+                issues.push(ConfigIssue::new(
+                    &path,
+                    "service_dependency_unknown",
+                    format!("dependency {dependency} is not a registered service"),
+                ));
+            }
+            if !unique.insert(dependency) {
+                issues.push(ConfigIssue::new(
+                    &path,
+                    "service_dependency_duplicate",
+                    format!("dependency {dependency} is declared more than once"),
+                ));
+            }
+        }
+    }
+
+    if let Some(cycle) = dependency_cycle(services) {
+        issues.push(ConfigIssue::new(
+            "services",
+            "service_dependency_cycle",
+            format!("service dependency cycle detected: {}", cycle.join(" -> ")),
+        ));
+    }
+}
+
+fn dependency_cycle(services: &BTreeMap<String, ServiceConfig>) -> Option<Vec<String>> {
+    fn visit(
+        service_id: &str,
+        services: &BTreeMap<String, ServiceConfig>,
+        states: &mut BTreeMap<String, u8>,
+        stack: &mut Vec<String>,
+    ) -> Option<Vec<String>> {
+        match states.get(service_id).copied().unwrap_or_default() {
+            2 => return None,
+            1 => {
+                let start = stack
+                    .iter()
+                    .position(|candidate| candidate == service_id)
+                    .unwrap_or_default();
+                let mut cycle = stack[start..].to_vec();
+                cycle.push(service_id.to_owned());
+                return Some(cycle);
+            }
+            _ => {}
+        }
+
+        states.insert(service_id.to_owned(), 1);
+        stack.push(service_id.to_owned());
+        if let Some(service) = services.get(service_id) {
+            for dependency in &service.depends_on {
+                if services.contains_key(dependency)
+                    && let Some(cycle) = visit(dependency, services, states, stack)
+                {
+                    return Some(cycle);
+                }
+            }
+        }
+        stack.pop();
+        states.insert(service_id.to_owned(), 2);
+        None
+    }
+
+    let mut states = BTreeMap::new();
+    let mut stack = Vec::new();
+    for service_id in services.keys() {
+        if let Some(cycle) = visit(service_id, services, &mut states, &mut stack) {
+            return Some(cycle);
+        }
+    }
+    None
 }
 
 fn validate_cooperative_actions(actions: &CooperativeActionsConfig, issues: &mut Vec<ConfigIssue>) {
@@ -979,6 +1083,7 @@ mod tests {
             command,
             args: vec!["--serve".to_owned()],
             environment: BTreeMap::new(),
+            depends_on: Vec::new(),
             startup_prerequisites: Vec::new(),
             health: HealthCheck::Process,
             ports: vec![49_001],
@@ -1145,6 +1250,60 @@ mod tests {
             .expect("configuration without startup prerequisites must parse");
 
         assert!(parsed.services["fixture"].startup_prerequisites.is_empty());
+    }
+
+    #[test]
+    fn omitted_dependencies_remain_backward_compatible() {
+        let (_directory, config) = valid_config();
+        let mut value = serde_json::to_value(config).expect("serialize fixture configuration");
+        value["services"]["fixture"]
+            .as_object_mut()
+            .expect("service object")
+            .remove("dependsOn");
+
+        let parsed = SupervisorConfig::parse_json(&value.to_string())
+            .expect("configuration without dependencies must parse");
+
+        assert!(parsed.services["fixture"].depends_on.is_empty());
+    }
+
+    #[test]
+    fn validates_dependency_references_and_cycles() {
+        let (_directory, mut config) = valid_config();
+        let fixture = config.services["fixture"].clone();
+        config.services.insert("worker".to_owned(), fixture);
+        let service = config.services.get_mut("fixture").expect("fixture");
+        service.depends_on = vec![
+            "fixture".to_owned(),
+            "missing".to_owned(),
+            "missing".to_owned(),
+        ];
+
+        let codes = config
+            .validation_issues()
+            .into_iter()
+            .map(|issue| issue.code)
+            .collect::<Vec<_>>();
+        assert!(codes.contains(&"service_dependency_self".to_owned()));
+        assert!(codes.contains(&"service_dependency_unknown".to_owned()));
+        assert!(codes.contains(&"service_dependency_duplicate".to_owned()));
+
+        config
+            .services
+            .get_mut("fixture")
+            .expect("fixture")
+            .depends_on = vec!["worker".to_owned()];
+        config
+            .services
+            .get_mut("worker")
+            .expect("worker")
+            .depends_on = vec!["fixture".to_owned()];
+        assert!(
+            config
+                .validation_issues()
+                .iter()
+                .any(|issue| issue.code == "service_dependency_cycle")
+        );
     }
 
     #[test]

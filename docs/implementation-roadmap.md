@@ -27,7 +27,9 @@ The original product specification remains the detailed source for lifecycle beh
 5. **Visible and auditable:** every action records requester, reason, transition, owned PIDs, result, and error category.
 6. **One lifecycle core:** CLI, UI, HTTP, future MCP, and future launchers call the same application services.
 7. **Portability by boundary:** keep project-specific details in configuration, but defer non-AkuWorkspace live validation.
-8. **Bounded scope:** do not add service graphs, remote control, login startup, browser automation, or production orchestration during the MVP.
+8. **Bounded scope:** the implemented service graph is a validated static local
+   DAG only; do not add dynamic discovery, service groups, remote control,
+   login startup, browser automation, or production orchestration.
 
 Cross-component readiness remains layered on this lifecycle core. A managed
 application may publish a per-process epoch so its existing clients can recover
@@ -600,8 +602,9 @@ Phase 4.2 - human-completable transaction:
 - [x] MCP commit is advertised and tested as an idempotent result/recovery
   operation, not a correctness dependency after the human command completes.
 
-Discovery adapters, unattended approval, secrets, dependency graphs, and
-agent-initiated Supervisor bootstrap remain outside this milestone.
+Discovery adapters, unattended approval, secrets, and agent-initiated
+Supervisor bootstrap remain outside this milestone. Static managed-service
+dependencies are delivered separately in Phase 13.
 
 Live acceptance on the active AkuWorkspace profile completed a reversible
 register/unregister cycle. The register commit moved the exact config revision
@@ -926,6 +929,25 @@ Gate 12:
 - malformed persisted timestamps cannot inject terminal lines; and
 - the shared timestamp adapter contains no platform-specific process code.
 
+### Phase 13 - Static managed-service dependency DAG
+
+Status: **Completed and live-validated on 2026-08-09**
+
+- [x] add backward-compatible optional `dependsOn` service metadata;
+- [x] reject unknown IDs, self-dependencies, duplicate edges, and cycles;
+- [x] auto-start transitive dependencies for start, restart, and automatic
+  recovery through the shared application control layer;
+- [x] preserve caller order for requested services without a dependency
+  relationship;
+- [x] stop dependents before dependencies during Supervisor shutdown and
+  development handoff while keeping explicit service stop non-cascading;
+- [x] expose the field through status snapshots, checked-in JSON schema, and
+  self-describing registration MCP schema; and
+- [x] live-validate `ai4u-be -> ai4u-koc-be` from a stopped state; event
+  `#3400` started KoC before event `#3401` started the platform, and watcher
+  handoff repeated the ordering at events `#3423/#3424` while both services
+  returned healthy.
+
 ## 5. Cross-phase testing strategy
 
 Every phase must preserve:
@@ -954,7 +976,7 @@ The following items require an explicit roadmap update before implementation:
 - additional Geofu-family validation beyond the active Phase 8 slice;
 - Linux and macOS platform implementations;
 - remote network access;
-- dependency graphs or service groups;
+- service groups or dependency behavior beyond the validated static local DAG;
 - database reset operations;
 - arbitrary hooks or shell commands;
 - Chrome process lifecycle management; and

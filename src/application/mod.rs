@@ -6,6 +6,7 @@
 mod control_api;
 mod cooperative_actions;
 mod cooperative_operations;
+mod dependency_control;
 mod extension_validation;
 mod health;
 mod platform_ports;
@@ -24,6 +25,9 @@ pub use cooperative_actions::{
 pub use cooperative_operations::{
     CooperativeOperationError, CooperativeOperationManager, CooperativeOperationSnapshot,
     CooperativeOperationStatus,
+};
+pub use dependency_control::{
+    DependencyAwareControl, DependencyPlanObserver, stable_shutdown_order, stable_start_order,
 };
 pub use extension_validation::{
     ExtensionValidationCheck, ExtensionValidationReport, validate_extension_release,

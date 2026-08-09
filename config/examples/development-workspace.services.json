@@ -48,6 +48,7 @@
       "environment": {
         "EXAMPLE_PORT": "49002"
       },
+      "dependsOn": ["example-api"],
       "health": {
         "type": "tcp-connect",
         "host": "127.0.0.1",

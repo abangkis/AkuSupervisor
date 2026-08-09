@@ -42,12 +42,12 @@ Rerun that explicit setup if the workstation LAN IP changes. The generated
 copied into AkuSupervisor configuration or logs.
 
 The local AkuWorkspace profile exposes those processes as `geofu-plugin` and
-`geolibre`. When starting the watcher, service arguments also express the
-operator's intended startup order without creating a hidden dependency graph.
-The first occurrence of each ID is retained and each service is started in the
-exact order supplied; the watcher waits for that service's startup contract
-before continuing. A failed request is reported with its captured output and
-does not prevent later services from being attempted:
+`geolibre`. When starting the watcher, service arguments express the operator's
+intended order for unrelated services. The first occurrence of each ID is
+retained; declared `dependsOn` edges are resolved first in stable topological
+order. The watcher waits for each service's startup contract before continuing.
+A failed request is reported with its captured output and does not prevent
+later services from being attempted:
 
 ```powershell
 .\scripts\dev.ps1 akusidecar geofu-be geofu-plugin geolibre
@@ -153,7 +153,8 @@ uses a loopback TCP readiness check so supervision neither overrides the
 hardening nor needs access to the certificate passphrase. If any requested
 startup service still fails, the watcher remains active and retains other
 successful services for inspection. This ordering is an operator convenience,
-not an implicit dependency resolver; explicit dependency graphs remain deferred.
+augmented only by explicit validated `dependsOn` edges in the selected profile.
 
-Still deferred are dependency graphs, arbitrary pre/post hooks, one-shot task
-execution, remote deployment control, and automatic production promotion.
+Still deferred are service groups, dynamic dependency discovery, arbitrary
+pre/post hooks, one-shot task execution, remote deployment control, and
+automatic production promotion.

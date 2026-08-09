@@ -1258,6 +1258,7 @@ fn service_schema() -> Value {
             "command": {"type":"string", "description":"Absolute existing executable or command wrapper path; never a shell expression."},
             "args": {"type":"array", "items":{"type":"string"}, "default":[], "description":"Fixed argv entries, kept separate from command."},
             "environment": {"type":"object", "additionalProperties":{"type":"string"}, "default":{}, "description":"Non-sensitive fixed overrides only. Likely secret keys are rejected."},
+            "dependsOn": {"type":"array", "items":{"type":"string", "pattern":"^[a-z0-9-]+$"}, "uniqueItems":true, "default":[], "description":"Managed service IDs that AkuSupervisor starts first. References, duplicates, self-dependencies, and cycles are rejected."},
             "startupPrerequisites": {
                 "type":"array",
                 "maxItems":8,
@@ -1279,7 +1280,7 @@ fn service_schema() -> Value {
         },
         "examples": [{
             "label":"Example API", "cwd":"C:\\absolute\\project", "command":"C:\\absolute\\runtime\\server.exe",
-            "args":["--port","8090"], "environment":{},
+            "args":["--port","8090"], "environment":{}, "dependsOn":[],
             "startupPrerequisites":[{"type":"tcp-connect","host":"127.0.0.1","port":5432,"timeoutMs":1000,"startupDeadlineMs":30000}],
             "health":{"type":"http-status","url":"http://127.0.0.1:8090/health","expectedStatus":200,"timeoutMs":3000,"startupDeadlineMs":20000},
             "ports":[8090], "restartPolicy":"manual", "shutdownGraceMs":5000
@@ -1600,6 +1601,7 @@ mod tests {
                 command: executable.clone(),
                 args: Vec::new(),
                 environment: BTreeMap::new(),
+                depends_on: Vec::new(),
                 startup_prerequisites: Vec::new(),
                 health: HealthCheck::Process,
                 ports: Vec::new(),
@@ -1645,6 +1647,7 @@ mod tests {
                 command: self.executable.clone(),
                 args: Vec::new(),
                 environment: BTreeMap::new(),
+                depends_on: Vec::new(),
                 startup_prerequisites: Vec::new(),
                 health: HealthCheck::Process,
                 ports: (port != 0).then_some(port).into_iter().collect(),

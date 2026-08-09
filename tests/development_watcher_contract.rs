@@ -1,6 +1,6 @@
 #[test]
 fn watcher_requires_executable_release_without_force_killing_an_owner() {
-    let script = include_str!("../scripts/dev.ps1");
+    let script = include_str!("../scripts/dev.ps1").replace("\r\n", "\n");
     let toolchain = include_str!("../scripts/rust-toolchain.ps1");
 
     assert!(script.contains("Wait-ForExecutableRelease -Path $devExecutable"));

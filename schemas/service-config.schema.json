@@ -152,6 +152,16 @@
           },
           "default": {}
         },
+        "dependsOn": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]+$"
+          },
+          "uniqueItems": true,
+          "default": [],
+          "description": "Managed service IDs that must be started before this service. Typed validation also rejects missing references, self-dependencies, and cycles."
+        },
         "health": {
           "$ref": "#/$defs/health"
         },

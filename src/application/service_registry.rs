@@ -80,6 +80,7 @@ pub struct ServiceRegistration {
     id: String,
     label: String,
     launch: LaunchSpec,
+    dependencies: Vec<String>,
     startup_prerequisites: Vec<HealthCheckSpec>,
     health: HealthCheckSpec,
     restart_policy: ServiceRestartPolicy,
@@ -102,6 +103,7 @@ impl ServiceRegistration {
             id: id.into(),
             label: label.into(),
             launch,
+            dependencies: Vec::new(),
             startup_prerequisites: Vec::new(),
             health,
             restart_policy,
@@ -118,6 +120,18 @@ impl ServiceRegistration {
     #[must_use]
     pub fn label(&self) -> &str {
         &self.label
+    }
+
+    #[must_use]
+    pub fn dependencies(&self) -> &[String] {
+        &self.dependencies
+    }
+
+    /// Declares managed services that must start before this service.
+    #[must_use]
+    pub fn with_dependencies(mut self, dependencies: impl IntoIterator<Item = String>) -> Self {
+        self.dependencies = dependencies.into_iter().collect();
+        self
     }
 
     /// Adds bounded external readiness checks that must pass before spawning.
@@ -146,6 +160,7 @@ pub struct LastAction {
 pub struct ServiceSnapshot {
     pub id: String,
     pub label: String,
+    pub depends_on: Vec<String>,
     pub lifecycle: LifecycleState,
     pub root_pid: Option<u32>,
     pub owned_pids: Vec<u32>,
@@ -615,6 +630,7 @@ where
         Ok(ServiceSnapshot {
             id: entry.registration.id.clone(),
             label: entry.registration.label.clone(),
+            depends_on: entry.registration.dependencies.clone(),
             lifecycle,
             root_pid,
             owned_pids,
