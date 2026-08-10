@@ -11,7 +11,9 @@ param(
     [int] $ShutdownTimeoutSeconds = 30,
     [ValidateSet('local', 'utc')]
     [string] $Timezone = 'local',
-    [switch] $Rebuild
+    [switch] $Rebuild,
+    [switch] $ReleaseCheck,
+    [string] $ReleaseTag
 )
 
 Set-StrictMode -Version Latest
@@ -24,6 +26,7 @@ $toolTempDirectory = Join-Path $repository 'target\tool-temp'
 $devExecutable = Join-Path $devDirectory 'aku-supervisor.exe'
 $stableExecutable = Join-Path $repository 'target\aku-supervisor.exe'
 $mcpHostStatusScript = Join-Path $PSScriptRoot 'get-mcp-host-status.ps1'
+$releaseVersionScript = Join-Path $PSScriptRoot 'validate-release-version.ps1'
 $shutdownRequest = Join-Path $devDirectory 'shutdown-request'
 $stagedExecutable = Join-Path $buildDirectory 'debug\aku-supervisor.exe'
 $supervisorProcess = $null
@@ -662,6 +665,25 @@ function Start-RequestedServices {
     }
 
     Show-RequestedServiceStartupSummary -Results $results
+}
+
+if ($ReleaseCheck) {
+    if (@($StartService).Count -gt 0) {
+        throw '-ReleaseCheck cannot be combined with startup service IDs.'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Config) -or $Rebuild) {
+        throw '-ReleaseCheck is configuration-independent and cannot be combined with -Config or -Rebuild.'
+    }
+    Write-Host '[watch] Mode: RELEASE VERSION CHECK (watcher and services will not be started).' -ForegroundColor Cyan
+    if ([string]::IsNullOrWhiteSpace($ReleaseTag)) {
+        & $releaseVersionScript -UsePackageVersionTag -Executable $devExecutable
+    } else {
+        & $releaseVersionScript -Tag $ReleaseTag -Executable $devExecutable
+    }
+    exit $LASTEXITCODE
+}
+if (-not [string]::IsNullOrWhiteSpace($ReleaseTag)) {
+    throw '-ReleaseTag requires -ReleaseCheck.'
 }
 
 Push-Location $repository

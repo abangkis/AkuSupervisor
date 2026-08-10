@@ -63,6 +63,17 @@ fn watcher_requires_executable_release_without_force_killing_an_owner() {
     assert!(script.contains("MCP restaging and Codex restart are not required."));
     assert!(script.contains("Registration tools or schema exposed to agents may be stale."));
     assert!(script.contains("install-codex-mcp.ps1"));
+    assert!(script.contains("[switch] $ReleaseCheck"));
+    assert!(script.contains("[string] $ReleaseTag"));
+    assert!(script.contains("-UsePackageVersionTag -Executable $devExecutable"));
+    assert!(script.contains("watcher and services will not be started"));
+    let release_check = script
+        .find("if ($ReleaseCheck)")
+        .expect("release check must have a dedicated facade mode");
+    let watcher_entry = script
+        .find("Push-Location $repository")
+        .expect("ordinary watcher flow must remain explicit");
+    assert!(release_check < watcher_entry);
     assert!(script.contains(
         "Configuration validation failed. The current supervisor and services remain active."
     ));

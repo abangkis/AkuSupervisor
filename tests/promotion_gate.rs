@@ -41,6 +41,8 @@ fn published_release_version_gate_binds_cargo_binary_head_and_tag() {
     assert!(script.contains("metadata"));
     assert!(script.contains("--locked"));
     assert!(script.contains("$expectedTag = \"v$version\""));
+    assert!(script.contains("$UsePackageVersionTag"));
+    assert!(script.contains("Use either -Tag or -UsePackageVersionTag, not both."));
     assert!(script.contains("status', '--porcelain'"));
     assert!(script.contains("rev-parse', '--short=7', 'HEAD'"));
     assert!(script.contains("rev-list', '-n', '1', $Tag"));

@@ -603,17 +603,22 @@ aku-supervisor 0.8.0 (5ac9ddc)
 
 An uncommitted development build is marked `-dirty`. After committing the
 version and release changes and rebuilding from that clean commit, validate the
-intended tag before creating or pushing it:
+intended tag through the canonical development facade before creating or
+pushing it:
 
 ```powershell
-.\scripts\validate-release-version.ps1 -Tag v0.8.0
+.\scripts\dev.ps1 -ReleaseCheck
 ```
 
-When `-Tag` is omitted, HEAD must already carry an exact tag. The gate fails if
-the repository is dirty, Cargo metadata and lock file disagree, the tag is not
-exactly `v<package-version>`, an existing tag points elsewhere, or the binary's
-version/revision does not match the clean HEAD. Validation is read-only and
-never creates or pushes a tag.
+This mode derives `v<package-version>` automatically, delegates to
+`validate-release-version.ps1`, and exits without loading configuration,
+starting the watcher, or touching services. Use `-ReleaseTag v0.8.0` to supply
+an explicit intended tag. Calling the lower-level validator without either
+`-Tag` or `-UsePackageVersionTag` requires HEAD to already carry an exact tag.
+The gate fails if the repository is dirty, Cargo metadata and lock file
+disagree, the tag is incorrect, an existing tag points elsewhere, or the
+binary's version/revision does not match the clean HEAD. Validation is
+read-only and never creates or pushes a tag.
 
 ## 9. Human-gated service registration
 

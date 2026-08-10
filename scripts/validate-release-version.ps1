@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [string] $Tag,
-    [string] $Executable
+    [string] $Executable,
+    [switch] $UsePackageVersionTag
 )
 
 Set-StrictMode -Version Latest
@@ -34,6 +35,9 @@ function Invoke-CheckedText {
 
 Push-Location $repository
 try {
+    if ($UsePackageVersionTag -and -not [string]::IsNullOrWhiteSpace($Tag)) {
+        Stop-ReleaseValidation -Message 'Use either -Tag or -UsePackageVersionTag, not both.'
+    }
     $toolchain = Resolve-AkuRustToolchain -Repository $repository
     $metadataText = Invoke-CheckedText `
         -FilePath $toolchain.Cargo `
@@ -47,7 +51,9 @@ try {
 
     $version = [string]$package[0].version
     $expectedTag = "v$version"
-    if ([string]::IsNullOrWhiteSpace($Tag)) {
+    if ($UsePackageVersionTag) {
+        $Tag = $expectedTag
+    } elseif ([string]::IsNullOrWhiteSpace($Tag)) {
         $Tag = Invoke-CheckedText `
             -FilePath 'git' `
             -Arguments @('describe', '--tags', '--exact-match', 'HEAD') `

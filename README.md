@@ -300,14 +300,17 @@ identity also includes the source revision, for example
 `aku-supervisor 0.8.0 (5ac9ddc)`; a development build from uncommitted source is
 marked with `-dirty`. Local stable promotion deliberately does not edit the
 version or create a Git tag. Before publishing a release tag, validate the
-clean candidate explicitly:
+clean candidate through the same development entrypoint:
 
 ```powershell
-.\scripts\validate-release-version.ps1 -Tag v0.8.0
+.\scripts\dev.ps1 -ReleaseCheck
 ```
 
 The gate rejects disagreement among Cargo metadata, `Cargo.lock`, the binary,
 Git HEAD, and the intended or existing `vX.Y.Z` tag. It never creates the tag.
+Use `-ReleaseTag v0.8.0` only to check an explicitly supplied tag. The facade
+does not start the watcher or any service in this mode; it delegates to the
+separately testable `validate-release-version.ps1` implementation.
 
 The AkuWorkspace-specific cooperative reload gate is deliberately separate:
 
