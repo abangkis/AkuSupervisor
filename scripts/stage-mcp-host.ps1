@@ -95,7 +95,7 @@ if (-not (Test-Path -LiteralPath $sourceExecutable -PathType Leaf)) {
 
 Write-Host "[mcp-host] Checking source executable: $sourceExecutable" -ForegroundColor Cyan
 $versionOutput = (& $sourceExecutable --version | Out-String).Trim()
-if ($LASTEXITCODE -ne 0 -or $versionOutput -notmatch '^aku-supervisor\s+\S+$') {
+if ($LASTEXITCODE -ne 0 -or $versionOutput -notmatch '^aku-supervisor\s+\S+\s+\((?:[0-9a-f]{7,40}(?:-dirty)?|unknown)\)$') {
     Stop-Staging -Message 'Source executable failed its bounded version preflight.'
 }
 Assert-RegistrationDiscovery -Executable $sourceExecutable

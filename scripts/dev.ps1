@@ -31,6 +31,7 @@ $watcherLeaseStream = $null
 $watcherId = [Guid]::NewGuid().ToString('N')
 $previousWatcherId = $env:AKU_SUPERVISOR_WATCHER_ID
 $previousWatcherPid = $env:AKU_SUPERVISOR_WATCHER_PID
+$script:gitIdentityPaths = $null
 $rustToolchainScript = Join-Path $PSScriptRoot 'rust-toolchain.ps1'
 $akuWorkspaceBootstrapScript = Join-Path $PSScriptRoot 'dev-akuworkspace.ps1'
 . $rustToolchainScript
@@ -280,10 +281,36 @@ function Get-WatchFingerprint {
     if (Test-Path $sourceDirectory) {
         $files += Get-ChildItem $sourceDirectory -Recurse -File -Filter '*.rs'
     }
-    foreach ($manifest in @('Cargo.toml', 'Cargo.lock')) {
+    foreach ($manifest in @('Cargo.toml', 'Cargo.lock', 'build.rs')) {
         $path = Join-Path $repository $manifest
         if (Test-Path $path) {
             $files += Get-Item $path
+        }
+    }
+    if ($null -eq $script:gitIdentityPaths) {
+        $script:gitIdentityPaths = @()
+        foreach ($logicalGitPath in @('HEAD', 'logs/HEAD')) {
+            $resolvedGitPath = (& git -C $repository rev-parse --git-path $logicalGitPath 2>$null | Out-String).Trim()
+            if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($resolvedGitPath)) {
+                $script:gitIdentityPaths += $resolvedGitPath
+            }
+        }
+        $headReference = (& git -C $repository symbolic-ref -q HEAD 2>$null | Out-String).Trim()
+        if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($headReference)) {
+            $referencePath = (& git -C $repository rev-parse --git-path $headReference 2>$null | Out-String).Trim()
+            if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($referencePath)) {
+                $script:gitIdentityPaths += $referencePath
+            }
+        }
+    }
+    foreach ($gitIdentityPath in $script:gitIdentityPaths | Select-Object -Unique) {
+        $absoluteGitIdentityPath = if ([IO.Path]::IsPathRooted($gitIdentityPath)) {
+            $gitIdentityPath
+        } else {
+            Join-Path $repository $gitIdentityPath
+        }
+        if (Test-Path -LiteralPath $absoluteGitIdentityPath -PathType Leaf) {
+            $files += Get-Item -LiteralPath $absoluteGitIdentityPath
         }
     }
     foreach ($watcherRelativePath in @('scripts\dev.ps1', 'scripts\rust-toolchain.ps1')) {

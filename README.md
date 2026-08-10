@@ -2,10 +2,9 @@
 
 AkuSupervisor is a generic, configuration-driven supervisor for local development services.
 
-The development configuration is paired with the `0.7.2` AkuWorkspace
-candidate. The immutable `v0.7.0-preview.1` tag remains the earlier compatibility
-checkpoint. AkuSupervisor remains Windows development tooling and is not
-included in the `0.7.2` end-user bundle.
+The current AkuSupervisor development line is `0.8.0`. The immutable `v0.7.3`
+tag remains the preceding contract-aware MCP-host checkpoint. AkuSupervisor
+remains development tooling and is not part of an AkuBrowser end-user bundle.
 
 Roadmap Gates 0 through 4 are complete, making this the first usable
 AkuWorkspace MVP. The visible foreground supervisor provides validated
@@ -127,6 +126,7 @@ AkuSupervisor/
     phase2_process_tree_demo.rs
   scripts/
     test-phase2.ps1
+    validate-release-version.ps1
   schemas/
     service-config.schema.json
   src/
@@ -294,6 +294,20 @@ stable-path process and retry. Long-lived Codex MCP processes must use the
 separately staged content-addressed host at
 `target\mcp\sha256-<binary-hash>\aku-supervisor-mcp.exe`, so ordinary core
 promotion never depends on restarting Codex or overwriting an active executable.
+
+`Cargo.toml` is the single semantic-version source. Human-facing binary
+identity also includes the source revision, for example
+`aku-supervisor 0.8.0 (5ac9ddc)`; a development build from uncommitted source is
+marked with `-dirty`. Local stable promotion deliberately does not edit the
+version or create a Git tag. Before publishing a release tag, validate the
+clean candidate explicitly:
+
+```powershell
+.\scripts\validate-release-version.ps1 -Tag v0.8.0
+```
+
+The gate rejects disagreement among Cargo metadata, `Cargo.lock`, the binary,
+Git HEAD, and the intended or existing `vX.Y.Z` tag. It never creates the tag.
 
 The AkuWorkspace-specific cooperative reload gate is deliberately separate:
 

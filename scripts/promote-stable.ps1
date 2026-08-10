@@ -104,7 +104,7 @@ if (-not (Test-Path $devExecutable -PathType Leaf)) {
 
 Write-Host '[release] Checking development executable...' -ForegroundColor Cyan
 $versionOutput = (& $devExecutable --version | Out-String).Trim()
-if ($LASTEXITCODE -ne 0 -or $versionOutput -notmatch '^aku-supervisor\s+\S+$') {
+if ($LASTEXITCODE -ne 0 -or $versionOutput -notmatch '^aku-supervisor\s+\S+\s+\((?:[0-9a-f]{7,40}(?:-dirty)?|unknown)\)$') {
     Stop-Promotion -Message 'Development executable failed its bounded version preflight; stable was not changed.'
 }
 Write-Host "[release] Candidate: $versionOutput" -ForegroundColor DarkGray

@@ -718,7 +718,7 @@ fn print_startup(
     instance_path: &std::path::Path,
     console_timezone: DisplayTimezone,
 ) {
-    println!("AkuSupervisor {}", crate::VERSION);
+    println!("AkuSupervisor {} ({})", crate::VERSION, crate::BUILD_COMMIT);
     println!("Configuration: {}", resolved_config.path().display());
     println!("Configuration source: {}", resolved_config.source());
     println!("Fingerprint: {fingerprint}");

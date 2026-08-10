@@ -34,6 +34,24 @@ fn stable_promotion_is_core_only_bounded_and_fail_closed() {
 }
 
 #[test]
+fn published_release_version_gate_binds_cargo_binary_head_and_tag() {
+    let script = include_str!("../scripts/validate-release-version.ps1");
+
+    assert!(script.contains("$toolchain.Cargo"));
+    assert!(script.contains("metadata"));
+    assert!(script.contains("--locked"));
+    assert!(script.contains("$expectedTag = \"v$version\""));
+    assert!(script.contains("status', '--porcelain'"));
+    assert!(script.contains("rev-parse', '--short=7', 'HEAD'"));
+    assert!(script.contains("rev-list', '-n', '1', $Tag"));
+    assert!(script.contains("@('--version')"));
+    assert!(script.contains("does not match Cargo version"));
+    assert!(script.contains("validation did not create it"));
+    assert!(!script.contains("git tag -a"));
+    assert!(!script.contains("git push"));
+}
+
+#[test]
 fn dedicated_mcp_host_is_staged_outside_the_core_promotion_target() {
     let script = include_str!("../scripts/stage-mcp-host.ps1");
 

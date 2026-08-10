@@ -5,11 +5,11 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use crate::VERSION;
 use crate::adapters::console_time::DisplayTimezone;
 use crate::adapters::control_http::ApiActor;
 use crate::adapters::service_logs::{LiveLogCursor, LiveLogEventKind, LiveLogSelection, LogStream};
 use crate::application::ControlAction;
+use crate::version_banner;
 
 const HELP: &str = "AkuSupervisor - local development service supervisor\n\n\
 Usage:\n\
@@ -155,7 +155,7 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
             ExitCode::SUCCESS
         }
         Ok(Command::Version) => {
-            println!("aku-supervisor {VERSION}");
+            println!("{}", version_banner());
             ExitCode::SUCCESS
         }
         Ok(Command::McpContract { json }) => {

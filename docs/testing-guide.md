@@ -590,6 +590,31 @@ the integration check without touching the stable executable.
 The validator and audit evaluator are platform-neutral but AkuWorkspace-specific.
 The PowerShell copy remains the independent Windows core release adapter.
 
+### 8.1 Published release version gate
+
+Local stable promotion copies a reviewed development binary but does not bump
+the package version or create a Git tag. `Cargo.toml` is the authoritative
+semantic version; `Cargo.lock` follows it through Cargo metadata. The binary
+adds its compiled source revision to the human-facing identity:
+
+```text
+aku-supervisor 0.8.0 (5ac9ddc)
+```
+
+An uncommitted development build is marked `-dirty`. After committing the
+version and release changes and rebuilding from that clean commit, validate the
+intended tag before creating or pushing it:
+
+```powershell
+.\scripts\validate-release-version.ps1 -Tag v0.8.0
+```
+
+When `-Tag` is omitted, HEAD must already carry an exact tag. The gate fails if
+the repository is dirty, Cargo metadata and lock file disagree, the tag is not
+exactly `v<package-version>`, an existing tag points elsewhere, or the binary's
+version/revision does not match the clean HEAD. Validation is read-only and
+never creates or pushes a tag.
+
 ## 9. Human-gated service registration
 
 The registration contract is covered by unit and CLI tests in the ordinary

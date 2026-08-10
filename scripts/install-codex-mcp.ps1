@@ -180,7 +180,7 @@ if (-not (Test-Path -LiteralPath $sourceFullPath -PathType Leaf)) {
 }
 
 $sourceVersion = (& $sourceFullPath --version | Out-String).Trim()
-if ($LASTEXITCODE -ne 0 -or $sourceVersion -notmatch '^aku-supervisor\s+\S+$') {
+if ($LASTEXITCODE -ne 0 -or $sourceVersion -notmatch '^aku-supervisor\s+\S+\s+\((?:[0-9a-f]{7,40}(?:-dirty)?|unknown)\)$') {
     Stop-Install -Message 'Source executable failed its bounded version preflight.'
 }
 $sourceHash = (Get-FileHash -LiteralPath $sourceFullPath -Algorithm SHA256).Hash.ToLowerInvariant()

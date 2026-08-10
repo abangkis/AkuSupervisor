@@ -18,6 +18,10 @@ fn watcher_requires_executable_release_without_force_killing_an_owner() {
     assert!(script.contains("AkuSupervisor itself is always started by dev.ps1"));
     assert!(script.contains("Resolve-AkuRustToolchain -Repository $repository"));
     assert!(script.contains("scripts\\rust-toolchain.ps1"));
+    assert!(script.contains("'Cargo.toml', 'Cargo.lock', 'build.rs'"));
+    assert!(script.contains("$null -eq $script:gitIdentityPaths"));
+    assert!(script.contains("@('HEAD', 'logs/HEAD')"));
+    assert!(script.contains("symbolic-ref -q HEAD"));
     assert!(script.contains("target\\tool-temp"));
     assert!(script.contains("$env:TEMP = $toolTempDirectory"));
     assert!(script.contains("$env:TMP = $toolTempDirectory"));
