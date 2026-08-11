@@ -329,7 +329,15 @@ For a visible process-tree and Ctrl+C cleanup demo, follow the
 
 While `run` is active, use `status`, `start <service> [reason]`,
 `stop <service> [reason]`, `restart <service> [reason]`, and `quit` in the same
-terminal.
+terminal. The remote lifecycle client also accepts multiple service IDs in one
+command (`start|stop|restart <service...>`). Requests are sent one target at a
+time so the existing authenticated control API remains single-target and
+auditable: start/restart honor dependencies among the requested services, stop
+uses dependent-before-dependency order, and unrelated IDs retain caller order.
+Explicit stop remains non-cascading. Human output labels each operation as a
+batch item; `--json` returns one JSON array containing the per-service response
+envelopes. If `--request-id` is supplied for a batch, deterministic `-1`, `-2`,
+and so on suffixes identify the individual operations.
 
 From a second terminal, use the control client while the foreground supervisor
 continues running visibly:

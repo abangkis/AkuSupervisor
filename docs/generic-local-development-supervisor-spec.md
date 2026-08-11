@@ -431,13 +431,20 @@ The same lifecycle core exposes:
 ```text
 supervisor status
 supervisor simple-status
-supervisor start <service>
-supervisor stop <service>
-supervisor restart <service> --reason "..."
+supervisor start <service...>
+supervisor stop <service...>
+supervisor restart <service...> --reason "..."
 supervisor logs <service> --tail 100
 ```
 
-CLI and HTTP actions produce the same journal records.
+The CLI accepts one or more service IDs, but expands a batch into sequential
+single-target HTTP actions so the control API and journal remain auditable.
+Start/restart place requested dependencies first; stop order is
+dependent-before-dependency; unrelated IDs retain caller order. Explicit stop
+remains non-cascading. Human output labels batch items, while `--json` returns a
+single array of response envelopes. A base `--request-id` gets deterministic
+numeric suffixes for each expanded action. CLI and HTTP actions produce the
+same journal records.
 
 ## 13. Health model
 

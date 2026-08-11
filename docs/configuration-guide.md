@@ -168,9 +168,11 @@ unknown service ID, a self-dependency, duplicate entries, and every cycle.
 
 During full Supervisor shutdown or development handoff, dependents stop before
 their dependencies while unrelated services retain their existing snapshot
-order. An explicit `stop <service>` remains deliberately non-cascading: it
-stops only the named service, so an operator never shuts down other processes
-implicitly.
+order. The remote CLI also accepts a batch such as `stop <service...>`; it
+expands the request into sequential actions and applies the same dependent-
+before-dependency ordering only among the explicitly named services. An
+explicit stop remains deliberately non-cascading: it stops only the named
+services, so an operator never shuts down other processes implicitly.
 
 When lifecycle console events are enabled, a dependency-aware start or restart
 prints one concise plan before the ordinary lifecycle events, for example:

@@ -105,12 +105,29 @@ The terminal displays the current service table. Available commands are:
 
 ```text
 status
-start <service> [reason]
-stop <service> [reason]
-restart <service> [reason]
+start <service...> [reason]
+stop <service...> [reason]
+restart <service...> [reason]
 help
 quit
 ```
+
+The remote client accepts more than one service ID for lifecycle mutations. It
+executes the batch as sequential authenticated requests while preserving the
+single-target control API contract. Start/restart place requested dependencies
+first; stop order is dependent-before-dependency; unrelated IDs keep
+their caller order. Stop is explicit and does not cascade to services omitted
+from the command. For example:
+
+```powershell
+.\target\dev\aku-supervisor.exe stop ai4u-fe ai4u-be ai4u-koc-fe ai4u-koc-be
+```
+
+Human output shows `[batch n/total]` before each response. With `--json`, the
+command prints one JSON array containing all response envelopes. A supplied
+base `--request-id` receives deterministic `-1`, `-2`, and so on suffixes for
+the individual operations. If an earlier operation fails, later operations are
+not sent; inspect the preceding responses before retrying the remainder.
 
 Executable, arguments, working directory, and environment always come from the
 validated configuration. Interactive input can select only a registered

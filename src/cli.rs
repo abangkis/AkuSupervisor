@@ -24,7 +24,7 @@ Usage:\n\
   aku-supervisor events [--after <sequence>] [--limit <n>] [--json] [--config <path>]\n\
   aku-supervisor logs <service> [--stream <stdout|stderr>] [--tail <n>] [--json] [--config <path>]\n\
   aku-supervisor live-logs <service> [--stream <both|stdout|stderr>] [--tail <n>] [--timezone <local|utc>] [--json] [--config <path>]\n\
-  aku-supervisor <start|stop|restart> <service> [--reason <text>] [--actor <user|codex>] [--request-id <id>] [--json] [--config <path>]\n\
+  aku-supervisor <start|stop|restart> <service...> [--reason <text>] [--actor <user|codex>] [--request-id <id>] [--json] [--config <path>]\n\
   aku-supervisor supervisor shutdown --reason <text> --request-id <id> [--actor <user|codex>] [--json] [--config <path>]\n\
   aku-supervisor extension reload --reason <text> --request-id <id> [--actor <user|codex>] [--wait|--no-wait] [--json] [--config <path>]\n\
   aku-supervisor extension status --request-id <id> [--json] [--config <path>]\n\
@@ -118,7 +118,7 @@ enum RemoteCommand {
     },
     Mutate {
         action: ControlAction,
-        service_id: String,
+        service_ids: Vec<String>,
         reason: String,
         actor: ApiActor,
         request_id: Option<String>,
@@ -863,21 +863,29 @@ fn parse_remote_mutation(
     arguments: &[OsString],
     allow_default_user_reason: bool,
 ) -> Result<Command, String> {
-    let Some(service_id) = arguments.first() else {
-        return Err("service ID is required".to_owned());
-    };
-    let service_id = service_id
-        .to_str()
-        .ok_or_else(|| "service ID must be UTF-8".to_owned())?
-        .to_owned();
-    if service_id.is_empty()
-        || !service_id
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-    {
-        return Err(
-            "service ID must contain lowercase ASCII letters, digits, or hyphens".to_owned(),
-        );
+    let mut service_ids = Vec::new();
+    let mut index = 0;
+    while index < arguments.len() {
+        let argument = arguments[index]
+            .to_str()
+            .ok_or_else(|| "service ID must be UTF-8".to_owned())?;
+        if argument.starts_with("--") {
+            break;
+        }
+        if argument.is_empty()
+            || !argument
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        {
+            return Err(
+                "service ID must contain lowercase ASCII letters, digits, or hyphens".to_owned(),
+            );
+        }
+        service_ids.push(argument.to_owned());
+        index += 1;
+    }
+    if service_ids.is_empty() {
+        return Err("at least one service ID is required".to_owned());
     }
 
     let mut reason = None;
@@ -885,7 +893,6 @@ fn parse_remote_mutation(
     let mut request_id = None;
     let mut config = None;
     let mut json = false;
-    let mut index = 1;
     while index < arguments.len() {
         let flag = &arguments[index];
         match flag.to_str() {
@@ -944,7 +951,7 @@ fn parse_remote_mutation(
     };
     Ok(Command::Remote(RemoteCommand::Mutate {
         action,
-        service_id,
+        service_ids,
         reason,
         actor,
         request_id,
@@ -1428,6 +1435,7 @@ fn validation_actor(actor: ApiActor) -> serde_json::Value {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn remote_request(command: RemoteCommand) -> Result<(), String> {
     use std::fs;
     use std::net::SocketAddr;
@@ -1472,64 +1480,281 @@ fn remote_request(command: RemoteCommand) -> Result<(), String> {
         .parse()
         .map_err(|error| format!("invalid control address: {error}"))?;
 
-    let response_timeout = lifecycle_response_timeout(&config, &command);
-    let (method, target, body, wait_request_id, retry_safe) = prepare_remote_request(command);
-    let waited_for_operation = wait_request_id.is_some();
-    let mut response = control_request_with_retry_timeout(
-        address,
-        &token,
-        method,
-        &target,
-        body.as_ref(),
-        retry_safe,
-        response_timeout,
-    )?;
-    if simple_status {
-        let registry =
-            control_request_with_retry(address, &token, "GET", "/v1/registry", None, false)
-                .ok()
-                .and_then(|value| value.get("registry").cloned())
-                .unwrap_or_else(|| {
-                    serde_json::json!({
-                        "state": "unavailable",
-                        "activeRevision": null,
-                        "diskRevision": null,
-                        "detail": "registry reconciliation status is unavailable"
-                    })
-                });
-        if let Some(object) = response.as_object_mut() {
-            object.insert("registry".to_owned(), registry);
-        }
-    }
-    if let Some(request_id) = wait_request_id {
-        let reload = config.cooperative_actions.chrome_extension_reload.as_ref();
-        let timeout = reload.map_or(25_000, |value| value.timeout_ms.saturating_add(5_000));
-        let poll_interval = reload.map_or(250, |value| value.poll_interval_ms);
-        response = wait_for_cooperative_operation(
+    let commands = expand_remote_mutations(command, &config)?;
+    let command_count = commands.len();
+    let mut batch_json = Vec::new();
+    for (command_index, command) in commands.into_iter().enumerate() {
+        let response_timeout = lifecycle_response_timeout(&config, &command);
+        let (method, target, body, wait_request_id, retry_safe) =
+            prepare_remote_request(command.clone());
+        let waited_for_operation = wait_request_id.is_some();
+        let mut response = control_request_with_retry_timeout(
             address,
             &token,
-            &request_id,
-            timeout,
-            poll_interval,
-            response,
+            method,
+            &target,
+            body.as_ref(),
+            retry_safe,
+            response_timeout,
         )?;
+        if simple_status {
+            let registry =
+                control_request_with_retry(address, &token, "GET", "/v1/registry", None, false)
+                    .ok()
+                    .and_then(|value| value.get("registry").cloned())
+                    .unwrap_or_else(|| {
+                        serde_json::json!({
+                            "state": "unavailable",
+                            "activeRevision": null,
+                            "diskRevision": null,
+                            "detail": "registry reconciliation status is unavailable"
+                        })
+                    });
+            if let Some(object) = response.as_object_mut() {
+                object.insert("registry".to_owned(), registry);
+            }
+        }
+        if let Some(request_id) = wait_request_id {
+            let reload = config.cooperative_actions.chrome_extension_reload.as_ref();
+            let timeout = reload.map_or(25_000, |value| value.timeout_ms.saturating_add(5_000));
+            let poll_interval = reload.map_or(250, |value| value.poll_interval_ms);
+            response = wait_for_cooperative_operation(
+                address,
+                &token,
+                &request_id,
+                timeout,
+                poll_interval,
+                response,
+            )?;
+        }
+        if command_count > 1 && json_output {
+            batch_json.push(remote_response_document(
+                resolved.path(),
+                address,
+                &response,
+            ));
+        } else {
+            if command_count > 1
+                && let RemoteCommand::Mutate {
+                    action,
+                    service_ids,
+                    ..
+                } = &command
+            {
+                println!(
+                    "\n[batch {}/{}] {} {}",
+                    command_index + 1,
+                    command_count,
+                    control_action_name(*action),
+                    service_ids.first().map_or("-", String::as_str)
+                );
+            }
+            print_remote_response(
+                resolved.path(),
+                address,
+                &response,
+                json_output,
+                simple_status,
+            )?;
+        }
+        if waited_for_operation && response["operation"]["status"].as_str() == Some("failed") {
+            let category = response["operation"]["errorCategory"]
+                .as_str()
+                .unwrap_or("cooperative_action_failed");
+            let message = response["operation"]["message"]
+                .as_str()
+                .unwrap_or("Chrome extension cooperative reload failed");
+            return Err(format!("{category}: {message}"));
+        }
     }
-    print_remote_response(
-        resolved.path(),
-        address,
-        &response,
-        json_output,
-        simple_status,
-    )?;
-    if waited_for_operation && response["operation"]["status"].as_str() == Some("failed") {
-        let category = response["operation"]["errorCategory"]
-            .as_str()
-            .unwrap_or("cooperative_action_failed");
-        let message = response["operation"]["message"]
-            .as_str()
-            .unwrap_or("Chrome extension cooperative reload failed");
-        return Err(format!("{category}: {message}"));
+    if command_count > 1 && json_output {
+        println!(
+            "{}",
+            serde_json::to_string(&batch_json)
+                .expect("batch control response JSON serialization cannot fail")
+        );
     }
+    Ok(())
+}
+
+fn control_action_name(action: ControlAction) -> &'static str {
+    match action {
+        ControlAction::Start => "start",
+        ControlAction::Stop => "stop",
+        ControlAction::Restart => "restart",
+    }
+}
+
+fn expand_remote_mutations(
+    command: RemoteCommand,
+    config: &crate::adapters::config::SupervisorConfig,
+) -> Result<Vec<RemoteCommand>, String> {
+    let RemoteCommand::Mutate {
+        action,
+        service_ids,
+        reason,
+        actor,
+        request_id,
+        config: explicit_config,
+        json,
+    } = command
+    else {
+        return Ok(vec![command]);
+    };
+
+    let ordered_service_ids = order_mutation_service_ids(config, &service_ids, action)?;
+    let total = ordered_service_ids.len();
+    ordered_service_ids
+        .into_iter()
+        .enumerate()
+        .map(|(index, service_id)| {
+            let request_id = request_id
+                .as_deref()
+                .map(|base| mutation_request_id(base, index, total))
+                .transpose()?;
+            Ok(RemoteCommand::Mutate {
+                action,
+                service_ids: vec![service_id],
+                reason: reason.clone(),
+                actor,
+                request_id,
+                config: explicit_config.clone(),
+                json,
+            })
+        })
+        .collect()
+}
+
+fn mutation_request_id(base: &str, index: usize, total: usize) -> Result<String, String> {
+    if total <= 1 {
+        return Ok(base.to_owned());
+    }
+    parse_request_id(&OsString::from(format!("{base}-{}", index + 1)))
+}
+
+fn order_mutation_service_ids(
+    config: &crate::adapters::config::SupervisorConfig,
+    requested: &[String],
+    action: ControlAction,
+) -> Result<Vec<String>, String> {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let mut unique = Vec::new();
+    let mut requested_set = BTreeSet::new();
+    for service_id in requested {
+        if !config.services.contains_key(service_id) {
+            return Err(format!("service not found in configuration: {service_id}"));
+        }
+        if requested_set.insert(service_id.clone()) {
+            unique.push(service_id.clone());
+        }
+    }
+    if unique.is_empty() {
+        return Err("at least one service ID is required".to_owned());
+    }
+    if action != ControlAction::Stop {
+        let mut visiting = BTreeSet::new();
+        let mut visited = BTreeSet::new();
+        let mut ordered = Vec::new();
+        for service_id in &unique {
+            visit_requested_start(
+                service_id,
+                config,
+                &requested_set,
+                &mut visiting,
+                &mut visited,
+                &mut ordered,
+            )?;
+        }
+        return Ok(ordered);
+    }
+
+    let positions = unique
+        .iter()
+        .enumerate()
+        .map(|(position, service_id)| (service_id.as_str(), position))
+        .collect::<BTreeMap<_, _>>();
+    let mut remaining_dependents = unique
+        .iter()
+        .map(|service_id| (service_id.clone(), 0_usize))
+        .collect::<BTreeMap<_, _>>();
+    let mut dependencies = unique
+        .iter()
+        .map(|service_id| (service_id.clone(), Vec::<String>::new()))
+        .collect::<BTreeMap<_, _>>();
+    for service_id in &unique {
+        let service = config
+            .services
+            .get(service_id)
+            .expect("service IDs were validated above");
+        for dependency in &service.depends_on {
+            if !requested_set.contains(dependency) {
+                continue;
+            }
+            *remaining_dependents
+                .get_mut(dependency)
+                .expect("requested dependency should have a position") += 1;
+            dependencies
+                .get_mut(service_id)
+                .expect("requested service should have dependencies")
+                .push(dependency.clone());
+        }
+    }
+    let mut ready = unique
+        .iter()
+        .filter(|service_id| remaining_dependents.get(*service_id) == Some(&0))
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    let mut ordered = Vec::with_capacity(unique.len());
+    while !ready.is_empty() {
+        ready.sort_by_key(|service_id| positions.get(service_id).copied().unwrap_or(usize::MAX));
+        let service_id = ready.remove(0).to_owned();
+        ordered.push(service_id.clone());
+        for dependency in dependencies
+            .get(&service_id)
+            .expect("requested service should have a dependency entry")
+        {
+            let remaining = remaining_dependents
+                .get_mut(dependency)
+                .expect("requested dependency should have a remaining count");
+            *remaining -= 1;
+            if *remaining == 0 {
+                ready.push(dependency);
+            }
+        }
+    }
+    if ordered.len() != unique.len() {
+        return Err("service dependency cycle reached while ordering batch mutation".to_owned());
+    }
+    Ok(ordered)
+}
+
+fn visit_requested_start(
+    service_id: &str,
+    config: &crate::adapters::config::SupervisorConfig,
+    requested: &std::collections::BTreeSet<String>,
+    visiting: &mut std::collections::BTreeSet<String>,
+    visited: &mut std::collections::BTreeSet<String>,
+    ordered: &mut Vec<String>,
+) -> Result<(), String> {
+    if visited.contains(service_id) {
+        return Ok(());
+    }
+    if !visiting.insert(service_id.to_owned()) {
+        return Err(format!("service dependency cycle reached at {service_id}"));
+    }
+    let service = config
+        .services
+        .get(service_id)
+        .expect("service IDs were validated above");
+    for dependency in &service.depends_on {
+        if requested.contains(dependency) {
+            visit_requested_start(dependency, config, requested, visiting, visited, ordered)?;
+        }
+    }
+    visiting.remove(service_id);
+    visited.insert(service_id.to_owned());
+    ordered.push(service_id.to_owned());
     Ok(())
 }
 
@@ -1540,18 +1765,23 @@ fn lifecycle_response_timeout(
     const OPERATION_MARGIN_MS: u64 = 10_000;
 
     let RemoteCommand::Mutate {
-        action, service_id, ..
+        action,
+        service_ids,
+        ..
     } = command
     else {
         return None;
     };
-    let service = config.services.get(service_id)?;
-    let startup_ms = dependency_startup_budget_ms(config, service_id)?;
-    let operation_ms = match action {
-        ControlAction::Start => startup_ms,
-        ControlAction::Stop => service.shutdown_grace_ms,
-        ControlAction::Restart => service.shutdown_grace_ms.saturating_add(startup_ms),
-    };
+    let operation_ms = service_ids.iter().try_fold(0_u64, |total, service_id| {
+        let service = config.services.get(service_id)?;
+        let startup_ms = dependency_startup_budget_ms(config, service_id)?;
+        let service_budget = match action {
+            ControlAction::Start => startup_ms,
+            ControlAction::Stop => service.shutdown_grace_ms,
+            ControlAction::Restart => service.shutdown_grace_ms.saturating_add(startup_ms),
+        };
+        Some(total.saturating_add(service_budget))
+    })?;
     Some(Duration::from_millis(
         operation_ms.saturating_add(OPERATION_MARGIN_MS),
     ))
@@ -1630,12 +1860,16 @@ fn prepare_remote_request(
         ),
         RemoteCommand::Mutate {
             action,
-            service_id,
+            service_ids,
             reason,
             actor,
             request_id,
             ..
         } => {
+            let service_id = service_ids
+                .into_iter()
+                .next()
+                .expect("batch mutations are expanded before request preparation");
             let retry_safe = request_id.is_some();
             let action = match action {
                 ControlAction::Start => "start",
@@ -1800,12 +2034,8 @@ fn print_remote_response(
     if json_output {
         println!(
             "{}",
-            serde_json::to_string(&serde_json::json!({
-                "configuration": configuration,
-                "controlApi": format!("http://{address}"),
-                "response": response,
-            }))
-            .expect("control response JSON serialization cannot fail")
+            serde_json::to_string(&remote_response_document(configuration, address, response))
+                .expect("control response JSON serialization cannot fail")
         );
         return Ok(());
     }
@@ -1817,6 +2047,18 @@ fn print_remote_response(
             .expect("control response JSON serialization cannot fail")
     );
     Ok(())
+}
+
+fn remote_response_document(
+    configuration: &std::path::Path,
+    address: std::net::SocketAddr,
+    response: &serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!({
+        "configuration": configuration,
+        "controlApi": format!("http://{address}"),
+        "response": response,
+    })
 }
 
 fn format_simple_status(response: &serde_json::Value) -> Result<String, String> {
@@ -1900,8 +2142,9 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        Command, RemoteCommand, advance_live_log_cursor, format_simple_status,
-        lifecycle_response_timeout, live_log_target, parse,
+        Command, RemoteCommand, advance_live_log_cursor, expand_remote_mutations,
+        format_simple_status, lifecycle_response_timeout, live_log_target,
+        order_mutation_service_ids, parse,
     };
     use crate::adapters::config::SupervisorConfig;
     use crate::adapters::console_time::DisplayTimezone;
@@ -2112,7 +2355,7 @@ mod tests {
         .expect("generic development example must parse");
         let command = |action| RemoteCommand::Mutate {
             action,
-            service_id: "example-api".to_owned(),
+            service_ids: vec!["example-api".to_owned()],
             reason: "timeout contract".to_owned(),
             actor: ApiActor::User,
             request_id: None,
@@ -2135,7 +2378,7 @@ mod tests {
 
         let dependent_command = |action| RemoteCommand::Mutate {
             action,
-            service_id: "example-web".to_owned(),
+            service_ids: vec!["example-web".to_owned()],
             reason: "dependency timeout contract".to_owned(),
             actor: ApiActor::User,
             request_id: None,
@@ -2160,7 +2403,7 @@ mod tests {
             parse(args(&["start", "api"])),
             Ok(Command::Remote(RemoteCommand::Mutate {
                 action: ControlAction::Start,
-                service_id: "api".to_owned(),
+                service_ids: vec!["api".to_owned()],
                 reason: "user CLI start request".to_owned(),
                 actor: ApiActor::User,
                 request_id: None,
@@ -2169,6 +2412,77 @@ mod tests {
             }))
         );
         assert!(parse(args(&["start", "api", "--actor", "codex"])).is_err());
+    }
+
+    #[test]
+    fn lifecycle_client_accepts_multiple_services_and_keeps_dependency_order() {
+        let parsed = parse(args(&[
+            "stop",
+            "example-web",
+            "example-api",
+            "--reason",
+            "stop workspace services",
+        ]));
+        assert_eq!(
+            parsed,
+            Ok(Command::Remote(RemoteCommand::Mutate {
+                action: ControlAction::Stop,
+                service_ids: vec!["example-web".to_owned(), "example-api".to_owned()],
+                reason: "stop workspace services".to_owned(),
+                actor: ApiActor::User,
+                request_id: None,
+                config: None,
+                json: false,
+            }))
+        );
+
+        let config = SupervisorConfig::parse_json(include_str!(
+            "../config/examples/development-workspace.services.json"
+        ))
+        .expect("generic development example must parse");
+        assert_eq!(
+            order_mutation_service_ids(
+                &config,
+                &["example-web".to_owned(), "example-api".to_owned()],
+                ControlAction::Start,
+            )
+            .expect("start order"),
+            ["example-api", "example-web"]
+        );
+        assert_eq!(
+            order_mutation_service_ids(
+                &config,
+                &["example-api".to_owned(), "example-web".to_owned()],
+                ControlAction::Stop,
+            )
+            .expect("stop order"),
+            ["example-web", "example-api"]
+        );
+
+        let expanded = expand_remote_mutations(
+            RemoteCommand::Mutate {
+                action: ControlAction::Stop,
+                service_ids: vec!["example-web".to_owned(), "example-api".to_owned()],
+                reason: "stop workspace services".to_owned(),
+                actor: ApiActor::User,
+                request_id: Some("batch-stop".to_owned()),
+                config: None,
+                json: false,
+            },
+            &config,
+        )
+        .expect("batch expansion");
+        assert_eq!(expanded.len(), 2);
+        assert!(matches!(
+            &expanded[0],
+            RemoteCommand::Mutate { service_ids, request_id: Some(request_id), .. }
+                if service_ids == &["example-web".to_owned()] && request_id == "batch-stop-1"
+        ));
+        assert!(matches!(
+            &expanded[1],
+            RemoteCommand::Mutate { service_ids, request_id: Some(request_id), .. }
+                if service_ids == &["example-api".to_owned()] && request_id == "batch-stop-2"
+        ));
     }
 
     #[test]
@@ -2227,7 +2541,7 @@ mod tests {
             ])),
             Ok(Command::Remote(RemoteCommand::Mutate {
                 action: ControlAction::Restart,
-                service_id: "akusidecar".to_owned(),
+                service_ids: vec!["akusidecar".to_owned()],
                 reason: "source changed".to_owned(),
                 actor: ApiActor::Codex,
                 request_id: None,
