@@ -28,7 +28,8 @@ use windows_sys::Win32::System::Console::{
     CTRL_BREAK_EVENT, GenerateConsoleCtrlEvent, GetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE,
 };
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-    CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
+    CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+    TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
 };
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
@@ -44,7 +45,9 @@ use windows_sys::Win32::System::Threading::{
     TerminateProcess, WaitForSingleObject,
 };
 
-use crate::application::{CapturedLogStream, ManagedProcessTree, ServiceLogSink, TreeStopReport};
+use crate::application::{
+    CapturedLogStream, ManagedProcessTree, ProcessIdentity, ServiceLogSink, TreeStopReport,
+};
 
 const INITIAL_OWNED_PROCESS_CAPACITY: usize = 256;
 const MAX_OWNED_PROCESSES: usize = 65_536;
@@ -360,6 +363,29 @@ impl OwnedProcessTree {
     /// Returns an operating-system query error or a bounded-capacity error.
     pub fn owned_pids(&self) -> Result<Vec<u32>, ProcessTreeError> {
         query_job_pids(self.job.raw())
+    }
+
+    /// Returns current Job Object membership with best-effort executable names.
+    ///
+    /// Process metadata is diagnostic only. A Toolhelp snapshot can race with
+    /// a process that exits or can be denied by the operating system; those
+    /// cases intentionally produce an absent name while preserving the
+    /// authoritative Job Object PID list.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the authoritative Job Object PID list cannot be
+    /// queried. A process-name snapshot failure is treated as missing metadata.
+    pub fn owned_processes(&self) -> Result<Vec<ProcessIdentity>, ProcessTreeError> {
+        let pids = self.owned_pids()?;
+        let names = query_process_names();
+        Ok(pids
+            .into_iter()
+            .map(|pid| ProcessIdentity {
+                pid,
+                name: names.get(&pid).cloned(),
+            })
+            .collect())
     }
 
     /// Checks current Job Object membership for a PID.
@@ -745,6 +771,10 @@ impl ManagedProcessTree for OwnedProcessTree {
 
     fn owned_pids(&self) -> Result<Vec<u32>, Self::Error> {
         Self::owned_pids(self)
+    }
+
+    fn owned_processes(&self) -> Result<Vec<ProcessIdentity>, Self::Error> {
+        Self::owned_processes(self)
     }
 
     fn try_wait(&mut self) -> Result<Option<ExitStatus>, Self::Error> {
@@ -1222,6 +1252,45 @@ fn query_job_pids(job: HANDLE) -> Result<Vec<u32>, ProcessTreeError> {
             })
             .collect();
     }
+}
+
+/// Builds a best-effort PID-to-executable map from one point-in-time process
+/// snapshot. The caller deliberately treats an empty map as a diagnostic
+/// fallback because process names are not ownership evidence.
+fn query_process_names() -> BTreeMap<u32, String> {
+    let raw_snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if raw_snapshot == INVALID_HANDLE_VALUE {
+        return BTreeMap::new();
+    }
+    let snapshot = OwnedHandle(raw_snapshot as isize);
+    let mut entry = PROCESSENTRY32W {
+        dwSize: u32::try_from(size_of::<PROCESSENTRY32W>())
+            .expect("PROCESSENTRY32W size fits in a Win32 u32"),
+        ..PROCESSENTRY32W::default()
+    };
+    let first = unsafe { Process32FirstW(snapshot.raw(), ptr::addr_of_mut!(entry)) };
+    if first == 0 {
+        return BTreeMap::new();
+    }
+
+    let mut names = BTreeMap::new();
+    loop {
+        let name_length = entry
+            .szExeFile
+            .iter()
+            .position(|character| *character == 0)
+            .unwrap_or(entry.szExeFile.len());
+        if name_length > 0 {
+            names.insert(
+                entry.th32ProcessID,
+                String::from_utf16_lossy(&entry.szExeFile[..name_length]),
+            );
+        }
+        if unsafe { Process32NextW(snapshot.raw(), ptr::addr_of_mut!(entry)) } == 0 {
+            break;
+        }
+    }
+    names
 }
 
 fn expanded_job_pid_capacity(current: usize, assigned: usize) -> Option<usize> {

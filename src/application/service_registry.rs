@@ -13,8 +13,8 @@ use crate::domain::{
 
 use super::{
     HealthCheckSpec, HealthProbe, HealthSnapshot, LaunchSpec, ManagedProcessTree, PortInspector,
-    PortOccupant, ProcessTreeSpawner, RestartOutcome, ServiceRuntime, ServiceRuntimeError,
-    StartOutcome, StopOutcome, StopProgress, TreeStopReport,
+    PortOccupant, ProcessIdentity, ProcessTreeSpawner, RestartOutcome, ServiceRuntime,
+    ServiceRuntimeError, StartOutcome, StopOutcome, StopProgress, TreeStopReport,
 };
 
 const DEFAULT_RESTART_STABILITY_WINDOW: Duration = Duration::from_mins(1);
@@ -164,6 +164,7 @@ pub struct ServiceSnapshot {
     pub lifecycle: LifecycleState,
     pub root_pid: Option<u32>,
     pub owned_pids: Vec<u32>,
+    pub owned_processes: Vec<ProcessIdentity>,
     pub health: HealthSnapshot,
     pub desired_state: DesiredState,
     pub started_at_unix_ms: Option<u64>,
@@ -619,13 +620,18 @@ where
         let control = lock(&entry.control)?;
         let health = lock(&entry.health)?.clone();
         let supervision = lock(&entry.supervision)?;
-        let (lifecycle, root_pid, owned_pids) = entry
+        let (lifecycle, root_pid, owned_processes) = entry
             .runtime
             .inspect_with(|lifecycle, process| match process {
-                Some(process) => Ok((lifecycle, Some(process.root_pid()), process.owned_pids()?)),
+                Some(process) => Ok((
+                    lifecycle,
+                    Some(process.root_pid()),
+                    process.owned_processes()?,
+                )),
                 None => Ok((lifecycle, None, Vec::new())),
             })
             .map_err(map_observation_error)?;
+        let owned_pids = owned_processes.iter().map(|process| process.pid).collect();
 
         Ok(ServiceSnapshot {
             id: entry.registration.id.clone(),
@@ -634,6 +640,7 @@ where
             lifecycle,
             root_pid,
             owned_pids,
+            owned_processes,
             health,
             desired_state: supervision.desired_state,
             started_at_unix_ms: supervision.started_at_unix_ms,

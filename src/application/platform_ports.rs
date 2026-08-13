@@ -12,6 +12,45 @@ pub enum CapturedLogStream {
     Stderr,
 }
 
+/// Read-only identity metadata for one process currently owned by a service.
+///
+/// The PID remains the authoritative ownership identifier. `name` is only a
+/// diagnostic hint and may be absent when the operating system does not allow
+/// the Supervisor to inspect a process that has just exited.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProcessIdentity {
+    pub pid: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+/// Produces a compact, deterministic process-name summary for human status
+/// views. This intentionally excludes command lines: they can contain secrets
+/// and are not needed to explain process ownership.
+#[must_use]
+pub fn summarize_processes(processes: &[ProcessIdentity]) -> String {
+    if processes.is_empty() {
+        return "-".to_owned();
+    }
+
+    let mut counts = BTreeMap::<String, usize>::new();
+    for process in processes {
+        let name = process
+            .name
+            .as_deref()
+            .filter(|name| !name.is_empty())
+            .unwrap_or("unknown")
+            .to_ascii_lowercase();
+        *counts.entry(name).or_default() += 1;
+    }
+    counts
+        .into_iter()
+        .map(|(name, count)| format!("{name} x{count}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 /// Receives bytes after they have been persisted by a platform log pump.
 ///
 /// Implementations must keep this path bounded: service output and durable log
@@ -133,6 +172,23 @@ pub trait ManagedProcessTree: Debug + Send {
     ///
     /// Returns a platform error if membership cannot be observed safely.
     fn owned_pids(&self) -> Result<Vec<u32>, Self::Error>;
+
+    /// Returns current ownership IDs with best-effort executable names.
+    ///
+    /// The default implementation preserves portability for platform adapters
+    /// that have not implemented process metadata yet. Lifecycle decisions
+    /// must continue to use [`Self::owned_pids`] and never depend on names.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same platform observation error as [`Self::owned_pids`].
+    fn owned_processes(&self) -> Result<Vec<ProcessIdentity>, Self::Error> {
+        self.owned_pids().map(|pids| {
+            pids.into_iter()
+                .map(|pid| ProcessIdentity { pid, name: None })
+                .collect()
+        })
+    }
 
     /// Observes launcher exit without blocking.
     ///
@@ -259,7 +315,7 @@ pub trait ShutdownSignal: Debug + Send + Sync {
 mod tests {
     use std::ffi::OsStr;
 
-    use super::LaunchSpec;
+    use super::{LaunchSpec, ProcessIdentity, summarize_processes};
 
     #[test]
     fn launch_spec_keeps_executable_and_arguments_separate() {
@@ -276,5 +332,26 @@ mod tests {
             launch.environment().collect::<Vec<_>>(),
             [(OsStr::new("NODE_ENV"), OsStr::new("development"))]
         );
+    }
+
+    #[test]
+    fn process_summary_groups_names_without_exposing_command_lines() {
+        let processes = vec![
+            ProcessIdentity {
+                pid: 10,
+                name: Some("Node.exe".to_owned()),
+            },
+            ProcessIdentity {
+                pid: 11,
+                name: Some("node.exe".to_owned()),
+            },
+            ProcessIdentity {
+                pid: 12,
+                name: None,
+            },
+        ];
+
+        assert_eq!(summarize_processes(&processes), "node.exe x2,unknown x1");
+        assert_eq!(summarize_processes(&[]), "-");
     }
 }

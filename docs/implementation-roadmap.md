@@ -584,7 +584,8 @@ Phase 4.1.1 - deadline and operator visibility hardening:
   polling delay, and response read instead of resetting per attempt;
 - [x] a slow loopback fixture proves the request cannot fall through to the
   ordinary five-second control timeout;
-- [x] `simple-status` remains unchanged for matching current revisions; and
+- [x] `simple-status` keeps its compact watcher-compatible table for matching
+  current revisions, including grouped owned-process diagnostics; and
 - [x] non-current, unavailable, or mismatched registry state prepends one
   bounded warning without expanding the read-only MCP surface.
 

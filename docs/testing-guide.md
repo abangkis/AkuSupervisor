@@ -141,14 +141,18 @@ Leave `cargo run` active in the first terminal. In a second terminal:
 cd C:\WorkspaceCodex\AkuWorkspace\AkuSupervisor
 cargo run -- status
 cargo run -- simple-status
+cargo run -- simple-status --pids
 cargo run -- start akusidecar
 cargo run -- restart akusidecar --actor codex --reason "source changed"
 cargo run -- stop akusidecar --reason "manual supervised stop"
 ```
 
-`simple-status` prints the same compact service table used by the watcher;
-`status` retains the detailed human JSON view and `status --json` remains the
-machine-readable envelope. The default actor is `user`. For a user CLI
+`simple-status` prints the same compact service table used by the watcher. Its
+`OWNED APPS` column groups the owned process tree by executable name; use
+`simple-status --pids` for the raw PID list. The `status --json` response keeps
+`ownedPids` and adds best-effort `ownedProcesses` metadata. `status` retains the
+detailed human JSON view and `status --json` remains the machine-readable
+envelope. The default actor is `user`. For a user CLI
 mutation, `--reason` is optional;
 when omitted the client supplies a bounded audit reason such as
 `user CLI start request`. Codex uses `--actor codex` and must supply an explicit

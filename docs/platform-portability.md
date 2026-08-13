@@ -93,6 +93,7 @@ not considered a portable guarantee.
 | Forced stop | `TerminateJobObject` | bounded `SIGKILL` through the chosen ownership boundary | bounded `SIGKILL` to verified owned group |
 | Exit observation | process handle / Job query | `pidfd` or wait primitives | `kqueue` / wait primitives |
 | Port diagnostics | IP Helper TCP tables | netlink or `/proc` adapter | `sysctl` or `libproc` adapter |
+| Owned-process names for status | Toolhelp process snapshot (best effort) | `/proc/<pid>/comm` or equivalent | `libproc`/`proc_pidpath` equivalent |
 | Supervisor shutdown | console handler plus shared authenticated control request | POSIX signal adapter plus the same control request | POSIX signal adapter plus the same control request |
 | Per-service shutdown evidence | `TreeStopReport` from Job Object adapter | Same shared report from process-group/cgroup adapter | Same shared report from process-group adapter |
 | Secure token entropy | CNG `BCryptGenRandom` | `getrandom(2)` or equivalent OS API | `SecRandomCopyBytes` or equivalent OS API |
@@ -107,6 +108,11 @@ not considered a portable guarantee.
 The Linux and macOS entries are design candidates, not implemented promises.
 Each backend must independently pass the same ownership safety contract before
 it is considered supported.
+
+The human `simple-status` view uses this metadata only to group the owned tree
+by executable name. The `ownedPids` list and the platform ownership boundary
+remain authoritative; a missing or stale process name must degrade to
+`unknown`, never to a failed lifecycle or health state.
 
 ## Current portability assessment
 

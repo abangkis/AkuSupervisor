@@ -27,7 +27,7 @@ use crate::adapters::supervisor_shutdown::{SupervisorShutdown, SupervisorShutdow
 use crate::application::{
     ControlAction, ControlMutationOutcome, CooperativeActionError, DependencyAwareControl,
     DependencyPlanObserver, RegistryBuildError, RegistryReconciliationStatus, ServiceSnapshot,
-    SupervisorControl, stable_shutdown_order,
+    SupervisorControl, stable_shutdown_order, summarize_processes,
 };
 use crate::domain::{Actor, Reason};
 use crate::platform::host::{
@@ -853,7 +853,7 @@ fn print_status(control: &dyn SupervisorControl) {
         Ok(snapshots) => {
             println!();
             println!(
-                "SERVICE              STATE                DESIRED     HEALTH      ROOT PID   OWNED PIDS       HOLD"
+                "SERVICE              STATE                DESIRED     HEALTH      ROOT PID   OWNED APPS                         HOLD"
             );
             for snapshot in snapshots {
                 print_snapshot(&snapshot);
@@ -868,24 +868,15 @@ fn print_snapshot(snapshot: &ServiceSnapshot) {
     let root_pid = snapshot
         .root_pid
         .map_or_else(|| "-".to_owned(), |pid| pid.to_string());
-    let owned_pids = if snapshot.owned_pids.is_empty() {
-        "-".to_owned()
-    } else {
-        snapshot
-            .owned_pids
-            .iter()
-            .map(u32::to_string)
-            .collect::<Vec<_>>()
-            .join(",")
-    };
+    let owned_apps = summarize_processes(&snapshot.owned_processes);
     println!(
-        "{:<20} {:<20} {:<11} {:<11} {:<10} {:<16} {:?}",
+        "{:<20} {:<20} {:<11} {:<11} {:<10} {:<32} {:?}",
         snapshot.id,
         format!("{:?}", snapshot.lifecycle).to_lowercase(),
         format!("{:?}", snapshot.desired_state).to_lowercase(),
         format!("{:?}", snapshot.health.status).to_lowercase(),
         root_pid,
-        owned_pids,
+        owned_apps,
         snapshot.operator_hold
     );
     if let Some(last_action) = &snapshot.last_action {

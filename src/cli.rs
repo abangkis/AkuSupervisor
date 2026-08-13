@@ -8,7 +8,7 @@ use std::time::Duration;
 use crate::adapters::console_time::DisplayTimezone;
 use crate::adapters::control_http::ApiActor;
 use crate::adapters::service_logs::{LiveLogCursor, LiveLogEventKind, LiveLogSelection, LogStream};
-use crate::application::ControlAction;
+use crate::application::{ControlAction, ProcessIdentity, summarize_processes};
 use crate::version_banner;
 
 const HELP: &str = "AkuSupervisor - local development service supervisor\n\n\
@@ -18,7 +18,7 @@ Usage:\n\
   aku-supervisor run [--timezone <local|utc>]\n\
   aku-supervisor run --config <path> [--timezone <local|utc>]\n\
   aku-supervisor status [--json] [--config <path>]\n\
-  aku-supervisor simple-status [--config <path>]\n\
+  aku-supervisor simple-status [--pids] [--config <path>]\n\
   aku-supervisor instance-status [--json] [--config <path>]\n\
   aku-supervisor registry-status [--json] [--config <path>]\n\
   aku-supervisor events [--after <sequence>] [--limit <n>] [--json] [--config <path>]\n\
@@ -94,6 +94,7 @@ enum RemoteCommand {
     },
     SimpleStatus {
         config: Option<PathBuf>,
+        show_pids: bool,
     },
     InstanceStatus {
         config: Option<PathBuf>,
@@ -592,14 +593,43 @@ fn parse_remote_status(arguments: &[OsString]) -> Result<Command, String> {
 }
 
 fn parse_simple_status(arguments: &[OsString]) -> Result<Command, String> {
-    let (config, json) = parse_output_options(arguments)?;
-    if json {
-        return Err(
-            "simple-status always uses the human-readable table; use status --json for machine output"
-                .to_owned(),
-        );
+    let mut config = None;
+    let mut show_pids = false;
+    let mut index = 0;
+    while index < arguments.len() {
+        match arguments[index].to_str() {
+            Some("--pids") if !show_pids => {
+                show_pids = true;
+                index += 1;
+            }
+            Some("--config") if config.is_none() => {
+                config = Some(PathBuf::from(option_value(arguments, index)?));
+                index += 2;
+            }
+            Some("--pids" | "--config") => {
+                return Err(format!(
+                    "duplicate option: {}",
+                    arguments[index].to_string_lossy()
+                ));
+            }
+            Some("--json") => {
+                return Err(
+                    "simple-status always uses the human-readable table; use status --json for machine output"
+                        .to_owned(),
+                );
+            }
+            _ => {
+                return Err(format!(
+                    "unsupported option: {}",
+                    arguments[index].to_string_lossy()
+                ));
+            }
+        }
     }
-    Ok(Command::Remote(RemoteCommand::SimpleStatus { config }))
+    Ok(Command::Remote(RemoteCommand::SimpleStatus {
+        config,
+        show_pids,
+    }))
 }
 
 fn parse_instance_status(arguments: &[OsString]) -> Result<Command, String> {
@@ -1446,7 +1476,7 @@ fn remote_request(command: RemoteCommand) -> Result<(), String> {
 
     let explicit_config = match &command {
         RemoteCommand::Status { config, .. }
-        | RemoteCommand::SimpleStatus { config }
+        | RemoteCommand::SimpleStatus { config, .. }
         | RemoteCommand::InstanceStatus { config, .. }
         | RemoteCommand::RegistryStatus { config, .. }
         | RemoteCommand::Events { config, .. }
@@ -1469,6 +1499,13 @@ fn remote_request(command: RemoteCommand) -> Result<(), String> {
         RemoteCommand::SimpleStatus { .. } => false,
     };
     let simple_status = matches!(&command, RemoteCommand::SimpleStatus { .. });
+    let show_pids = matches!(
+        &command,
+        RemoteCommand::SimpleStatus {
+            show_pids: true,
+            ..
+        }
+    );
     let resolved = resolve_config_path(explicit_config).map_err(|error| error.to_string())?;
     let source = fs::read_to_string(resolved.path())
         .map_err(|error| format!("failed to read {}: {error}", resolved.path().display()))?;
@@ -1555,6 +1592,7 @@ fn remote_request(command: RemoteCommand) -> Result<(), String> {
                 &response,
                 json_output,
                 simple_status,
+                show_pids,
             )?;
         }
         if waited_for_operation && response["operation"]["status"].as_str() == Some("failed") {
@@ -2026,9 +2064,10 @@ fn print_remote_response(
     response: &serde_json::Value,
     json_output: bool,
     simple_status: bool,
+    show_pids: bool,
 ) -> Result<(), String> {
     if simple_status {
-        println!("{}", format_simple_status(response)?);
+        println!("{}", format_simple_status(response, show_pids)?);
         return Ok(());
     }
     if json_output {
@@ -2061,7 +2100,42 @@ fn remote_response_document(
     })
 }
 
-fn format_simple_status(response: &serde_json::Value) -> Result<String, String> {
+fn owned_process_summary(service: &serde_json::Value, owned_pids: &str) -> String {
+    service
+        .get("ownedProcesses")
+        .and_then(serde_json::Value::as_array)
+        .map_or_else(
+            || {
+                if owned_pids == "-" {
+                    "-".to_owned()
+                } else {
+                    let count = owned_pids.split(',').count();
+                    format!("unknown x{count}")
+                }
+            },
+            |processes| {
+                let identities = processes
+                    .iter()
+                    .filter_map(|process| {
+                        process
+                            .get("pid")
+                            .and_then(serde_json::Value::as_u64)
+                            .and_then(|pid| u32::try_from(pid).ok())
+                            .map(|pid| ProcessIdentity {
+                                pid,
+                                name: process
+                                    .get("name")
+                                    .and_then(serde_json::Value::as_str)
+                                    .map(str::to_owned),
+                            })
+                    })
+                    .collect::<Vec<_>>();
+                summarize_processes(&identities)
+            },
+        )
+}
+
+fn format_simple_status(response: &serde_json::Value, show_pids: bool) -> Result<String, String> {
     let services = response
         .get("services")
         .and_then(serde_json::Value::as_array)
@@ -2085,7 +2159,7 @@ fn format_simple_status(response: &serde_json::Value) -> Result<String, String> 
         }
     }
     lines.push(
-        "SERVICE              STATE                DESIRED     HEALTH      ROOT PID   OWNED PIDS       HOLD"
+        "SERVICE              STATE                DESIRED     HEALTH      ROOT PID   OWNED APPS                         HOLD"
             .to_owned(),
     );
     for service in services {
@@ -2111,19 +2185,25 @@ fn format_simple_status(response: &serde_json::Value) -> Result<String, String> 
             })
             .filter(|pids| !pids.is_empty())
             .unwrap_or_else(|| "-".to_owned());
+        let owned_apps = owned_process_summary(service, &owned_pids);
+        let owned_display = if show_pids {
+            format!("{owned_apps} [{owned_pids}]")
+        } else {
+            owned_apps
+        };
         let health = service
             .get("health")
             .and_then(|health| health.get("status"))
             .and_then(serde_json::Value::as_str)
             .unwrap_or("-");
         lines.push(format!(
-            "{:<20} {:<20} {:<11} {:<11} {:<10} {:<16} {}",
+            "{:<20} {:<20} {:<11} {:<11} {:<10} {:<32} {}",
             text("id"),
             text("lifecycle"),
             text("desiredState"),
             health,
             root_pid,
-            owned_pids,
+            owned_display,
             text("operatorHold")
         ));
     }
@@ -2675,49 +2755,91 @@ mod tests {
         assert_eq!(
             parse(args(&["simple-status"])),
             Ok(Command::Remote(RemoteCommand::SimpleStatus {
-                config: None
+                config: None,
+                show_pids: false,
             }))
         );
         assert_eq!(
             parse(args(&["simple-status", "--config", "services.json"])),
             Ok(Command::Remote(RemoteCommand::SimpleStatus {
-                config: Some(PathBuf::from("services.json"))
+                config: Some(PathBuf::from("services.json")),
+                show_pids: false,
+            }))
+        );
+        assert_eq!(
+            parse(args(&["simple-status", "--pids"])),
+            Ok(Command::Remote(RemoteCommand::SimpleStatus {
+                config: None,
+                show_pids: true,
             }))
         );
         assert!(parse(args(&["simple-status", "--json"])).is_err());
 
-        let table = format_simple_status(&serde_json::json!({
-            "registry": {
-                "state": "current",
-                "activeRevision": "sha256:same",
-                "diskRevision": "sha256:same",
-                "detail": null
-            },
-            "services": [{
-                "id": "api",
-                "lifecycle": "running",
-                "desiredState": "running",
-                "health": { "status": "healthy" },
-                "rootPid": 1234,
-                "ownedPids": [1234, 5678],
-                "operatorHold": "none"
-            }]
-        }))
+        let table = format_simple_status(
+            &serde_json::json!({
+                "registry": {
+                    "state": "current",
+                    "activeRevision": "sha256:same",
+                    "diskRevision": "sha256:same",
+                    "detail": null
+                },
+                "services": [{
+                    "id": "api",
+                    "lifecycle": "running",
+                    "desiredState": "running",
+                    "health": { "status": "healthy" },
+                    "rootPid": 1234,
+                    "ownedPids": [1234, 5678],
+                    "ownedProcesses": [
+                        { "pid": 1234, "name": "api.exe" },
+                        { "pid": 5678, "name": "worker.exe" },
+                        { "pid": 9012, "name": "worker.exe" }
+                    ],
+                    "operatorHold": "none"
+                }]
+            }),
+            false,
+        )
         .expect("valid service table");
         assert!(table.contains("SERVICE              STATE"));
         assert!(table.contains("api                  running"));
-        assert!(table.contains("1234,5678"));
+        assert!(table.contains("api.exe x1,worker.exe x2"));
+        assert!(!table.contains("1234,5678"));
         assert!(!table.contains("REGISTRY WARNING"));
 
-        let warning = format_simple_status(&serde_json::json!({
-            "registry": {
-                "state": "deferred",
-                "activeRevision": "sha256:active",
-                "diskRevision": "sha256:disk",
-                "detail": "target is still running"
-            },
-            "services": []
-        }))
+        let detailed = format_simple_status(
+            &serde_json::json!({
+                "services": [{
+                    "id": "api",
+                    "lifecycle": "running",
+                    "desiredState": "running",
+                    "health": { "status": "healthy" },
+                    "rootPid": 1234,
+                    "ownedPids": [1234, 5678],
+                    "ownedProcesses": [
+                        { "pid": 1234, "name": "api.exe" },
+                        { "pid": 5678, "name": "worker.exe" }
+                    ],
+                    "operatorHold": "none"
+                }]
+            }),
+            true,
+        )
+        .expect("valid detailed service table");
+        assert!(detailed.contains("api.exe x1,worker.exe x1 [1234,5678]"));
+
+        let warning = format_simple_status(
+            &serde_json::json!({
+                "registry": {
+                    "state": "deferred",
+                    "activeRevision": "sha256:active",
+                    "diskRevision": "sha256:disk",
+                    "detail": "target is still running"
+                },
+                "services": []
+            }),
+            false,
+        )
         .expect("deferred registry table");
         assert!(warning.starts_with("REGISTRY WARNING: state=deferred"));
         assert!(warning.contains("active=sha256:active disk=sha256:disk"));

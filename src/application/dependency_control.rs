@@ -310,6 +310,7 @@ mod tests {
             lifecycle: LifecycleState::Stopped,
             root_pid: None,
             owned_pids: Vec::new(),
+            owned_processes: Vec::new(),
             health: HealthSnapshot::unknown(),
             desired_state: DesiredState::Stopped,
             started_at_unix_ms: None,

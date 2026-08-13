@@ -37,8 +37,8 @@ pub use health::{
 };
 pub use platform_ports::{
     CapturedLogStream, LaunchSpec, ManagedProcessTree, NetworkFamily, PortDiagnostic,
-    PortInspector, PortOccupant, ProcessTreeSpawner, ServiceLogSink, ShutdownSignal,
-    TreeStopReport,
+    PortInspector, PortOccupant, ProcessIdentity, ProcessTreeSpawner, ServiceLogSink,
+    ShutdownSignal, TreeStopReport, summarize_processes,
 };
 pub use registry_reconciliation::{
     RegistryReconciliationSnapshot, RegistryReconciliationState, RegistryReconciliationStatus,

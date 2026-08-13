@@ -425,7 +425,7 @@ mod tests {
 
     use crate::application::{
         ControlAction, ControlError, ControlMutationOutcome, ControlMutationResult, HealthSnapshot,
-        ServiceSnapshot,
+        ProcessIdentity, ServiceSnapshot,
     };
     use crate::domain::{Actor, DesiredState, LifecycleState, OperatorHold, Reason};
 
@@ -449,6 +449,10 @@ mod tests {
                 operator_hold: OperatorHold::None,
                 root_pid: Some(42),
                 owned_pids: vec![42],
+                owned_processes: vec![ProcessIdentity {
+                    pid: 42,
+                    name: Some("fixture.exe".to_owned()),
+                }],
                 last_action: None,
                 health: HealthSnapshot::healthy(true, None, "owned process is running".to_owned()),
                 started_at_unix_ms: Some(1),

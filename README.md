@@ -487,9 +487,15 @@ registration commit waits for a bounded acknowledgment and returns that actual
 runtime result; `offline` means no running Supervisor could be queried and the
 committed file will be loaded on the next normal startup.
 
-`simple-status` keeps its ordinary table unchanged while the registry is
-current. If disk and runtime diverge, it prepends one bounded `REGISTRY WARNING`
-with state, active revision, disk revision, and diagnostic detail.
+`simple-status` shows a compact table shared with the watcher. The `OWNED APPS`
+column groups the Supervisor-owned process tree by executable name (for example,
+`aku-sidecar.exe x1,codex.exe x1,node.exe x4`); names are diagnostic only and
+the Job Object PID membership remains the ownership authority. Use
+`simple-status --pids` when the raw PID list is useful. The detailed
+`status --json` response retains `ownedPids` and also exposes best-effort
+`ownedProcesses` entries with `pid` and optional `name`. If disk and runtime
+diverge, `simple-status` prepends one bounded `REGISTRY WARNING` with state,
+active revision, disk revision, and diagnostic detail.
 
 After a compatible extension build has been loaded into Chrome once, either the
 user or Codex can request the only browser-side mutation exposed by
