@@ -49,7 +49,7 @@ function Get-BridgeIdentityProfile {
         throw "Bridge identity registry was not found: $bridgeIdentityRegistryPath"
     }
     $registry = Get-Content -LiteralPath $bridgeIdentityRegistryPath -Raw | ConvertFrom-Json
-    if ([int] $registry.schemaVersion -ne 1) {
+    if ([int] $registry.schemaVersion -ne 2) {
         throw "Unsupported Bridge identity registry schema: $($registry.schemaVersion)"
     }
     $property = $registry.profiles.PSObject.Properties[$ProfileName]
