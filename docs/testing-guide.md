@@ -412,6 +412,23 @@ argument, the watcher retains its original Supervisor-only behavior. The script
 validates every requested ID against the selected configuration before building;
 `akusupervisor` is not a service ID because `dev.ps1` already starts it.
 
+Normal mode deliberately validates every registered service and fails fast when
+any entry is invalid. If an unrelated checkout or generated binary is
+intentionally absent, retry with the opt-in partial profile printed by the
+failure message:
+
+```powershell
+.\scripts\dev.ps1 akusidecar -PartialStart
+```
+
+`-PartialStart` requires at least one service ID. It includes the requested IDs
+and their complete transitive `dependsOn` closure in a sibling ephemeral
+configuration, so paths and the shared `.runtime` directory keep their normal
+meaning. The source configuration is unchanged and the temporary file is removed
+on graceful cleanup. Validation is not bypassed for included services: a missing
+requested executable, invalid dependency, dependency cycle, or conflicting port
+inside the partial closure still stops startup.
+
 Requested IDs are de-duplicated case-insensitively while preserving the first
 occurrence and the exact order supplied by the operator. The watcher starts
 them sequentially: AkuSupervisor first resolves each target's transitive

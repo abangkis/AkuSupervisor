@@ -64,6 +64,15 @@ fn watcher_requires_executable_release_without_force_killing_an_owner() {
     assert!(script.contains("Registration tools or schema exposed to agents may be stale."));
     assert!(script.contains("install-codex-mcp.ps1"));
     assert!(script.contains("[switch] $ReleaseCheck"));
+    assert!(script.contains("[switch] $PartialStart"));
+    assert!(script.contains("Get-PartialStartupServiceIds"));
+    assert!(script.contains("New-PartialStartupConfiguration"));
+    assert!(script.contains("Remove-StalePartialStartupConfigurations"));
+    assert!(script.contains("Full configuration startup failed fast"));
+    assert!(script.contains("-PartialStart requires at least one startup service ID."));
+    assert!(script.contains("Source configuration remains unchanged"));
+    assert!(script.contains("Removed ephemeral partial startup configuration"));
+    assert!(script.contains("partial-start.ps1"));
     assert!(script.contains("[string] $ReleaseTag"));
     assert!(script.contains("-UsePackageVersionTag -Executable $devExecutable"));
     assert!(script.contains("watcher and services will not be started"));
@@ -108,6 +117,8 @@ fn canonical_watcher_bootstraps_only_stale_workspace_runtime() {
     let workspace = include_str!("../scripts/dev-akuworkspace.ps1");
 
     assert!(watcher.contains("[switch] $Rebuild"));
+    assert!(workspace.contains("[switch] $PartialStart"));
+    assert!(workspace.contains("PartialStart = $PartialStart"));
     assert!(watcher.contains("Invoke-WorkspaceServiceBootstrap"));
     assert!(watcher.contains("& $akuWorkspaceBootstrapScript @ServiceIds -BootstrapOnly"));
     assert!(watcher.contains("-Config $script:configPath"));
@@ -115,7 +126,7 @@ fn canonical_watcher_bootstraps_only_stale_workspace_runtime() {
         .find("if (Test-ControlPort -ControlHost $script:controlHost")
         .expect("active Supervisor ownership must be checked first");
     let workspace_bootstrap = watcher
-        .rfind("Invoke-WorkspaceServiceBootstrap -ServiceIds $script:startServiceIds")
+        .rfind("Invoke-WorkspaceServiceBootstrap -ServiceIds $bootstrapServiceIds")
         .expect("workspace bootstrap must be invoked by the canonical watcher");
     assert!(active_port_gate < workspace_bootstrap);
     assert!(workspace.contains("AkuSidecar\\scripts\\build-dev.ps1"));

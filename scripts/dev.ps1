@@ -12,6 +12,7 @@ param(
     [ValidateSet('local', 'utc')]
     [string] $Timezone = 'local',
     [switch] $Rebuild,
+    [switch] $PartialStart,
     [switch] $ReleaseCheck,
     [string] $ReleaseTag
 )
@@ -30,6 +31,7 @@ $releaseVersionScript = Join-Path $PSScriptRoot 'validate-release-version.ps1'
 $shutdownRequest = Join-Path $devDirectory 'shutdown-request'
 $stagedExecutable = Join-Path $buildDirectory 'debug\aku-supervisor.exe'
 $supervisorProcess = $null
+$partialConfigPath = $null
 $watcherLeaseStream = $null
 $watcherId = [Guid]::NewGuid().ToString('N')
 $previousWatcherId = $env:AKU_SUPERVISOR_WATCHER_ID
@@ -37,7 +39,9 @@ $previousWatcherPid = $env:AKU_SUPERVISOR_WATCHER_PID
 $script:gitIdentityPaths = $null
 $rustToolchainScript = Join-Path $PSScriptRoot 'rust-toolchain.ps1'
 $akuWorkspaceBootstrapScript = Join-Path $PSScriptRoot 'dev-akuworkspace.ps1'
+$partialStartScript = Join-Path $PSScriptRoot 'partial-start.ps1'
 . $rustToolchainScript
+. $partialStartScript
 
 function Invoke-WorkspaceServiceBootstrap {
     param([string[]] $ServiceIds)
@@ -518,6 +522,20 @@ function Install-StagedExecutable {
     throw "Could not replace development executable: $devExecutable.$detail"
 }
 
+function Show-PartialStartEscapePlan {
+    $serviceArguments = $script:startServiceIds -join ' '
+    $configArgument = if (-not [string]::IsNullOrWhiteSpace($Config)) {
+        " -Config `"$($script:sourceConfigPath)`""
+    } else {
+        ''
+    }
+    Write-Host ''
+    Write-Host '[watch] Full configuration startup failed fast; no partial profile was started.' -ForegroundColor Yellow
+    Write-Host '[watch] If unrelated registrations are intentionally unavailable, retry only the requested services and their transitive dependencies:' -ForegroundColor Yellow
+    Write-Host "[watch]   .\scripts\dev.ps1 $serviceArguments -PartialStart$configArgument" -ForegroundColor Yellow
+    Write-Host '[watch] Partial mode still validates every included service and does not modify the source configuration.' -ForegroundColor Yellow
+}
+
 function Start-DevelopmentSupervisor {
     if (Test-Path $shutdownRequest) {
         Remove-Item -LiteralPath $shutdownRequest -Force
@@ -537,6 +555,9 @@ function Start-DevelopmentSupervisor {
     $deadline = [DateTime]::UtcNow.AddSeconds(10)
     while ([DateTime]::UtcNow -lt $deadline) {
         if ($process.HasExited) {
+            if (-not $PartialStart -and @($script:startServiceIds).Count -gt 0) {
+                Show-PartialStartEscapePlan
+            }
             throw "Development supervisor exited during startup with code $($process.ExitCode)."
         }
         if (Test-ControlPort -ControlHost $script:controlHost -ControlPort $script:controlPort) {
@@ -671,8 +692,8 @@ if ($ReleaseCheck) {
     if (@($StartService).Count -gt 0) {
         throw '-ReleaseCheck cannot be combined with startup service IDs.'
     }
-    if (-not [string]::IsNullOrWhiteSpace($Config) -or $Rebuild) {
-        throw '-ReleaseCheck is configuration-independent and cannot be combined with -Config or -Rebuild.'
+    if (-not [string]::IsNullOrWhiteSpace($Config) -or $Rebuild -or $PartialStart) {
+        throw '-ReleaseCheck is configuration-independent and cannot be combined with -Config, -Rebuild, or -PartialStart.'
     }
     Write-Host '[watch] Mode: RELEASE VERSION CHECK (watcher and services will not be started).' -ForegroundColor Cyan
     if ([string]::IsNullOrWhiteSpace($ReleaseTag)) {
@@ -688,11 +709,13 @@ if (-not [string]::IsNullOrWhiteSpace($ReleaseTag)) {
 
 Push-Location $repository
 try {
-    $script:configPath = Resolve-ConfigPath
-    if (-not (Test-Path $script:configPath -PathType Leaf)) {
-        throw "Configuration not found: $script:configPath"
+    $script:sourceConfigPath = Resolve-ConfigPath
+    $script:configPath = $script:sourceConfigPath
+    $script:partialConfigPath = $null
+    if (-not (Test-Path $script:sourceConfigPath -PathType Leaf)) {
+        throw "Configuration not found: $script:sourceConfigPath"
     }
-    $configuration = Get-Content $script:configPath -Raw | ConvertFrom-Json
+    $configuration = Get-Content $script:sourceConfigPath -Raw | ConvertFrom-Json
     $configuredServiceIds = @($configuration.services.PSObject.Properties.Name)
     $seenServiceIds = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     $orderedServiceIds = foreach ($serviceId in @($StartService)) {
@@ -711,6 +734,9 @@ try {
             throw "Unknown startup service '$serviceId'. Configured service IDs: $available. AkuSupervisor itself is always started by dev.ps1."
         }
     }
+    if ($PartialStart -and $script:startServiceIds.Count -eq 0) {
+        throw '-PartialStart requires at least one startup service ID.'
+    }
     $script:controlHost = [string] $configuration.control.host
     $script:controlPort = [int] $configuration.control.port
     if (-not $script:controlHost -or -not $script:controlPort) {
@@ -720,14 +746,40 @@ try {
         $activeDetail = Format-ActiveSupervisor
         throw "Control port $script:controlHost`:$script:controlPort is already active. $activeDetail Use 'supervisor shutdown' from a second terminal or type 'quit' in its visible terminal before starting the watcher."
     }
-    Invoke-WorkspaceServiceBootstrap -ServiceIds $script:startServiceIds
     $runtimeDirectory = Resolve-RuntimeDirectory `
         -Configuration $configuration `
-        -ConfigurationPath $script:configPath
+        -ConfigurationPath $script:sourceConfigPath
     Enter-DevelopmentWatcherLease `
         -RuntimeDirectory $runtimeDirectory `
-        -ConfigurationPath $script:configPath
-
+        -ConfigurationPath $script:sourceConfigPath
+    Remove-StalePartialStartupConfigurations `
+        -SourcePath $script:sourceConfigPath `
+        -CurrentWatcherId $watcherId
+    $bootstrapServiceIds = $script:startServiceIds
+    if ($PartialStart) {
+        $bootstrapServiceIds = @(Get-PartialStartupServiceIds `
+            -Configuration $configuration `
+            -RequestedServiceIds $script:startServiceIds)
+    }
+    Invoke-WorkspaceServiceBootstrap -ServiceIds $bootstrapServiceIds
+    if ($PartialStart) {
+        # The optional workspace bootstrap can refresh generated arguments in
+        # the source configuration, so filter the current content afterwards.
+        $configuration = Get-Content $script:sourceConfigPath -Raw | ConvertFrom-Json
+        $partialServiceIds = @(Get-PartialStartupServiceIds `
+            -Configuration $configuration `
+            -RequestedServiceIds $script:startServiceIds)
+        $script:partialConfigPath = New-PartialStartupConfiguration `
+            -Configuration $configuration `
+            -ServiceIds $partialServiceIds `
+            -SourcePath $script:sourceConfigPath `
+            -WatcherId $watcherId
+        $script:configPath = $script:partialConfigPath
+        Write-Host '[watch] Mode: PARTIAL STARTUP (explicit development escape plan)' -ForegroundColor Yellow
+        Write-Host "[watch] Included services: $($partialServiceIds -join ', ')" -ForegroundColor Yellow
+        Write-Host "[watch] Source configuration remains unchanged: $($script:sourceConfigPath)" -ForegroundColor DarkGray
+        Write-Host "[watch] Ephemeral runtime configuration: $($script:configPath)" -ForegroundColor DarkGray
+    }
     $script:rustToolchain = Resolve-AkuRustToolchain -Repository $repository
     $script:cargo = $script:rustToolchain.Cargo
     $env:PATH = "$($script:rustToolchain.Bin);$env:PATH"
@@ -806,5 +858,9 @@ finally {
         }
     }
     Exit-DevelopmentWatcherLease
+    if ($null -ne $script:partialConfigPath -and (Test-Path -LiteralPath $script:partialConfigPath -PathType Leaf)) {
+        Remove-Item -LiteralPath $script:partialConfigPath -Force
+        Write-Host '[watch] Removed ephemeral partial startup configuration.' -ForegroundColor DarkGray
+    }
     Pop-Location
 }

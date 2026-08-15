@@ -232,6 +232,22 @@ normal watcher banner or transition guidance. Each successful automatic start
 prints an additional ownership message, and Ctrl+C uses the same bounded
 graceful Supervisor cleanup for the service and its process tree.
 
+The default startup validates the complete registry and fails fast if any
+registered service is invalid, even when that service was not requested. This
+protects normal development from silently accepting a broken registry. When an
+unrelated project is intentionally unavailable, use the explicit escape plan:
+
+```powershell
+.\scripts\dev.ps1 akusidecar -PartialStart
+```
+
+Partial startup creates an ephemeral profile containing only the requested
+service IDs and their transitive `dependsOn` closure. Included services still
+receive full validation; a broken requested service or dependency still fails.
+The source `services.json` is never changed, and the ephemeral profile is removed
+during watcher cleanup. A normal fail-fast startup error prints the exact retry
+command when positional service IDs were supplied.
+
 Positional service IDs are processed sequentially in the order supplied
 (duplicate IDs are ignored after their first occurrence). Before each target,
 AkuSupervisor starts its transitive `dependsOn` services in stable topological

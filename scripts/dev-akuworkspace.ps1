@@ -12,6 +12,7 @@ param(
     [ValidateSet('local', 'utc')]
     [string] $Timezone = 'local',
     [switch] $Rebuild,
+    [switch] $PartialStart,
     [switch] $BootstrapOnly
 )
 
@@ -230,6 +231,7 @@ $devParameters = @{
     ShutdownTimeoutSeconds = $ShutdownTimeoutSeconds
     Timezone = $Timezone
     Rebuild = $false
+    PartialStart = $PartialStart
 }
 if ($Config) {
     $devParameters.Config = $Config
