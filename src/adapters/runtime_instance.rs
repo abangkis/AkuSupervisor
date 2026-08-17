@@ -151,6 +151,21 @@ impl RuntimeInstanceLease {
     }
 }
 
+impl Drop for RuntimeInstanceLease {
+    fn drop(&mut self) {
+        // The lock file is the authority and is released by the OS even after
+        // a crash. Remove only the matching diagnostic identity on an ordinary
+        // Rust drop so a clean shutdown cannot leave a misleading active PID.
+        let matches_current = File::open(&self.path)
+            .ok()
+            .and_then(|mut file| read_identity(&mut file).ok())
+            .is_some_and(|identity| identity.instance_id == self.identity.instance_id);
+        if matches_current {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
 fn verify_watcher_authority(
     runtime_directory: &Path,
     identity: &RuntimeInstance,
@@ -412,6 +427,7 @@ mod tests {
             .expect("reclaim released lease");
         assert_eq!(second.identity().instance_id, "second");
         drop(second);
+        assert!(!directory.join(super::INSTANCE_FILE_NAME).exists());
         std::fs::remove_dir_all(directory).ok();
     }
 }

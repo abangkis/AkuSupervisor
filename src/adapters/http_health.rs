@@ -192,20 +192,26 @@ fn request(url: &str, timeout: std::time::Duration, accept: &str) -> Result<Http
     .and_then(|()| stream.flush())
     .map_err(|error| format!("HTTP request failed: {error}"))?;
 
-    let read_timeout = timeout.checked_sub(started.elapsed()).unwrap_or_default();
-    if read_timeout.is_zero() {
-        return Err("HTTP health deadline was exhausted before read".to_owned());
-    }
-    stream
-        .set_read_timeout(Some(read_timeout))
-        .map_err(|error| format!("failed to set HTTP read timeout: {error}"))?;
     let mut bytes = Vec::new();
-    stream
-        .take(MAX_RESPONSE_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|error| format!("HTTP response read failed: {error}"))?;
-    if bytes.len() as u64 > MAX_RESPONSE_BYTES {
-        return Err("HTTP health response exceeded 1 MiB".to_owned());
+    let mut chunk = [0_u8; 8192];
+    loop {
+        let remaining = timeout.checked_sub(started.elapsed()).unwrap_or_default();
+        if remaining.is_zero() {
+            return Err("HTTP health deadline was exhausted while reading response".to_owned());
+        }
+        stream
+            .set_read_timeout(Some(remaining))
+            .map_err(|error| format!("failed to set HTTP read timeout: {error}"))?;
+        let count = stream
+            .read(&mut chunk)
+            .map_err(|error| format!("HTTP response read failed: {error}"))?;
+        if count == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&chunk[..count]);
+        if bytes.len() as u64 > MAX_RESPONSE_BYTES {
+            return Err("HTTP health response exceeded 1 MiB".to_owned());
+        }
     }
     parse_response(&bytes)
 }
@@ -280,6 +286,37 @@ mod tests {
             captured_accept_header("application/json"),
             "Accept: application/json"
         );
+    }
+
+    #[test]
+    fn http_response_read_has_a_total_deadline_for_trickling_peers() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind slow health fixture");
+        let address = listener.local_addr().expect("fixture address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept health request");
+            let mut request = [0_u8; 256];
+            let _ = stream.read(&mut request);
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 20\r\nConnection: close\r\n\r\n")
+                .expect("write slow response headers");
+            for _ in 0..20 {
+                thread::sleep(Duration::from_millis(20));
+                if stream.write_all(b"x").is_err() {
+                    break;
+                }
+            }
+        });
+
+        let started = std::time::Instant::now();
+        let result = request(
+            &format!("http://{address}/health"),
+            Duration::from_millis(100),
+            "*/*",
+        );
+
+        assert!(result.is_err());
+        assert!(started.elapsed() < Duration::from_millis(300));
+        server.join().expect("slow fixture completes");
     }
 
     fn captured_accept_header(accept: &str) -> String {

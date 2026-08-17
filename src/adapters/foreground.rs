@@ -190,10 +190,16 @@ pub fn run(
         Clone::clone,
     );
 
+    println!("[shutdown] Request accepted; stopping new control requests and monitor work...");
+    registration_monitor.request_shutdown();
+    config_monitor.request_shutdown();
+    service_monitor.request_shutdown();
+    let server_result = control_server.shutdown();
+    println!("[shutdown] Control API is no longer accepting new requests.");
     registration_monitor.shutdown();
     config_monitor.shutdown();
     service_monitor.shutdown();
-    let server_result = control_server.shutdown();
+    println!("[shutdown] Runtime monitors stopped; cleaning up owned services...");
     let cleanup_result = cleanup(control.as_ref(), &shutdown_cause);
     if let Err(error) = server_result {
         cleanup_result?;
@@ -284,10 +290,14 @@ impl RegistrationEventMonitor {
     }
 
     fn shutdown(&mut self) {
-        self.stop.store(true, Ordering::Release);
+        self.request_shutdown();
         if let Some(worker) = self.worker.take() {
             worker.join().ok();
         }
+    }
+
+    fn request_shutdown(&self) {
+        self.stop.store(true, Ordering::Release);
     }
 }
 
@@ -388,10 +398,14 @@ impl ConfigMonitor {
     }
 
     fn shutdown(&mut self) {
-        self.stop.store(true, Ordering::Release);
+        self.request_shutdown();
         if let Some(worker) = self.worker.take() {
             worker.join().ok();
         }
+    }
+
+    fn request_shutdown(&self) {
+        self.stop.store(true, Ordering::Release);
     }
 }
 
@@ -568,6 +582,9 @@ impl ServiceMonitor {
                             .into_iter()
                             .filter_map(|refresh| refresh.process_exit)
                         {
+                            if worker_stop.load(Ordering::Acquire) {
+                                return;
+                            }
                             if let Err(error) = audited.record_process_exit(&process_exit) {
                                 eprintln!(
                                     "process exit audit failed for {}: {error}; planned restart suppressed",
@@ -628,10 +645,14 @@ impl ServiceMonitor {
     }
 
     fn shutdown(&mut self) {
-        self.stop.store(true, Ordering::Release);
+        self.request_shutdown();
         if let Some(worker) = self.worker.take() {
             worker.join().ok();
         }
+    }
+
+    fn request_shutdown(&self) {
+        self.stop.store(true, Ordering::Release);
     }
 }
 
@@ -925,6 +946,7 @@ fn cleanup(
     let service_ids = stable_shutdown_order(&snapshots)
         .map_err(|error| ForegroundError::Cleanup(vec![error.to_string()]))?;
     for service_id in service_ids {
+        println!("[shutdown] Stopping owned service: {service_id}");
         if let Err(error) = control.mutate(
             ControlAction::Stop,
             &service_id,

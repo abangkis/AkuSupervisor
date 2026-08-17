@@ -530,9 +530,19 @@ authenticated public control command:
 The remote command exposes no arbitrary command execution. It accepts one
 bounded shutdown intent and routes it through the same owned-service cleanup.
 
-Press Ctrl+C in the watcher terminal to request the same graceful shutdown. If
-cleanup exceeds the configured timeout, the watcher refuses to kill the
-process or replace its executable. The checked-in VS Code task
+Press Ctrl+C in the watcher terminal to request the same graceful shutdown. The
+Supervisor first closes new control requests, asks its monitors to stop, and
+then reports the owned service currently being cleaned up. Control requests are
+handled independently, so a slow lifecycle or health request cannot block a
+later shutdown request or status probe. HTTP health reads also have a total
+deadline; a peer that keeps a connection alive or trickles bytes cannot hold a
+monitor forever.
+
+When `-ShutdownTimeoutSeconds` is omitted, `dev.ps1` derives its wait budget
+from the sum of configured `shutdownGraceMs` values plus monitor/control drain
+headroom. Pass the parameter explicitly only when a deliberately different
+bounded development budget is required. If cleanup exceeds the selected
+timeout, the watcher refuses to kill the process or replace its executable. The checked-in VS Code task
 `AkuSupervisor: development watcher` launches the same script.
 
 The control port is not the only ownership signal. At startup and after a
@@ -547,8 +557,9 @@ Runtime ownership is additionally held by
 `.runtime/supervisor-instance.json` contains non-secret diagnostics. If the
 watched PID exits and another instance takes the port, `dev.ps1` queries
 `instance-status --json` and reports both identities instead of calling the
-event a generic crash. OS file locks are released automatically after abrupt
-exit, so stale JSON cannot retain authority.
+event a generic crash. A normal shutdown removes the matching diagnostic JSON;
+an abrupt exit may leave it behind for incident inspection, but OS file locks
+are released automatically and stale JSON cannot retain authority.
 
 An existing read-only MCP proxy may legitimately hold the development image.
 After compiling, the watcher compares SHA-256 hashes: if staged and development

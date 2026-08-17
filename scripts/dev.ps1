@@ -7,7 +7,7 @@ param(
     [int] $PollMilliseconds = 300,
     [ValidateRange(100, 10000)]
     [int] $DebounceMilliseconds = 600,
-    [ValidateRange(5, 120)]
+    [ValidateRange(5, 300)]
     [int] $ShutdownTimeoutSeconds = 30,
     [ValidateSet('local', 'utc')]
     [string] $Timezone = 'local',
@@ -19,6 +19,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$script:shutdownTimeoutExplicit = $PSBoundParameters.ContainsKey('ShutdownTimeoutSeconds')
 
 $repository = Split-Path -Parent $PSScriptRoot
 $devDirectory = Join-Path $repository 'target\dev'
@@ -33,6 +34,7 @@ $stagedExecutable = Join-Path $buildDirectory 'debug\aku-supervisor.exe'
 $supervisorProcess = $null
 $partialConfigPath = $null
 $watcherLeaseStream = $null
+$watcherIdentityPath = $null
 $watcherId = [Guid]::NewGuid().ToString('N')
 $previousWatcherId = $env:AKU_SUPERVISOR_WATCHER_ID
 $previousWatcherPid = $env:AKU_SUPERVISOR_WATCHER_PID
@@ -239,6 +241,7 @@ function Enter-DevelopmentWatcherLease {
     Move-Item -LiteralPath $temporaryIdentity -Destination $identityPath -Force
 
     $script:watcherLeaseStream = $stream
+    $script:watcherIdentityPath = $identityPath
     $env:AKU_SUPERVISOR_WATCHER_ID = $watcherId
     $env:AKU_SUPERVISOR_WATCHER_PID = [string] $PID
     Write-Host "[watch] Watcher lease: $lockPath (PID $PID)" -ForegroundColor DarkGray
@@ -254,6 +257,18 @@ function Exit-DevelopmentWatcherLease {
         $script:watcherLeaseStream.Dispose()
         $script:watcherLeaseStream = $null
     }
+    if ($null -ne $script:watcherIdentityPath -and
+        (Test-Path -LiteralPath $script:watcherIdentityPath -PathType Leaf)) {
+        try {
+            $identity = Get-Content -LiteralPath $script:watcherIdentityPath -Raw | ConvertFrom-Json
+            if ($identity.watcherId -eq $watcherId) {
+                Remove-Item -LiteralPath $script:watcherIdentityPath -Force
+            }
+        } catch {
+            Write-Warning "Could not remove watcher diagnostic metadata: $($_.Exception.Message)"
+        }
+    }
+    $script:watcherIdentityPath = $null
     $env:AKU_SUPERVISOR_WATCHER_ID = $previousWatcherId
     $env:AKU_SUPERVISOR_WATCHER_PID = $previousWatcherPid
 }
@@ -536,6 +551,27 @@ function Show-PartialStartEscapePlan {
     Write-Host '[watch] Partial mode still validates every included service and does not modify the source configuration.' -ForegroundColor Yellow
 }
 
+function Resolve-ShutdownTimeoutSeconds {
+    param([Parameter(Mandatory)] $Configuration)
+
+    if ($script:shutdownTimeoutExplicit) {
+        return $ShutdownTimeoutSeconds
+    }
+
+    $graceMilliseconds = @($Configuration.services.PSObject.Properties.Value |
+        ForEach-Object { [int64]$_.shutdownGraceMs } |
+        Where-Object { $_ -gt 0 })
+    $graceSeconds = if ($graceMilliseconds.Count -gt 0) {
+        [math]::Ceiling((($graceMilliseconds | Measure-Object -Sum).Sum) / 1000)
+    } else {
+        0
+    }
+    # Allow the monitors and control endpoint to drain before the sequential
+    # owned-process cleanup. An explicit parameter remains available for CI or
+    # a deliberately shorter development cycle.
+    return [int][math]::Min(300, [math]::Max(30, $graceSeconds + 30))
+}
+
 function Start-DevelopmentSupervisor {
     if (Test-Path $shutdownRequest) {
         Remove-Item -LiteralPath $shutdownRequest -Force
@@ -716,6 +752,10 @@ try {
         throw "Configuration not found: $script:sourceConfigPath"
     }
     $configuration = Get-Content $script:sourceConfigPath -Raw | ConvertFrom-Json
+    if (-not $script:shutdownTimeoutExplicit) {
+        $ShutdownTimeoutSeconds = Resolve-ShutdownTimeoutSeconds -Configuration $configuration
+        Write-Host "[watch] Graceful shutdown timeout: $ShutdownTimeoutSeconds seconds (derived from configured service grace periods)." -ForegroundColor DarkGray
+    }
     $configuredServiceIds = @($configuration.services.PSObject.Properties.Name)
     $seenServiceIds = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     $orderedServiceIds = foreach ($serviceId in @($StartService)) {

@@ -2,8 +2,8 @@ use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -37,6 +37,8 @@ const MAX_RESPONSE_BYTES: u64 = 1024 * 1024;
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const LIVE_LOG_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
+const CONTROL_CONNECTION_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_CONTROL_CONNECTIONS: usize = 64;
 
 /// Actor vocabulary accepted by the local control protocol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,7 +61,19 @@ impl ApiActor {
 pub struct ControlHttpServer {
     address: SocketAddr,
     stop: Arc<AtomicBool>,
+    active_connections: Arc<AtomicUsize>,
     thread: Option<JoinHandle<Result<(), ControlHttpError>>>,
+}
+
+#[derive(Debug)]
+struct ActiveConnectionGuard {
+    active: Arc<AtomicUsize>,
+}
+
+impl Drop for ActiveConnectionGuard {
+    fn drop(&mut self) {
+        self.active.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 impl ControlHttpServer {
@@ -89,9 +103,13 @@ impl ControlHttpServer {
         let address = listener.local_addr().map_err(ControlHttpError::Configure)?;
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
+        let token = Arc::new(token);
+        let mcp_config = Arc::new(mcp_config);
         let cooperative = cooperative
             .map(CooperativeOperationManager::new)
             .map(Arc::new);
+        let active_connections = Arc::new(AtomicUsize::new(0));
+        let server_active_connections = Arc::clone(&active_connections);
         let thread = thread::Builder::new()
             .name("aku-supervisor-control".to_owned())
             .spawn(move || {
@@ -99,20 +117,22 @@ impl ControlHttpServer {
                     &listener,
                     &token,
                     &mcp_config,
-                    control.as_ref(),
-                    cooperative.as_deref(),
+                    &control,
+                    cooperative.as_ref(),
                     &journal,
                     &logs,
                     &reconciliation,
                     &instance,
                     &supervisor_shutdown,
                     &thread_stop,
+                    &server_active_connections,
                 )
             })
             .map_err(ControlHttpError::SpawnThread)?;
         Ok(Self {
             address,
             stop,
+            active_connections: Arc::clone(&active_connections),
             thread: Some(thread),
         })
     }
@@ -134,7 +154,17 @@ impl ControlHttpServer {
         };
         thread
             .join()
-            .map_err(|_| ControlHttpError::ThreadPanicked)?
+            .map_err(|_| ControlHttpError::ThreadPanicked)??;
+        let deadline = Instant::now() + CONTROL_CONNECTION_DRAIN_TIMEOUT;
+        while self.active_connections.load(Ordering::Acquire) != 0 {
+            if Instant::now() >= deadline {
+                return Err(ControlHttpError::ConnectionsStillActive(
+                    self.active_connections.load(Ordering::Acquire),
+                ));
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        Ok(())
     }
 }
 
@@ -160,39 +190,79 @@ impl Drop for ControlHttpServer {
 #[allow(clippy::too_many_arguments)]
 fn serve(
     listener: &TcpListener,
-    token: &RuntimeToken,
-    mcp_config: &McpConfig,
-    control: &dyn SupervisorControl,
-    cooperative: Option<&CooperativeOperationManager>,
-    journal: &FileJournal,
+    token: &Arc<RuntimeToken>,
+    mcp_config: &Arc<McpConfig>,
+    control: &Arc<dyn SupervisorControl>,
+    cooperative: Option<&Arc<CooperativeOperationManager>>,
+    journal: &Arc<FileJournal>,
     logs: &Arc<ServiceLogStore>,
-    reconciliation: &RegistryReconciliationStatus,
-    instance: &RuntimeInstance,
-    supervisor_shutdown: &SupervisorShutdown,
+    reconciliation: &Arc<RegistryReconciliationStatus>,
+    instance: &Arc<RuntimeInstance>,
+    supervisor_shutdown: &Arc<SupervisorShutdown>,
     stop: &Arc<AtomicBool>,
+    active_connections: &Arc<AtomicUsize>,
 ) -> Result<(), ControlHttpError> {
-    let mut idempotency = IdempotencyStore::default();
+    let idempotency = Arc::new(Mutex::new(IdempotencyStore::default()));
     while !stop.load(Ordering::Acquire) {
         match listener.accept() {
-            Ok((mut stream, _peer)) => {
+            Ok((stream, _peer)) => {
                 stream.set_read_timeout(Some(IO_TIMEOUT)).ok();
                 stream.set_write_timeout(Some(IO_TIMEOUT)).ok();
-                if let Err(error) = handle_connection(
-                    &mut stream,
-                    token,
-                    mcp_config,
-                    control,
-                    cooperative,
-                    journal,
-                    logs,
-                    reconciliation,
-                    instance,
-                    supervisor_shutdown,
-                    &mut idempotency,
-                    stop,
-                ) {
-                    let response = error_response(400, "bad_request", &error.to_string());
+                if active_connections
+                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                        (count < MAX_CONTROL_CONNECTIONS).then_some(count + 1)
+                    })
+                    .is_err()
+                {
+                    let mut stream = stream;
+                    let response = error_response(
+                        503,
+                        "control_connection_limit",
+                        "AkuSupervisor control connection capacity is temporarily full",
+                    );
                     write_response(&mut stream, &response).ok();
+                    continue;
+                }
+                let worker_active = Arc::clone(active_connections);
+                let worker_token = Arc::clone(token);
+                let worker_mcp_config = Arc::clone(mcp_config);
+                let worker_control = Arc::clone(control);
+                let worker_cooperative = cooperative.cloned();
+                let worker_journal = Arc::clone(journal);
+                let worker_logs = Arc::clone(logs);
+                let worker_reconciliation = Arc::clone(reconciliation);
+                let worker_instance = Arc::clone(instance);
+                let worker_shutdown = Arc::clone(supervisor_shutdown);
+                let worker_idempotency = Arc::clone(&idempotency);
+                let worker_stop = Arc::clone(stop);
+                let worker = thread::Builder::new()
+                    .name("aku-supervisor-control-request".to_owned())
+                    .spawn(move || {
+                        let _active_guard = ActiveConnectionGuard {
+                            active: worker_active,
+                        };
+                        let mut stream = stream;
+                        if let Err(error) = handle_connection(
+                            &mut stream,
+                            &worker_token,
+                            &worker_mcp_config,
+                            worker_control.as_ref(),
+                            worker_cooperative.as_deref(),
+                            &worker_journal,
+                            &worker_logs,
+                            &worker_reconciliation,
+                            &worker_instance,
+                            &worker_shutdown,
+                            &worker_idempotency,
+                            &worker_stop,
+                        ) {
+                            let response = error_response(400, "bad_request", &error.to_string());
+                            write_response(&mut stream, &response).ok();
+                        }
+                    });
+                if let Err(error) = worker {
+                    active_connections.fetch_sub(1, Ordering::AcqRel);
+                    return Err(ControlHttpError::SpawnThread(error));
                 }
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -216,10 +286,18 @@ fn handle_connection(
     reconciliation: &RegistryReconciliationStatus,
     instance: &RuntimeInstance,
     supervisor_shutdown: &SupervisorShutdown,
-    idempotency: &mut IdempotencyStore,
+    idempotency: &Mutex<IdempotencyStore>,
     stop: &Arc<AtomicBool>,
 ) -> Result<(), RequestError> {
     let request = read_request(stream)?;
+    if stop.load(Ordering::Acquire) {
+        let response = error_response(
+            503,
+            "shutdown_in_progress",
+            "AkuSupervisor is draining; retry after a new instance is ready",
+        );
+        return write_response(stream, &response).map_err(RequestError::Write);
+    }
     if request.method == "GET"
         && let Some((service_id, selection, tail, cursor)) = parse_live_logs_target(&request.target)
     {
@@ -265,19 +343,40 @@ fn handle_connection(
             .map_err(RequestError::Write)?;
         return Ok(());
     }
-    let response = route(
-        &request,
-        token,
-        mcp_config,
-        control,
-        cooperative,
-        journal,
-        logs,
-        reconciliation,
-        instance,
-        supervisor_shutdown,
-        idempotency,
-    );
+    let response = if request.method == "POST" && request.target.starts_with("/v1/services/") {
+        let mut guard = idempotency
+            .lock()
+            .map_err(|_| RequestError::IdempotencyPoisoned)?;
+        route(
+            &request,
+            token,
+            mcp_config,
+            control,
+            cooperative,
+            journal,
+            logs,
+            reconciliation,
+            instance,
+            supervisor_shutdown,
+            &mut guard,
+        )
+    } else {
+        let scratch = Mutex::new(IdempotencyStore::default());
+        let mut scratch_guard = scratch.lock().expect("scratch idempotency lock");
+        route(
+            &request,
+            token,
+            mcp_config,
+            control,
+            cooperative,
+            journal,
+            logs,
+            reconciliation,
+            instance,
+            supervisor_shutdown,
+            &mut scratch_guard,
+        )
+    };
     write_response(stream, &response).map_err(RequestError::Write)
 }
 
@@ -1427,6 +1526,7 @@ pub enum ControlHttpError {
     SpawnThread(io::Error),
     Accept(io::Error),
     ThreadPanicked,
+    ConnectionsStillActive(usize),
 }
 
 impl fmt::Display for ControlHttpError {
@@ -1437,6 +1537,10 @@ impl fmt::Display for ControlHttpError {
             Self::SpawnThread(error) => write!(formatter, "failed to start control API: {error}"),
             Self::Accept(error) => write!(formatter, "control API accept failed: {error}"),
             Self::ThreadPanicked => formatter.write_str("control API thread panicked"),
+            Self::ConnectionsStillActive(count) => write!(
+                formatter,
+                "control API stopped accepting requests but {count} request handler(s) did not drain within the shutdown deadline"
+            ),
         }
     }
 }
@@ -1451,6 +1555,7 @@ enum RequestError {
     HeaderTooLarge,
     BodyTooLarge,
     Malformed(&'static str),
+    IdempotencyPoisoned,
 }
 
 impl fmt::Display for RequestError {
@@ -1462,6 +1567,9 @@ impl fmt::Display for RequestError {
             Self::HeaderTooLarge => formatter.write_str("request headers exceed limit"),
             Self::BodyTooLarge => formatter.write_str("request body exceeds limit"),
             Self::Malformed(message) => formatter.write_str(message),
+            Self::IdempotencyPoisoned => {
+                formatter.write_str("control request idempotency store is unavailable")
+            }
         }
     }
 }
