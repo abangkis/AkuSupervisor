@@ -206,6 +206,34 @@ For the current AkuWorkspace profile, `dev.ps1` is also the canonical entrypoint
 .\scripts\dev.ps1 akusidecar
 ```
 
+For interactive AkuBrowser development, this workspace bootstrap uses the
+installed Google Chrome Stable executable with a dedicated persistent profile
+at `AkuSidecar\runtime\dev-chrome-profile`. It never launches Chrome with the
+user's personal `Default` profile. Chrome 137 and newer no longer honor
+`--load-extension` in regular Chrome, so the first run requires one manual
+step: open `chrome://extensions`, enable Developer mode, and load the workspace
+`AkuBridge` directory as an unpacked extension. The dedicated profile retains
+that installation and website sessions on later runs. Pinned Chrome for
+Testing remains the deterministic automated-acceptance browser and is not used
+for interactive Google sign-in.
+
+Prepare that dedicated profile once with:
+
+```powershell
+.\scripts\setup-akubrowser-dev-profile.ps1
+```
+
+The helper opens only `chrome://extensions` in the workspace profile and prints
+the exact unpacked AkuBridge directory to select. It does not inspect, attach
+to, or modify a personal Chrome profile.
+
+When only the generated service arguments need refreshing and the existing
+Sidecar binary must remain untouched, use the bounded projection mode:
+
+```powershell
+.\scripts\dev-akuworkspace.ps1 akusidecar -BrowserProjectionOnly
+```
+
 When `akusidecar` is requested, `dev.ps1` asks the workspace adapter to compare
 the generated, Git-ignored `AkuSidecar\runtime\dev\aku-sidecar.exe` with current
 source version, commit, cleanliness, and recorded SHA-256. It rebuilds only when

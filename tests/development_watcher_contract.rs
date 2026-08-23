@@ -131,6 +131,8 @@ fn canonical_watcher_bootstraps_only_stale_workspace_runtime() {
     assert!(active_port_gate < workspace_bootstrap);
     assert!(workspace.contains("AkuSidecar\\scripts\\build-dev.ps1"));
     assert!(workspace.contains("[switch] $BootstrapOnly"));
+    assert!(workspace.contains("[switch] $BrowserProjectionOnly"));
+    assert!(workspace.contains("-BrowserProjectionOnly requires akusidecar"));
     assert!(workspace.contains("if ('akusidecar' -in $requestedServices)"));
     assert!(workspace.contains("Get-AkuSidecarRuntimeStatus"));
     assert!(workspace.contains("$provenance.version"));
@@ -142,9 +144,17 @@ fn canonical_watcher_bootstraps_only_stale_workspace_runtime() {
     assert!(workspace.contains("& $supervisorDevScript @requestedServices @devParameters"));
     assert!(workspace.contains("Timezone = $Timezone"));
     assert!(workspace.contains("AkuBrowser\\config\\bridge-identities.json"));
-    assert!(workspace.contains("Set-AkuSidecarDevelopmentBridgeIdentity"));
+    assert!(workspace.contains("Set-AkuSidecarDevelopmentBrowserProjection"));
+    assert!(workspace.contains("if (-not $BrowserProjectionOnly)"));
+    assert!(workspace.contains("Resolve-GoogleChromeStable"));
     assert!(workspace.contains("Get-BridgeIdentityProfile -ProfileName 'development'"));
     assert!(workspace.contains("--bridge-extension-origin"));
+    assert!(workspace.contains("--chromium-path"));
+    assert!(workspace.contains("--browser-profile"));
+    assert!(workspace.contains("AkuSidecar\\runtime\\dev-chrome-profile"));
+    assert!(workspace.contains("Google\\Chrome\\Application\\chrome.exe"));
+    assert!(workspace.contains("dedicated workspace profile; personal Chrome profiles are not used"));
+    assert!(workspace.contains("requires one-time Developer mode > Load unpacked"));
     assert!(workspace.contains("Channel      : DEVELOPMENT"));
     assert!(workspace.contains("Authority    :"));
     assert!(workspace.contains("Projection   :"));
@@ -174,4 +184,18 @@ fn verification_and_watcher_keep_tool_temporary_files_inside_the_repository() {
         assert!(script.contains("$env:TEMP = $previousTemp"));
         assert!(script.contains("$env:TMP = $previousTmp"));
     }
+}
+
+#[test]
+fn akubrowser_development_profile_setup_is_isolated_and_manual() {
+    let setup = include_str!("../scripts/setup-akubrowser-dev-profile.ps1");
+
+    assert!(setup.contains("AkuSidecar\\runtime\\dev-chrome-profile"));
+    assert!(setup.contains("Google\\Chrome\\Application\\chrome.exe"));
+    assert!(setup.contains("chrome://extensions"));
+    assert!(setup.contains("Enable Developer mode"));
+    assert!(setup.contains("Choose Load unpacked"));
+    assert!(setup.contains("AkuBridge"));
+    assert!(setup.contains("Do not select or sign into a personal Chrome profile"));
+    assert!(!setup.contains("--load-extension"));
 }

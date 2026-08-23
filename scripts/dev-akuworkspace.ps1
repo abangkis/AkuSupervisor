@@ -13,7 +13,8 @@ param(
     [string] $Timezone = 'local',
     [switch] $Rebuild,
     [switch] $PartialStart,
-    [switch] $BootstrapOnly
+    [switch] $BootstrapOnly,
+    [switch] $BrowserProjectionOnly
 )
 
 Set-StrictMode -Version Latest
@@ -70,10 +71,44 @@ function Get-BridgeIdentityProfile {
     }
 }
 
-function Set-AkuSidecarDevelopmentBridgeIdentity {
+function Resolve-GoogleChromeStable {
+    $candidates = [Collections.Generic.List[string]]::new()
+    if ($env:PROGRAMFILES) {
+        $candidates.Add((Join-Path $env:PROGRAMFILES 'Google\Chrome\Application\chrome.exe'))
+    }
+    if (${env:PROGRAMFILES(X86)}) {
+        $candidates.Add((Join-Path ${env:PROGRAMFILES(X86)} 'Google\Chrome\Application\chrome.exe'))
+    }
+    if ($env:LOCALAPPDATA) {
+        $candidates.Add((Join-Path $env:LOCALAPPDATA 'Google\Chrome\Application\chrome.exe'))
+    }
+
+    foreach ($candidate in $candidates) {
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+            continue
+        }
+        $item = Get-Item -LiteralPath $candidate
+        if ([string] $item.VersionInfo.ProductName -ne 'Google Chrome') {
+            continue
+        }
+        return [pscustomobject]@{
+            Path = $item.FullName
+            Version = [string] $item.VersionInfo.ProductVersion
+        }
+    }
+    throw 'Google Chrome Stable was not found in its supported per-machine or per-user installation locations.'
+}
+
+function Set-AkuSidecarDevelopmentBrowserProjection {
     $identity = Get-BridgeIdentityProfile -ProfileName 'development'
     if ($identity.Distribution -ne 'unpacked') {
         throw "Development Bridge identity must use unpacked distribution, found '$($identity.Distribution)'."
+    }
+    $chrome = Resolve-GoogleChromeStable
+    $browserProfilePath = Join-Path $workspaceRoot 'AkuSidecar\runtime\dev-chrome-profile'
+    $bridgeExtensionPath = Join-Path $workspaceRoot 'AkuBridge'
+    if (-not (Test-Path -LiteralPath (Join-Path $bridgeExtensionPath 'manifest.json') -PathType Leaf)) {
+        throw "AkuBridge unpacked extension was not found: $bridgeExtensionPath"
     }
 
     $configurationPath = Resolve-AkuSupervisorConfigPath
@@ -86,17 +121,34 @@ function Set-AkuSidecarDevelopmentBridgeIdentity {
         throw "AkuSupervisor configuration does not register service 'akusidecar': $configurationPath"
     }
 
+    $projectedValueArguments = @(
+        '--bridge-extension-origin',
+        '--chromium-path',
+        '--browser-profile',
+        '--bridge-extension-path'
+    )
     $currentArguments = @($serviceProperty.Value.args)
     $nextArguments = [Collections.Generic.List[string]]::new()
     for ($index = 0; $index -lt $currentArguments.Count; $index++) {
-        if ([string] $currentArguments[$index] -eq '--bridge-extension-origin') {
+        $argument = [string] $currentArguments[$index]
+        if ($argument -in $projectedValueArguments) {
             $index++
             continue
         }
-        $nextArguments.Add([string] $currentArguments[$index])
+        if ($argument -eq '--app-shell') {
+            continue
+        }
+        $nextArguments.Add($argument)
     }
     $nextArguments.Add('--bridge-extension-origin')
     $nextArguments.Add($identity.ExtensionOrigin)
+    $nextArguments.Add('--app-shell')
+    $nextArguments.Add('--chromium-path')
+    $nextArguments.Add($chrome.Path)
+    $nextArguments.Add('--browser-profile')
+    $nextArguments.Add($browserProfilePath)
+    $nextArguments.Add('--bridge-extension-path')
+    $nextArguments.Add($bridgeExtensionPath)
     $nextArgumentArray = @($nextArguments)
 
     $changed = (($currentArguments | ConvertTo-Json -Compress) -ne ($nextArgumentArray | ConvertTo-Json -Compress))
@@ -122,6 +174,14 @@ function Set-AkuSidecarDevelopmentBridgeIdentity {
     else {
         Write-Host '[workspace]   Status       : current' -ForegroundColor Green
     }
+    Write-Host '[workspace] AkuBrowser development browser' -ForegroundColor Cyan
+    Write-Host '[workspace]   Channel      : installed Google Chrome Stable' -ForegroundColor Cyan
+    Write-Host "[workspace]   Executable   : $($chrome.Path)" -ForegroundColor DarkGray
+    Write-Host "[workspace]   Version      : $($chrome.Version)" -ForegroundColor Green
+    Write-Host "[workspace]   Profile      : $browserProfilePath" -ForegroundColor DarkGray
+    Write-Host '[workspace]   Isolation    : dedicated workspace profile; personal Chrome profiles are not used' -ForegroundColor Green
+    Write-Host '[workspace]   AkuBridge    : Chrome Stable 137+ requires one-time Developer mode > Load unpacked' -ForegroundColor Yellow
+    Write-Host "[workspace]                  $bridgeExtensionPath" -ForegroundColor Yellow
 }
 
 function Get-AkuSidecarSourceState {
@@ -212,12 +272,18 @@ function Initialize-AkuSidecarDevelopmentRuntime {
     }
 }
 
-if ('akusidecar' -in $requestedServices) {
-    Set-AkuSidecarDevelopmentBridgeIdentity
-    Initialize-AkuSidecarDevelopmentRuntime
+if ($BrowserProjectionOnly -and 'akusidecar' -notin $requestedServices) {
+    throw '-BrowserProjectionOnly requires akusidecar in the requested services.'
 }
 
-if ($BootstrapOnly) {
+if ('akusidecar' -in $requestedServices) {
+    Set-AkuSidecarDevelopmentBrowserProjection
+    if (-not $BrowserProjectionOnly) {
+        Initialize-AkuSidecarDevelopmentRuntime
+    }
+}
+
+if ($BootstrapOnly -or $BrowserProjectionOnly) {
     exit 0
 }
 
