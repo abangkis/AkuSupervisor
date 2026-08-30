@@ -2159,7 +2159,7 @@ fn format_simple_status(response: &serde_json::Value, show_pids: bool) -> Result
         }
     }
     lines.push(
-        "SERVICE              STATE                DESIRED     HEALTH      ROOT PID   OWNED APPS                         HOLD"
+        "SERVICE              STATE                DESIRED     HEALTH      PORTS         ROOT PID   OWNED APPS                         HOLD"
             .to_owned(),
     );
     for service in services {
@@ -2186,6 +2186,19 @@ fn format_simple_status(response: &serde_json::Value, show_pids: bool) -> Result
             .filter(|pids| !pids.is_empty())
             .unwrap_or_else(|| "-".to_owned());
         let owned_apps = owned_process_summary(service, &owned_pids);
+        let ports = service
+            .get("ports")
+            .and_then(serde_json::Value::as_array)
+            .map(|ports| {
+                ports
+                    .iter()
+                    .filter_map(serde_json::Value::as_u64)
+                    .map(|port| port.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            })
+            .filter(|ports| !ports.is_empty())
+            .unwrap_or_else(|| "-".to_owned());
         let owned_display = if show_pids {
             format!("{owned_apps} [{owned_pids}]")
         } else {
@@ -2197,11 +2210,12 @@ fn format_simple_status(response: &serde_json::Value, show_pids: bool) -> Result
             .and_then(serde_json::Value::as_str)
             .unwrap_or("-");
         lines.push(format!(
-            "{:<20} {:<20} {:<11} {:<11} {:<10} {:<32} {}",
+            "{:<20} {:<20} {:<11} {:<11} {:<13} {:<10} {:<32} {}",
             text("id"),
             text("lifecycle"),
             text("desiredState"),
             health,
+            ports,
             root_pid,
             owned_display,
             text("operatorHold")
@@ -2788,6 +2802,7 @@ mod tests {
                     "lifecycle": "running",
                     "desiredState": "running",
                     "health": { "status": "healthy" },
+                    "ports": [8080, 8081],
                     "rootPid": 1234,
                     "ownedPids": [1234, 5678],
                     "ownedProcesses": [
@@ -2802,7 +2817,9 @@ mod tests {
         )
         .expect("valid service table");
         assert!(table.contains("SERVICE              STATE"));
+        assert!(table.contains("HEALTH      PORTS"));
         assert!(table.contains("api                  running"));
+        assert!(table.contains("8080,8081"));
         assert!(table.contains("api.exe x1,worker.exe x2"));
         assert!(!table.contains("1234,5678"));
         assert!(!table.contains("REGISTRY WARNING"));
@@ -2814,6 +2831,7 @@ mod tests {
                     "lifecycle": "running",
                     "desiredState": "running",
                     "health": { "status": "healthy" },
+                    "ports": [],
                     "rootPid": 1234,
                     "ownedPids": [1234, 5678],
                     "ownedProcesses": [
@@ -2826,6 +2844,7 @@ mod tests {
             true,
         )
         .expect("valid detailed service table");
+        assert!(detailed.contains("healthy     -"));
         assert!(detailed.contains("api.exe x1,worker.exe x1 [1234,5678]"));
 
         let warning = format_simple_status(

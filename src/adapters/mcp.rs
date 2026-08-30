@@ -444,6 +444,7 @@ mod tests {
                 id: "api".to_owned(),
                 label: "API".to_owned(),
                 depends_on: Vec::new(),
+                ports: vec![8080],
                 lifecycle: LifecycleState::Running,
                 desired_state: DesiredState::Running,
                 operator_hold: OperatorHold::None,

@@ -437,6 +437,10 @@ supervisor restart <service...> --reason "..."
 supervisor logs <service> --tail 100
 ```
 
+The compact `simple-status` and watcher tables expose the service ports declared
+in configuration. They display `-` for an empty declaration and do not infer
+listening ports from health endpoints or platform-specific socket inspection.
+
 The CLI accepts one or more service IDs, but expands a batch into sequential
 single-target HTTP actions so the control API and journal remain auditable.
 Start/restart place requested dependencies first; stop order is

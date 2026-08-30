@@ -874,7 +874,7 @@ fn print_status(control: &dyn SupervisorControl) {
         Ok(snapshots) => {
             println!();
             println!(
-                "SERVICE              STATE                DESIRED     HEALTH      ROOT PID   OWNED APPS                         HOLD"
+                "SERVICE              STATE                DESIRED     HEALTH      PORTS         ROOT PID   OWNED APPS                         HOLD"
             );
             for snapshot in snapshots {
                 print_snapshot(&snapshot);
@@ -890,12 +890,23 @@ fn print_snapshot(snapshot: &ServiceSnapshot) {
         .root_pid
         .map_or_else(|| "-".to_owned(), |pid| pid.to_string());
     let owned_apps = summarize_processes(&snapshot.owned_processes);
+    let ports = if snapshot.ports.is_empty() {
+        "-".to_owned()
+    } else {
+        snapshot
+            .ports
+            .iter()
+            .map(u16::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    };
     println!(
-        "{:<20} {:<20} {:<11} {:<11} {:<10} {:<32} {:?}",
+        "{:<20} {:<20} {:<11} {:<11} {:<13} {:<10} {:<32} {:?}",
         snapshot.id,
         format!("{:?}", snapshot.lifecycle).to_lowercase(),
         format!("{:?}", snapshot.desired_state).to_lowercase(),
         format!("{:?}", snapshot.health.status).to_lowercase(),
+        ports,
         root_pid,
         owned_apps,
         snapshot.operator_hold

@@ -307,6 +307,7 @@ mod tests {
                 .iter()
                 .map(|value| (*value).to_owned())
                 .collect(),
+            ports: Vec::new(),
             lifecycle: LifecycleState::Stopped,
             root_pid: None,
             owned_pids: Vec::new(),

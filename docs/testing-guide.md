@@ -148,6 +148,9 @@ cargo run -- stop akusidecar --reason "manual supervised stop"
 ```
 
 `simple-status` prints the same compact service table used by the watcher. Its
+`PORTS` column lists only the ports declared in each service's configuration;
+an empty `ports` array is displayed as `-` and no runtime socket inference is
+performed. Its
 `OWNED APPS` column groups the owned process tree by executable name; use
 `simple-status --pids` for the raw PID list. The `status --json` response keeps
 `ownedPids` and adds best-effort `ownedProcesses` metadata. `status` retains the
