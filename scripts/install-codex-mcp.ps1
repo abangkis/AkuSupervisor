@@ -18,6 +18,8 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$utilityModule = Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1'
+Import-Module -Name $utilityModule -Force -ErrorAction Stop
 
 $repository = Split-Path -Parent $PSScriptRoot
 $workspace = Split-Path -Parent $repository

@@ -1,5 +1,6 @@
 #![cfg(windows)]
 
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
@@ -26,7 +27,7 @@ fn supervisor() -> &'static str {
     env!("CARGO_BIN_EXE_aku-supervisor")
 }
 
-fn invoke_installer(config: &Path, host: &Path, extra: &[&str]) -> Output {
+fn invoke_installer(config: &Path, host: &Path, extra: &[&str], module_path: &OsStr) -> Output {
     let mut command = Command::new("powershell.exe");
     command
         .args([
@@ -45,11 +46,16 @@ fn invoke_installer(config: &Path, host: &Path, extra: &[&str]) -> Output {
         .arg("-HostPath")
         .arg(host)
         .arg("-Json")
-        .args(extra);
+        .args(extra)
+        .env("PSModulePath", module_path);
     command.output().expect("Codex MCP installer should run")
 }
 
-fn invoke_installer_with_default_host(config: &Path, extra: &[&str]) -> Output {
+fn invoke_installer_with_default_host(
+    config: &Path,
+    extra: &[&str],
+    module_path: &OsStr,
+) -> Output {
     let mut command = Command::new("powershell.exe");
     command
         .args([
@@ -66,7 +72,8 @@ fn invoke_installer_with_default_host(config: &Path, extra: &[&str]) -> Output {
         .arg("-SourcePath")
         .arg(supervisor())
         .arg("-Json")
-        .args(extra);
+        .args(extra)
+        .env("PSModulePath", module_path);
     command.output().expect("Codex MCP installer should run")
 }
 
@@ -80,7 +87,7 @@ fn successful_json(output: &Output) -> Value {
     serde_json::from_slice(&output.stdout).expect("installer stdout should be one JSON document")
 }
 
-fn invoke_status(source: &Path, host: &Path) -> Output {
+fn invoke_status(source: &Path, host: &Path, module_path: &OsStr) -> Output {
     Command::new("powershell.exe")
         .args([
             "-NoLogo",
@@ -96,6 +103,7 @@ fn invoke_status(source: &Path, host: &Path) -> Output {
         .arg("-HostPath")
         .arg(host)
         .arg("-Json")
+        .env("PSModulePath", module_path)
         .output()
         .expect("MCP host status should run")
 }
@@ -118,7 +126,8 @@ fn codex_mcp_bootstrap_is_previewed_hash_bound_atomic_and_idempotent() {
     );
     fs::write(&config, original).expect("write temporary Codex config");
 
-    let first_plan = successful_json(&invoke_installer(&config, &host, &[]));
+    let module_path = directory.ps_module_path.as_os_str();
+    let first_plan = successful_json(&invoke_installer(&config, &host, &[], module_path));
     assert_eq!(first_plan["status"], "planned");
     assert_eq!(first_plan["configurationChanged"], true);
     assert_eq!(first_plan["hostChanged"], true);
@@ -132,7 +141,12 @@ fn codex_mcp_bootstrap_is_previewed_hash_bound_atomic_and_idempotent() {
         .expect("plan should return an approval code");
     let concurrent_edit = format!("{original}\n# concurrent edit\n");
     fs::write(&config, &concurrent_edit).expect("simulate a concurrent config edit");
-    let stale_apply = invoke_installer(&config, &host, &["-Apply", "-ApprovalCode", stale_code]);
+    let stale_apply = invoke_installer(
+        &config,
+        &host,
+        &["-Apply", "-ApprovalCode", stale_code],
+        module_path,
+    );
     assert!(!stale_apply.status.success());
     assert_eq!(
         fs::read_to_string(&config).expect("read config after stale apply"),
@@ -140,7 +154,7 @@ fn codex_mcp_bootstrap_is_previewed_hash_bound_atomic_and_idempotent() {
     );
     assert!(!host.exists(), "stale approval must fail before staging");
 
-    let approved_plan = successful_json(&invoke_installer(&config, &host, &[]));
+    let approved_plan = successful_json(&invoke_installer(&config, &host, &[], module_path));
     let approval_code = approved_plan["approvalCode"]
         .as_str()
         .expect("updated plan should return an approval code");
@@ -148,6 +162,7 @@ fn codex_mcp_bootstrap_is_previewed_hash_bound_atomic_and_idempotent() {
         &config,
         &host,
         &["-Apply", "-ApprovalCode", approval_code],
+        module_path,
     ));
     assert_eq!(applied["status"], "applied");
     assert_eq!(applied["restartCodexRequired"], true);
@@ -170,7 +185,7 @@ fn codex_mcp_bootstrap_is_previewed_hash_bound_atomic_and_idempotent() {
         fs::read(supervisor()).expect("read source executable")
     );
 
-    let idempotent_plan = successful_json(&invoke_installer(&config, &host, &[]));
+    let idempotent_plan = successful_json(&invoke_installer(&config, &host, &[], module_path));
     assert_eq!(idempotent_plan["configurationChanged"], false);
     assert_eq!(idempotent_plan["hostChanged"], false);
     assert_eq!(idempotent_plan["restartCodexRequired"], false);
@@ -181,6 +196,7 @@ fn codex_mcp_bootstrap_is_previewed_hash_bound_atomic_and_idempotent() {
         &config,
         &host,
         &["-Apply", "-ApprovalCode", idempotent_code],
+        module_path,
     ));
     assert_eq!(idempotent_apply["status"], "applied");
     assert_eq!(idempotent_apply["restartCodexRequired"], false);
@@ -194,7 +210,11 @@ fn default_mcp_host_path_is_content_addressed_and_plan_only_is_read_only() {
         .expect("create temporary config directory");
     fs::write(&config, "model = \"preserve-me\"\n").expect("write temporary Codex config");
 
-    let plan = successful_json(&invoke_installer_with_default_host(&config, &[]));
+    let plan = successful_json(&invoke_installer_with_default_host(
+        &config,
+        &[],
+        directory.ps_module_path.as_os_str(),
+    ));
     let source_hash = plan["sourceHash"]
         .as_str()
         .expect("plan should expose source hash")
@@ -233,7 +253,8 @@ fn core_only_binary_change_reuses_the_configured_contract_without_restart() {
     fs::create_dir_all(config.parent().expect("config should have a parent"))
         .expect("create config directory");
     fs::write(&config, "model = \"preserve-me\"\n").expect("write initial config");
-    let initial_plan = successful_json(&invoke_installer(&config, &host, &[]));
+    let module_path = directory.ps_module_path.as_os_str();
+    let initial_plan = successful_json(&invoke_installer(&config, &host, &[], module_path));
     let target_sections = initial_plan["proposedTargetSections"]
         .as_str()
         .expect("proposed target sections");
@@ -260,7 +281,7 @@ fn core_only_binary_change_reuses_the_configured_contract_without_restart() {
     )
     .expect("write contract-compatible host fixture");
 
-    let status = successful_json(&invoke_status(Path::new(supervisor()), &host));
+    let status = successful_json(&invoke_status(Path::new(supervisor()), &host, module_path));
     assert_eq!(status["status"], "CORE_ONLY_CHANGE");
     assert_eq!(status["restartCodexRequired"], false);
     assert_ne!(status["sourceHash"], status["hostHash"]);
@@ -270,7 +291,11 @@ fn core_only_binary_change_reuses_the_configured_contract_without_restart() {
     );
 
     let before = fs::read_to_string(&config).expect("read config before plan");
-    let plan = successful_json(&invoke_installer_with_default_host(&config, &[]));
+    let plan = successful_json(&invoke_installer_with_default_host(
+        &config,
+        &[],
+        module_path,
+    ));
     assert_eq!(plan["hostSelection"], "configured-contract-match");
     assert_eq!(plan["hostStatus"], "CORE_ONLY_CHANGE");
     assert_eq!(plan["configurationChanged"], false);
@@ -291,11 +316,15 @@ fn core_only_binary_change_reuses_the_configured_contract_without_restart() {
          '{\"schemaVersion\":1,\"fingerprint\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\"}'\n",
     )
     .expect("write contract-mismatched host fixture");
-    let outdated = successful_json(&invoke_status(Path::new(supervisor()), &host));
+    let outdated = successful_json(&invoke_status(Path::new(supervisor()), &host, module_path));
     assert_eq!(outdated["status"], "OUTDATED");
     assert_eq!(outdated["restartCodexRequired"], true);
 
-    let upgrade = successful_json(&invoke_installer_with_default_host(&config, &[]));
+    let upgrade = successful_json(&invoke_installer_with_default_host(
+        &config,
+        &[],
+        module_path,
+    ));
     assert_eq!(
         upgrade["hostSelection"],
         "content-addressed-contract-upgrade"
@@ -358,7 +387,12 @@ fn new_mcp_host_is_staged_beside_a_locked_previous_host() {
         "previous MCP host should remain active"
     );
 
-    let plan = successful_json(&invoke_installer(&config, &new_host, &[]));
+    let plan = successful_json(&invoke_installer(
+        &config,
+        &new_host,
+        &[],
+        directory.ps_module_path.as_os_str(),
+    ));
     let approval_code = plan["approvalCode"]
         .as_str()
         .expect("plan should return approval code");
@@ -366,6 +400,7 @@ fn new_mcp_host_is_staged_beside_a_locked_previous_host() {
         &config,
         &new_host,
         &["-Apply", "-ApprovalCode", approval_code],
+        directory.ps_module_path.as_os_str(),
     ));
 
     assert_eq!(applied["status"], "applied");
@@ -414,6 +449,7 @@ impl Drop for ChildGuard {
 
 struct TestDirectory {
     path: PathBuf,
+    ps_module_path: OsString,
 }
 
 impl TestDirectory {
@@ -424,12 +460,70 @@ impl TestDirectory {
             .expect("system clock after epoch")
             .as_nanos();
         let sequence = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
+        let project_temp = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("tool-temp");
+        fs::create_dir_all(&project_temp).expect("create project-local temporary directory");
+        let path = project_temp.join(format!(
             "aku-supervisor-codex-mcp-bootstrap-{}-{unique}-{sequence}",
             std::process::id(),
         ));
         fs::create_dir_all(&path).expect("create temporary directory");
-        Self { path }
+        let shadow_module = path
+            .join("shadow-modules")
+            .join("Microsoft.PowerShell.Utility");
+        fs::create_dir_all(&shadow_module).expect("create shadow utility module directory");
+        fs::write(
+            shadow_module.join("Microsoft.PowerShell.Utility.psd1"),
+            r"@{
+    RootModule = 'Microsoft.PowerShell.Utility.psm1'
+    ModuleVersion = '99.0.0'
+    GUID = 'd72e4cf4-e82f-436e-8c1a-a1e18c6901bd'
+    FunctionsToExport = @('Get-FileHash', 'Get-McpBootstrapShadow')
+    CmdletsToExport = @()
+    VariablesToExport = @()
+    AliasesToExport = @()
+}
+",
+        )
+        .expect("write shadow utility module manifest");
+        fs::write(
+            shadow_module.join("Microsoft.PowerShell.Utility.psm1"),
+            "function Get-McpBootstrapShadow { 'shadow' }\nExport-ModuleMember -Function Get-McpBootstrapShadow\n",
+        )
+        .expect("write shadow utility module implementation");
+        let system_root = std::env::var_os("SystemRoot").expect("Windows system root");
+        let windows_modules = PathBuf::from(system_root)
+            .join("System32")
+            .join("WindowsPowerShell")
+            .join("v1.0")
+            .join("Modules");
+        let ps_module_path = std::env::join_paths([path.join("shadow-modules"), windows_modules])
+            .expect("join PowerShell module paths");
+        let shadow_probe = Command::new("powershell.exe")
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                "$hashCommand = Get-Command Get-FileHash -ErrorAction SilentlyContinue; $module = Get-Module Microsoft.PowerShell.Utility; Write-Output \"MODULE=$($module.Path)\"; Write-Output \"MODULEPATH=$env:PSModulePath\"; Write-Output \"HASHCOMMAND=$($hashCommand.Source)\"; if ($module.Path -notlike '*\\shadow-modules\\Microsoft.PowerShell.Utility\\*') { exit 2 }; if ($hashCommand) { exit 1 }; exit 0",
+            ])
+            .env("PSModulePath", &ps_module_path)
+            .output()
+            .expect("PowerShell utility-shadow probe should run");
+        assert!(
+            shadow_probe.status.success(),
+            "shadow utility module must load without Get-FileHash: exit={} stdout={} stderr={}",
+            shadow_probe.status,
+            String::from_utf8_lossy(&shadow_probe.stdout),
+            String::from_utf8_lossy(&shadow_probe.stderr)
+        );
+        Self {
+            path,
+            ps_module_path,
+        }
     }
 }
 
