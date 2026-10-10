@@ -370,18 +370,46 @@ function Invoke-DevelopmentBuild {
     return $true
 }
 
-function Test-ConfigurationBeforeHandoff {
-    $validationOutput = @(& $stagedExecutable status --json --config $script:configPath 2>&1)
-    $validationExitCode = $LASTEXITCODE
+function Test-StartupConfiguration {
+    param(
+        [Parameter(Mandatory)] [string] $Executable,
+        [string[]] $ServiceIds = @()
+    )
+
+    $validationArguments = @('validate-startup', '--json', '--config', $script:configPath)
+    foreach ($serviceId in $ServiceIds) {
+        $validationArguments += @('--service', $serviceId)
+    }
+    try {
+        $validationOutput = @(& $Executable @validationArguments 2>&1)
+        $validationExitCode = $LASTEXITCODE
+    } catch {
+        $validationOutput = @($_.Exception.Message)
+        $validationExitCode = 1
+    }
     if ($validationExitCode -eq 0) {
-        return $true
+        try {
+            $validationResult = ($validationOutput -join "`n") | ConvertFrom-Json
+            if ($validationResult.valid -eq $true) {
+                return $true
+            }
+        } catch {
+            $validationOutput += "Startup checker returned invalid JSON: $($_.Exception.Message)"
+        }
     }
 
-    Write-Host '[watch] Configuration validation failed. The current supervisor and services remain active.' -ForegroundColor Red
+    Write-Host '[watch] Startup configuration validation failed. The candidate Supervisor will not be started and current services remain active.' -ForegroundColor Red
     foreach ($line in $validationOutput) {
         Write-Host "[watch]   $line" -ForegroundColor Red
     }
     return $false
+}
+
+function Start-InitialDevelopmentSupervisor {
+    if (-not (Test-StartupConfiguration -Executable $stagedExecutable -ServiceIds @($script:startServiceIds))) {
+        throw 'Initial startup validation failed. The development Supervisor was not started.'
+    }
+    return Start-DevelopmentSupervisor
 }
 
 function Get-RunningServiceIds {
@@ -393,8 +421,32 @@ function Get-RunningServiceIds {
             ForEach-Object { [string] $_.id })
     }
     catch {
-        Write-Warning "Could not snapshot running services before restart: $($_.Exception.Message)"
-        return @()
+        throw "Could not snapshot running services before restart: $($_.Exception.Message)"
+    }
+}
+
+function Invoke-ValidatedHandoff {
+    param([Parameter(Mandatory)] [string] $Reason)
+
+    try {
+        $runningServices = @(Get-RunningServiceIds)
+    } catch {
+        Write-Host "[watch] $($_.Exception.Message). The current Supervisor remains active." -ForegroundColor Red
+        return [pscustomobject]@{
+            Approved = $false
+            RunningServiceIds = @()
+        }
+    }
+    if (-not (Test-StartupConfiguration -Executable $stagedExecutable -ServiceIds $runningServices)) {
+        return [pscustomobject]@{
+            Approved = $false
+            RunningServiceIds = @()
+        }
+    }
+    Request-GracefulShutdown -Reason $Reason
+    return [pscustomobject]@{
+        Approved = $true
+        RunningServiceIds = $runningServices
     }
 }
 
@@ -834,7 +886,7 @@ try {
         throw 'Initial development build failed. Fix the errors and start the watcher again.'
     }
     Install-StagedExecutable
-    $supervisorProcess = Start-DevelopmentSupervisor
+    $supervisorProcess = Start-InitialDevelopmentSupervisor
     Start-RequestedServices -ServiceIds $script:startServiceIds
     Show-ExecutionModeGuidance
 
@@ -872,12 +924,11 @@ try {
             continue
         }
 
-        if (-not (Test-ConfigurationBeforeHandoff)) {
+        $handoff = Invoke-ValidatedHandoff -Reason 'successful development build'
+        if (-not $handoff.Approved) {
             continue
         }
-
-        $runningServices = @(Get-RunningServiceIds)
-        Request-GracefulShutdown -Reason 'successful development build'
+        $runningServices = @($handoff.RunningServiceIds)
         if (-not (Wait-ForExit -Process $supervisorProcess)) {
             throw 'Graceful development restart timed out.'
         }

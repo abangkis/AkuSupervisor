@@ -119,6 +119,19 @@ pub trait SupervisorControl: Send + Sync {
     /// Returns a bounded control error if process state cannot be observed.
     fn snapshots(&self) -> Result<Vec<ServiceSnapshot>, ControlError>;
 
+    /// Verifies the local launch paths for services a composed action may
+    /// start, before that action mutates any service.
+    ///
+    /// Implementations without a platform launch-path adapter may retain the
+    /// default no-op. Concrete service registries provide the platform check.
+    ///
+    /// # Errors
+    ///
+    /// Returns a bounded control error if a requested service cannot launch.
+    fn preflight_launches(&self, _service_ids: &[String]) -> Result<(), ControlError> {
+        Ok(())
+    }
+
     /// Applies one typed action to one registered service.
     ///
     /// # Errors
@@ -143,6 +156,11 @@ where
 {
     fn snapshots(&self) -> Result<Vec<ServiceSnapshot>, ControlError> {
         ServiceRegistry::snapshots(self).map_err(|error| control_error(&error))
+    }
+
+    fn preflight_launches(&self, service_ids: &[String]) -> Result<(), ControlError> {
+        ServiceRegistry::preflight_launches(self, service_ids)
+            .map_err(|error| control_error(&error))
     }
 
     fn mutate(

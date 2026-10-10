@@ -167,6 +167,39 @@ working-directory input.
 Read-only service status is loopback-visible. Start, stop, and restart require a
 valid bearer token read from the runtime file. The token itself is never printed.
 
+### CLI validation boundary
+
+Remote control commands validate the static configuration contract, including
+loopback binding, runtime token location, absolute launch paths, service IDs,
+dependencies, and health deadlines. They do not require every service's
+working directory or executable to exist, so status, log reads, stop,
+shutdown, and cooperative commands remain available when launch files are
+missing. Foreground startup and configuration reconciliation use the same
+static contract. Registration validation retains its existing filesystem checks.
+
+Before sending start or restart requests, the CLI checks the requested services
+and their transitive managed dependencies for an existing working directory
+and executable. Missing files on unrelated services do not block the request.
+This client preflight cannot guarantee that launch files remain present until
+the Supervisor uses them. The core also checks launch paths before changing
+lifecycle state or stopping an existing process for a restart. Dependency-aware
+control checks the entire planned launch set before starting any dependency;
+already running dependencies do not need their launch files for this check.
+
+The local startup checker validates structure without contacting the control
+API, loading or creating a token, acquiring runtime leases, or starting processes:
+
+```powershell
+.\target\dev\aku-supervisor.exe validate-startup --json --config <path>
+.\target\dev\aku-supervisor.exe validate-startup --json --service akusidecar --config <path>
+```
+
+With `--service`, it additionally checks launch readiness for those services
+and their transitive dependencies. The CLI regression tests use authenticated
+fake loopback endpoints and isolated project-local files. Startup/core tests
+use disposable Supervisor and service fixtures; they do not contact or modify
+the user's registered services.
+
 ## 3.1 Read-only MCP
 
 With the Supervisor active and `control.mcp.enabled=true`, run:
@@ -415,10 +448,12 @@ argument, the watcher retains its original Supervisor-only behavior. The script
 validates every requested ID against the selected configuration before building;
 `akusupervisor` is not a service ID because `dev.ps1` already starts it.
 
-Normal mode deliberately validates every registered service and fails fast when
-any entry is invalid. If an unrelated checkout or generated binary is
-intentionally absent, retry with the opt-in partial profile printed by the
-failure message:
+Normal mode validates every registered service's static contract. Missing
+working directories or generated executables on idle services do not prevent
+Supervisor startup. The initial watcher gate additionally validates launch
+readiness for explicitly requested service IDs and their dependencies.
+The opt-in partial profile remains available to restrict the development
+configuration to a selected dependency closure:
 
 ```powershell
 .\scripts\dev.ps1 akusidecar -PartialStart
@@ -440,11 +475,14 @@ contract before moving to the next request. Services without a dependency
 relationship retain the operator's order.
 
 For every later Rust source or Cargo-manifest change, the watcher first builds
-the staged binary and uses it to validate the selected configuration before
-asking the running Supervisor to stop. Configuration-only changes do not trigger
-a watcher build or handoff. The foreground Supervisor validates them and
-reconciles service registrations in place; malformed changes are rejected while
-the current registry and services remain active.
+the staged binary, snapshots running service IDs, and invokes the staged
+`validate-startup` checker for the selected configuration and the services it
+will restore. A failed snapshot, checker, structural rule, or required launch
+path prevents shutdown and keeps the current Supervisor active.
+Configuration-only changes do not trigger a watcher build or handoff. The
+foreground Supervisor validates their static contract and reconciles service
+registrations in place; malformed changes are rejected while the current
+registry and services remain active.
 
 Requested startup attempts are failure-isolated. If a target or one of its
 dependencies misses its startup contract, `dev.ps1` captures and replays that

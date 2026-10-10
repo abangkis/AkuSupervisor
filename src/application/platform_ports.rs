@@ -221,6 +221,23 @@ pub trait ManagedProcessTree: Debug + Send {
 pub trait ProcessTreeSpawner: Debug + Send + Sync {
     type Process: ManagedProcessTree;
 
+    /// Checks that the launch contract's required local paths are available.
+    ///
+    /// The default keeps existing platform adapters portable. Adapters that
+    /// can inspect their launch environment should override this so lifecycle
+    /// operations can fail before changing desired state or stopping an owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns the adapter's process error when the launch cannot be prepared.
+    fn preflight_launch(
+        &self,
+        _service_id: &str,
+        _launch: &LaunchSpec,
+    ) -> Result<(), <Self::Process as ManagedProcessTree>::Error> {
+        Ok(())
+    }
+
     /// Creates an owned process tree from a validated launch contract.
     ///
     /// # Errors

@@ -17,6 +17,7 @@ Usage:\n\
   aku-supervisor --config <path> [--timezone <local|utc>]\n\
   aku-supervisor run [--timezone <local|utc>]\n\
   aku-supervisor run --config <path> [--timezone <local|utc>]\n\
+  aku-supervisor validate-startup --json [--service <id> ...] [--config <path>]\n\
   aku-supervisor status [--json] [--config <path>]\n\
   aku-supervisor simple-status [--pids] [--config <path>]\n\
   aku-supervisor instance-status [--json] [--config <path>]\n\
@@ -49,6 +50,10 @@ enum Command {
     Run {
         config: Option<PathBuf>,
         timezone: DisplayTimezone,
+    },
+    ValidateStartup {
+        config: Option<PathBuf>,
+        service_ids: Vec<String>,
     },
     ExtensionValidate {
         actor: ApiActor,
@@ -174,6 +179,10 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> ExitCode {
             ExitCode::SUCCESS
         }
         Ok(Command::Run { config, timezone }) => run_foreground(config, timezone),
+        Ok(Command::ValidateStartup {
+            config,
+            service_ids,
+        }) => run_validate_startup(config, &service_ids),
         Ok(Command::ExtensionValidate {
             actor,
             request_id,
@@ -238,6 +247,7 @@ fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, Strin
             Ok(Command::McpContract { json: true })
         }
         [run, rest @ ..] if run == "run" => parse_run(rest),
+        [validate, rest @ ..] if validate == "validate-startup" => parse_validate_startup(rest),
         [flag, ..] if flag == "--config" || flag == "--timezone" => parse_run(&arguments),
         [proxy] if proxy == "mcp-proxy" => Ok(Command::McpProxy { config: None }),
         [proxy, config_flag, config] if proxy == "mcp-proxy" && config_flag == "--config" => {
@@ -283,6 +293,94 @@ fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, Strin
             argument.to_string_lossy()
         )),
         _ => Err("expected run, a lifecycle client command, --help, or --version".to_owned()),
+    }
+}
+
+fn parse_validate_startup(arguments: &[OsString]) -> Result<Command, String> {
+    let mut config = None;
+    let mut service_ids = Vec::new();
+    let mut json = false;
+    let mut index = 0;
+    while index < arguments.len() {
+        match arguments[index].to_str() {
+            Some("--config") if config.is_none() => {
+                config = Some(PathBuf::from(option_value(arguments, index)?));
+                index += 2;
+            }
+            Some("--service") => {
+                let value = option_value(arguments, index)?
+                    .to_str()
+                    .ok_or_else(|| "--service must be valid UTF-8".to_owned())?;
+                if value.is_empty() {
+                    return Err("--service requires a non-empty service ID".to_owned());
+                }
+                service_ids.push(value.to_owned());
+                index += 2;
+            }
+            Some("--json") if !json => {
+                json = true;
+                index += 1;
+            }
+            Some("--config") => return Err("duplicate option: --config".to_owned()),
+            Some("--json") => return Err("duplicate option: --json".to_owned()),
+            _ => {
+                return Err(format!(
+                    "unsupported validate-startup option: {}",
+                    arguments[index].to_string_lossy()
+                ));
+            }
+        }
+    }
+    if !json {
+        return Err("validate-startup requires --json".to_owned());
+    }
+    Ok(Command::ValidateStartup {
+        config,
+        service_ids,
+    })
+}
+
+fn run_validate_startup(explicit_config: Option<PathBuf>, service_ids: &[String]) -> ExitCode {
+    let result = (|| {
+        let resolved = crate::adapters::config_path::resolve_config_path(explicit_config)
+            .map_err(|error| error.to_string())?;
+        let source = std::fs::read_to_string(resolved.path())
+            .map_err(|error| format!("failed to read {}: {error}", resolved.path().display()))?;
+        let config = crate::adapters::config::SupervisorConfig::parse_json(&source)
+            .map_err(|error| error.to_string())?;
+        config
+            .validate_structure()
+            .map_err(|error| error.to_string())?;
+        if !service_ids.is_empty() {
+            config
+                .validate_launch_readiness(service_ids)
+                .map_err(|error| error.to_string())?;
+        }
+        Ok::<(), String>(())
+    })();
+
+    match result {
+        Ok(()) => {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "valid": true,
+                    "requestedServiceIds": service_ids,
+                })
+            );
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "valid": false,
+                    "error": error,
+                    "requestedServiceIds": service_ids,
+                })
+            );
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -1138,7 +1236,9 @@ fn extension_validation(
     let source = fs::read_to_string(resolved.path())
         .map_err(|error| format!("failed to read {}: {error}", resolved.path().display()))?;
     let config = SupervisorConfig::parse_json(&source).map_err(|error| error.to_string())?;
-    config.validate().map_err(|error| error.to_string())?;
+    config
+        .validate_structure()
+        .map_err(|error| error.to_string())?;
     let token_path = resolve_token_path(resolved.path(), &config.control.token_file);
     let token = RuntimeToken::load(&token_path).map_err(|error| error.to_string())?;
     let address = format!("{}:{}", config.control.host, config.control.port)
@@ -1285,7 +1385,9 @@ fn live_logs(
     let source = fs::read_to_string(resolved.path())
         .map_err(|error| format!("failed to read {}: {error}", resolved.path().display()))?;
     let config = SupervisorConfig::parse_json(&source).map_err(|error| error.to_string())?;
-    config.validate().map_err(|error| error.to_string())?;
+    config
+        .validate_structure()
+        .map_err(|error| error.to_string())?;
     let token_path = resolve_token_path(resolved.path(), &config.control.token_file);
     let token = RuntimeToken::load(&token_path).map_err(|error| error.to_string())?;
     let address: SocketAddr = format!("{}:{}", config.control.host, config.control.port)
@@ -1510,7 +1612,9 @@ fn remote_request(command: RemoteCommand) -> Result<(), String> {
     let source = fs::read_to_string(resolved.path())
         .map_err(|error| format!("failed to read {}: {error}", resolved.path().display()))?;
     let config = SupervisorConfig::parse_json(&source).map_err(|error| error.to_string())?;
-    config.validate().map_err(|error| error.to_string())?;
+    config
+        .validate_structure()
+        .map_err(|error| error.to_string())?;
     let token_path = resolve_token_path(resolved.path(), &config.control.token_file);
     let token = RuntimeToken::load(&token_path).map_err(|error| error.to_string())?;
     let address: SocketAddr = format!("{}:{}", config.control.host, config.control.port)
@@ -1518,6 +1622,23 @@ fn remote_request(command: RemoteCommand) -> Result<(), String> {
         .map_err(|error| format!("invalid control address: {error}"))?;
 
     let commands = expand_remote_mutations(command, &config)?;
+    let launch_targets = commands
+        .iter()
+        .filter_map(|command| match command {
+            RemoteCommand::Mutate {
+                action: ControlAction::Start | ControlAction::Restart,
+                service_ids,
+                ..
+            } => Some(service_ids.iter().cloned()),
+            _ => None,
+        })
+        .flatten()
+        .collect::<Vec<_>>();
+    if !launch_targets.is_empty() {
+        config
+            .validate_launch_readiness(&launch_targets)
+            .map_err(|error| error.to_string())?;
+    }
     let command_count = commands.len();
     let mut batch_json = Vec::new();
     for (command_index, command) in commands.into_iter().enumerate() {

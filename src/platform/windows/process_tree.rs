@@ -942,30 +942,59 @@ fn generation_path(path: &Path, generation: usize) -> PathBuf {
 /// Stage-specific Windows process ownership error.
 #[derive(Debug)]
 pub enum ProcessTreeError {
+    LaunchPathUnavailable {
+        service_id: String,
+        field: &'static str,
+        path: PathBuf,
+    },
     CreateJob(io::Error),
     ConfigureJob(io::Error),
     Spawn(io::Error),
     StdioPipe(io::Error),
-    LogSetup { path: PathBuf, source: io::Error },
-    LogPump { path: PathBuf, source: io::Error },
-    LogThreadPanicked { path: PathBuf },
+    LogSetup {
+        path: PathBuf,
+        source: io::Error,
+    },
+    LogPump {
+        path: PathBuf,
+        source: io::Error,
+    },
+    LogThreadPanicked {
+        path: PathBuf,
+    },
     AssignJob(io::Error),
     ThreadSnapshot(io::Error),
-    PrimaryThreadNotFound { pid: u32 },
+    PrimaryThreadNotFound {
+        pid: u32,
+    },
     OpenPrimaryThread(io::Error),
     QueryPrimaryThreadTime(io::Error),
     ResumePrimaryThread(io::Error),
     QueryJob(io::Error),
-    TooManyOwnedProcesses { assigned: usize, capacity: usize },
+    TooManyOwnedProcesses {
+        assigned: usize,
+        capacity: usize,
+    },
     CtrlBreak(io::Error),
     TerminateJob(io::Error),
     Wait(io::Error),
-    ShutdownTimeout { remaining_pids: Vec<u32> },
+    ShutdownTimeout {
+        remaining_pids: Vec<u32>,
+    },
 }
 
 impl fmt::Display for ProcessTreeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::LaunchPathUnavailable {
+                service_id,
+                field,
+                path,
+            } => write!(
+                formatter,
+                "service {service_id} {field} is unavailable: {}",
+                path.display()
+            ),
             Self::CreateJob(error) => write!(formatter, "create Job Object failed: {error}"),
             Self::ConfigureJob(error) => write!(formatter, "configure Job Object failed: {error}"),
             Self::Spawn(error) => write!(formatter, "spawn suspended process failed: {error}"),

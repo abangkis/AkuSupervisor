@@ -446,6 +446,10 @@ impl SupervisorControl for AuditedControl {
         self.inner.snapshots()
     }
 
+    fn preflight_launches(&self, service_ids: &[String]) -> Result<(), ControlError> {
+        self.inner.preflight_launches(service_ids)
+    }
+
     fn mutate(
         &self,
         action: ControlAction,

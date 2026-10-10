@@ -330,6 +330,85 @@ impl SupervisorConfig {
 
     #[must_use]
     pub fn validation_issues(&self) -> Vec<ConfigIssue> {
+        self.validation_issues_with_filesystem(true)
+    }
+
+    /// Validates the static configuration structure without requiring idle
+    /// service launch paths to exist.
+    ///
+    /// Unlike [`Self::validate`], this does not require service working
+    /// directories or executables to exist. A Supervisor can still start and
+    /// serve control requests when an idle service's launch files are absent.
+    /// Absolute path requirements and every other structural rule remain
+    /// enforced.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::Invalid`] containing every discovered issue.
+    pub fn validate_structure(&self) -> Result<(), ConfigError> {
+        let issues = self.validation_issues_with_filesystem(false);
+        if issues.is_empty() {
+            Ok(())
+        } else {
+            Err(ConfigError::Invalid(issues))
+        }
+    }
+
+    /// Checks launch paths for the requested services and all of their
+    /// transitive managed dependencies.
+    ///
+    /// Call this after [`Self::validate_structure`] and before
+    /// sending a start or restart request. Filesystem readiness is scoped to
+    /// the services the server may need to launch.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::Invalid`] containing missing or malformed
+    /// launch paths, including unknown requested service IDs.
+    pub fn validate_launch_readiness(&self, service_ids: &[String]) -> Result<(), ConfigError> {
+        let mut issues = Vec::new();
+        if service_ids.is_empty() {
+            issues.push(ConfigIssue::new(
+                "services",
+                "service_ids_empty",
+                "at least one service ID is required for launch readiness validation",
+            ));
+        }
+
+        let mut pending = service_ids.to_vec();
+        let mut relevant = BTreeSet::new();
+        while let Some(service_id) = pending.pop() {
+            if !relevant.insert(service_id.clone()) {
+                continue;
+            }
+            let Some(service) = self.services.get(&service_id) else {
+                issues.push(ConfigIssue::new(
+                    format!("services.{service_id}"),
+                    "service_not_found",
+                    "service is not registered in the configuration",
+                ));
+                continue;
+            };
+            pending.extend(service.depends_on.iter().cloned());
+        }
+
+        for service_id in relevant {
+            let Some(service) = self.services.get(&service_id) else {
+                continue;
+            };
+            let prefix = format!("services.{service_id}");
+            validate_directory(&service.cwd, &prefix, true, &mut issues);
+            validate_executable(&service.command, &prefix, true, &mut issues);
+        }
+
+        if issues.is_empty() {
+            Ok(())
+        } else {
+            Err(ConfigError::Invalid(issues))
+        }
+    }
+
+    fn validation_issues_with_filesystem(&self, check_filesystem: bool) -> Vec<ConfigIssue> {
         let mut issues = Vec::new();
         if self.version != CONFIG_VERSION {
             issues.push(ConfigIssue::new(
@@ -386,8 +465,8 @@ impl SupervisorConfig {
                     "service label must not be empty",
                 ));
             }
-            validate_directory(&service.cwd, &prefix, &mut issues);
-            validate_executable(&service.command, &prefix, &mut issues);
+            validate_directory(&service.cwd, &prefix, check_filesystem, &mut issues);
+            validate_executable(&service.command, &prefix, check_filesystem, &mut issues);
             if service.shutdown_grace_ms == 0 {
                 issues.push(ConfigIssue::new(
                     format!("{prefix}.shutdownGraceMs"),
@@ -635,14 +714,19 @@ fn validate_cooperative_actions(actions: &CooperativeActionsConfig, issues: &mut
     }
 }
 
-fn validate_directory(path: &Path, prefix: &str, issues: &mut Vec<ConfigIssue>) {
+fn validate_directory(
+    path: &Path,
+    prefix: &str,
+    check_exists: bool,
+    issues: &mut Vec<ConfigIssue>,
+) {
     if !path.is_absolute() {
         issues.push(ConfigIssue::new(
             format!("{prefix}.cwd"),
             "cwd_not_absolute",
             "working directory must be absolute",
         ));
-    } else if !path.is_dir() {
+    } else if check_exists && !path.is_dir() {
         issues.push(ConfigIssue::new(
             format!("{prefix}.cwd"),
             "cwd_missing",
@@ -651,14 +735,19 @@ fn validate_directory(path: &Path, prefix: &str, issues: &mut Vec<ConfigIssue>) 
     }
 }
 
-fn validate_executable(path: &Path, prefix: &str, issues: &mut Vec<ConfigIssue>) {
+fn validate_executable(
+    path: &Path,
+    prefix: &str,
+    check_exists: bool,
+    issues: &mut Vec<ConfigIssue>,
+) {
     if !path.is_absolute() {
         issues.push(ConfigIssue::new(
             format!("{prefix}.command"),
             "command_not_absolute",
             "command must be an absolute executable path",
         ));
-    } else if !path.is_file() {
+    } else if check_exists && !path.is_file() {
         issues.push(ConfigIssue::new(
             format!("{prefix}.command"),
             "command_missing",
@@ -1058,10 +1147,13 @@ mod tests {
     impl TestDirectory {
         fn create() -> Self {
             let sequence = NEXT_TEST_DIRECTORY.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir().join(format!(
-                "aku-supervisor-config-test-{}-{sequence}",
-                std::process::id()
-            ));
+            let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("target")
+                .join("test-temp")
+                .join(format!(
+                    "aku-supervisor-config-test-{}-{sequence}",
+                    std::process::id()
+                ));
             fs::create_dir_all(&path).expect("test directory should be created");
             Self(path)
         }
@@ -1184,6 +1276,8 @@ mod tests {
         config.control.host = "0.0.0.0".to_owned();
         config.control.token_file = PathBuf::from("../token");
 
+        assert!(config.validate_structure().is_err());
+
         let codes = config
             .validation_issues()
             .into_iter()
@@ -1279,6 +1373,8 @@ mod tests {
             "missing".to_owned(),
         ];
 
+        assert!(config.validate_structure().is_err());
+
         let codes = config
             .validation_issues()
             .into_iter()
@@ -1298,6 +1394,7 @@ mod tests {
             .get_mut("worker")
             .expect("worker")
             .depends_on = vec!["fixture".to_owned()];
+        assert!(config.validate_structure().is_err());
         assert!(
             config
                 .validation_issues()
@@ -1365,6 +1462,8 @@ mod tests {
         service.cwd = PathBuf::from("relative");
         service.command = PathBuf::from("relative.exe");
 
+        assert!(config.validate_structure().is_err());
+
         let codes = config
             .validation_issues()
             .into_iter()
@@ -1373,6 +1472,87 @@ mod tests {
         assert!(codes.contains(&"cwd_not_absolute".to_owned()));
         assert!(codes.contains(&"command_not_absolute".to_owned()));
         assert!(codes.contains(&"declared_port_conflict".to_owned()));
+    }
+
+    #[test]
+    fn control_client_validation_allows_missing_launch_files_but_strict_validation_rejects_them() {
+        let (directory, mut config) = valid_config();
+        let service = config.services.get_mut("fixture").expect("fixture service");
+        service.cwd = directory.0.join("missing-cwd");
+        service.command = directory.0.join("missing-service.exe");
+
+        assert!(config.validate_structure().is_ok());
+        let strict_codes = match config.validate() {
+            Err(ConfigError::Invalid(issues)) => issues
+                .into_iter()
+                .map(|issue| issue.code)
+                .collect::<Vec<_>>(),
+            result => panic!("strict validation should reject missing paths: {result:?}"),
+        };
+        assert!(strict_codes.contains(&"cwd_missing".to_owned()));
+        assert!(strict_codes.contains(&"command_missing".to_owned()));
+    }
+
+    #[test]
+    fn launch_readiness_checks_targets_and_transitive_dependencies_only() {
+        let (directory, mut config) = valid_config();
+        let missing_cwd = directory.0.join("missing-unrelated-cwd");
+        let missing_executable = directory.0.join("missing-unrelated.exe");
+        config.services.insert(
+            "unrelated".to_owned(),
+            ServiceConfig {
+                label: "Unrelated service".to_owned(),
+                cwd: missing_cwd,
+                command: missing_executable,
+                args: Vec::new(),
+                environment: BTreeMap::new(),
+                depends_on: Vec::new(),
+                startup_prerequisites: Vec::new(),
+                health: HealthCheck::Process,
+                ports: Vec::new(),
+                restart_policy: RestartPolicy::Manual,
+                shutdown_grace_ms: 1_000,
+            },
+        );
+        assert!(config.validate_structure().is_ok());
+        assert!(
+            config
+                .validate_launch_readiness(&["fixture".to_owned()])
+                .is_ok()
+        );
+
+        let missing_dependency = directory.0.join("missing-dependency.exe");
+        config.services.insert(
+            "dependency".to_owned(),
+            ServiceConfig {
+                label: "Dependency service".to_owned(),
+                cwd: directory.0.clone(),
+                command: missing_dependency,
+                args: Vec::new(),
+                environment: BTreeMap::new(),
+                depends_on: Vec::new(),
+                startup_prerequisites: Vec::new(),
+                health: HealthCheck::Process,
+                ports: Vec::new(),
+                restart_policy: RestartPolicy::Manual,
+                shutdown_grace_ms: 1_000,
+            },
+        );
+        config
+            .services
+            .get_mut("fixture")
+            .expect("fixture service")
+            .depends_on = vec!["dependency".to_owned()];
+        assert!(config.validate_structure().is_ok());
+        let dependency_codes = match config.validate_launch_readiness(&["fixture".to_owned()]) {
+            Err(ConfigError::Invalid(issues)) => issues
+                .into_iter()
+                .map(|issue| issue.code)
+                .collect::<Vec<_>>(),
+            result => panic!("missing dependency executable should fail preflight: {result:?}"),
+        };
+        assert!(dependency_codes.contains(&"command_missing".to_owned()));
+        assert!(!dependency_codes.contains(&"cwd_missing".to_owned()));
     }
 
     #[test]

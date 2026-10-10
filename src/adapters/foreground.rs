@@ -62,7 +62,9 @@ pub fn run(
         source,
     })?;
     let config = SupervisorConfig::parse_json(&source).map_err(ForegroundError::Config)?;
-    config.validate().map_err(ForegroundError::Config)?;
+    config
+        .validate_structure()
+        .map_err(ForegroundError::Config)?;
     let fingerprint = config.fingerprint().map_err(ForegroundError::Config)?;
     let token_path = resolve_token_path(config_path, &config.control.token_file);
     let token = RuntimeToken::load_or_create(&token_path, generate_control_token)
@@ -443,7 +445,7 @@ fn reconcile_configuration(
         reconciliation.rejected(None, &message);
         message
     })?;
-    config.validate().map_err(|error| {
+    config.validate_structure().map_err(|error| {
         let message = error.to_string();
         reconciliation.rejected(None, &message);
         message

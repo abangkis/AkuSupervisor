@@ -339,6 +339,24 @@ where
         Ok(outcome)
     }
 
+    /// Checks launch paths for services that a planned control action may
+    /// start. This operation is read-only and does not change service state.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed lookup or process-adapter error.
+    pub fn preflight_launches(
+        &self,
+        service_ids: &[String],
+    ) -> Result<(), RegistryError<ProcessError<Spawner>, Inspector::Error>> {
+        let services = self.read_services()?;
+        for service_id in service_ids {
+            let entry = Self::entry(&services, service_id)?;
+            self.preflight_entry(entry)?;
+        }
+        Ok(())
+    }
+
     /// Starts one registered service after authority and port checks.
     ///
     /// # Errors
@@ -363,6 +381,7 @@ where
         if has_process(&entry.runtime)? {
             return Ok(StartOutcome::AlreadyRunning);
         }
+        self.preflight_entry(entry)?;
         control
             .policy
             .apply_user_action(actor, LifecycleAction::Start);
@@ -506,6 +525,7 @@ where
             .authorize(actor, LifecycleAction::Restart)
             .map_err(RegistryError::Unauthorized)?;
         Self::authorize_recovery(entry, actor)?;
+        self.preflight_entry(entry)?;
         control
             .policy
             .apply_user_action(actor, LifecycleAction::Restart);
@@ -887,6 +907,19 @@ where
             }
         }
         Ok(())
+    }
+
+    fn preflight_entry(
+        &self,
+        entry: &ServiceEntry<Spawner::Process>,
+    ) -> Result<(), RegistryError<ProcessError<Spawner>, Inspector::Error>> {
+        self.spawner
+            .preflight_launch(&entry.registration.id, &entry.registration.launch)
+            .map_err(|error| {
+                RegistryError::Runtime(ServiceRuntimeError::Start(BackendOperationError::Process(
+                    error,
+                )))
+            })
     }
 
     fn authorize_recovery(
@@ -1290,6 +1323,37 @@ mod tests {
     }
 
     #[derive(Debug, Clone)]
+    struct PreflightSpawner {
+        spawn_count: Arc<AtomicU32>,
+        launch_available: Arc<AtomicBool>,
+    }
+
+    impl ProcessTreeSpawner for PreflightSpawner {
+        type Process = FakeProcess;
+
+        fn preflight_launch(
+            &self,
+            _service_id: &str,
+            _launch: &LaunchSpec,
+        ) -> Result<(), FakeError> {
+            if self.launch_available.load(Ordering::SeqCst) {
+                Ok(())
+            } else {
+                Err(FakeError)
+            }
+        }
+
+        fn spawn(
+            &self,
+            _service_id: &str,
+            _launch: &LaunchSpec,
+        ) -> Result<Self::Process, FakeError> {
+            let pid = self.spawn_count.fetch_add(1, Ordering::SeqCst) + 1_000;
+            Ok(FakeProcess { pid })
+        }
+    }
+
+    #[derive(Debug, Clone)]
     struct ProcessControl {
         owned_pids: Arc<Mutex<Vec<u32>>>,
         exit_code: Arc<AtomicI32>,
@@ -1611,6 +1675,75 @@ mod tests {
             )))
         ));
         assert_eq!(spawn_count.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn failed_start_preflight_leaves_stopped_service_state_unchanged() {
+        let spawn_count = Arc::new(AtomicU32::new(0));
+        let launch_available = Arc::new(AtomicBool::new(false));
+        let registry = ServiceRegistry::new(
+            [registration(Vec::new())],
+            PreflightSpawner {
+                spawn_count: Arc::clone(&spawn_count),
+                launch_available,
+            },
+            FakePortInspector { occupied: false },
+            Arc::new(FakeHealthProbe),
+        )
+        .expect("valid registry");
+        let before = registry.snapshots().expect("snapshot before start")[0].clone();
+
+        assert!(
+            registry
+                .start("fixture", Actor::UserCli, reason("missing launch paths"))
+                .is_err()
+        );
+
+        let after = registry.snapshots().expect("snapshot after start")[0].clone();
+        assert_eq!(after.lifecycle, before.lifecycle);
+        assert_eq!(after.desired_state, before.desired_state);
+        assert_eq!(after.operator_hold, before.operator_hold);
+        assert_eq!(after.last_action, before.last_action);
+        assert_eq!(after.restart_count, before.restart_count);
+        assert_eq!(after.root_pid, before.root_pid);
+        assert_eq!(spawn_count.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn failed_restart_preflight_preserves_the_existing_owner_and_state() {
+        let spawn_count = Arc::new(AtomicU32::new(0));
+        let launch_available = Arc::new(AtomicBool::new(true));
+        let registry = ServiceRegistry::new(
+            [registration(Vec::new())],
+            PreflightSpawner {
+                spawn_count: Arc::clone(&spawn_count),
+                launch_available: Arc::clone(&launch_available),
+            },
+            FakePortInspector { occupied: false },
+            Arc::new(FakeHealthProbe),
+        )
+        .expect("valid registry");
+        registry
+            .start("fixture", Actor::UserCli, reason("initial start"))
+            .expect("initial launch");
+        let before = registry.snapshots().expect("snapshot before restart")[0].clone();
+        launch_available.store(false, Ordering::SeqCst);
+
+        assert!(
+            registry
+                .restart("fixture", Actor::UserCli, reason("path disappeared"))
+                .is_err()
+        );
+
+        let after = registry.snapshots().expect("snapshot after restart")[0].clone();
+        assert_eq!(after.lifecycle, before.lifecycle);
+        assert_eq!(after.root_pid, before.root_pid);
+        assert_eq!(after.owned_pids, before.owned_pids);
+        assert_eq!(after.desired_state, before.desired_state);
+        assert_eq!(after.operator_hold, before.operator_hold);
+        assert_eq!(after.last_action, before.last_action);
+        assert_eq!(after.restart_count, before.restart_count);
+        assert_eq!(spawn_count.load(Ordering::SeqCst), 1);
     }
 
     #[test]

@@ -72,6 +72,29 @@ impl SupervisorControl for DependencyAwareControl {
         if matches!(action, ControlAction::Start | ControlAction::Restart) {
             let snapshots = self.inner.snapshots()?;
             let order = stable_start_order(&snapshots, &[service_id.to_owned()])?;
+            let service_by_id = snapshots
+                .iter()
+                .map(|snapshot| (snapshot.id.as_str(), snapshot))
+                .collect::<BTreeMap<_, _>>();
+            let launch_ids = order
+                .iter()
+                .filter(|planned_id| {
+                    (*planned_id == service_id && action == ControlAction::Restart)
+                        || service_by_id
+                            .get(planned_id.as_str())
+                            .is_some_and(|snapshot| snapshot.root_pid.is_none())
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            for launch_id in &launch_ids {
+                self.inner
+                    .preflight_launches(std::slice::from_ref(launch_id))
+                    .map_err(|error| {
+                        error.with_context(format_args!(
+                            "cannot prepare service {launch_id} before {action:?} of {service_id}"
+                        ))
+                    })?;
+            }
             if order.len() > 1 {
                 let direct_dependencies = snapshots
                     .iter()
@@ -240,6 +263,8 @@ mod tests {
     struct FakeControl {
         snapshots: Vec<ServiceSnapshot>,
         calls: Mutex<Vec<(ControlAction, String)>>,
+        operations: Mutex<Vec<String>>,
+        preflight_failure: Option<String>,
     }
 
     #[derive(Debug, Default)]
@@ -277,6 +302,21 @@ mod tests {
             Ok(self.snapshots.clone())
         }
 
+        fn preflight_launches(&self, service_ids: &[String]) -> Result<(), ControlError> {
+            self.operations
+                .lock()
+                .expect("operation lock")
+                .push(format!("preflight:{}", service_ids.join(",")));
+            if let Some(failed_id) = self.preflight_failure.as_deref()
+                && service_ids.iter().any(|service_id| service_id == failed_id)
+            {
+                return Err(ControlError::internal(format!(
+                    "launch paths unavailable for {failed_id}"
+                )));
+            }
+            Ok(())
+        }
+
         fn mutate(
             &self,
             action: ControlAction,
@@ -284,6 +324,10 @@ mod tests {
             _actor: Actor,
             _reason: Reason,
         ) -> Result<ControlMutationResult, ControlError> {
+            self.operations
+                .lock()
+                .expect("operation lock")
+                .push(format!("{action:?}:{service_id}"));
             self.calls
                 .lock()
                 .expect("fake call lock")
@@ -370,6 +414,8 @@ mod tests {
                 snapshot("platform", &["koc"]),
             ],
             calls: Mutex::new(Vec::new()),
+            operations: Mutex::new(Vec::new()),
+            preflight_failure: None,
         });
         let observer = Arc::new(RecordingObserver::default());
         let control = DependencyAwareControl::new(inner.clone()).with_observer(observer.clone());
@@ -405,10 +451,138 @@ mod tests {
     }
 
     #[test]
+    fn restart_preflights_every_service_that_will_launch_before_dependency_mutations() {
+        let mut target = snapshot("target", &["dependency"]);
+        target.root_pid = Some(44);
+        let inner = Arc::new(FakeControl {
+            snapshots: vec![snapshot("dependency", &[]), target],
+            calls: Mutex::new(Vec::new()),
+            operations: Mutex::new(Vec::new()),
+            preflight_failure: None,
+        });
+        let control = DependencyAwareControl::new(inner.clone());
+
+        control
+            .mutate(
+                ControlAction::Restart,
+                "target",
+                Actor::UserCli,
+                Reason::new("preflight dependency before restart").expect("reason"),
+            )
+            .expect("restart should proceed after successful preflight");
+
+        assert_eq!(
+            *inner.operations.lock().expect("operations"),
+            [
+                "preflight:dependency",
+                "preflight:target",
+                "Start:dependency",
+                "Restart:target"
+            ]
+        );
+    }
+
+    #[test]
+    fn failed_dependency_preflight_prevents_all_mutations_in_restart_plan() {
+        let mut target = snapshot("target", &["dependency"]);
+        target.root_pid = Some(44);
+        let inner = Arc::new(FakeControl {
+            snapshots: vec![snapshot("dependency", &[]), target],
+            calls: Mutex::new(Vec::new()),
+            operations: Mutex::new(Vec::new()),
+            preflight_failure: Some("dependency".to_owned()),
+        });
+        let control = DependencyAwareControl::new(inner.clone());
+
+        let error = control
+            .mutate(
+                ControlAction::Restart,
+                "target",
+                Actor::UserCli,
+                Reason::new("failed dependency preflight").expect("reason"),
+            )
+            .expect_err("missing dependency launch paths should reject restart");
+
+        assert!(error.message().contains("dependency"));
+        assert!(inner.calls.lock().expect("calls").is_empty());
+        assert_eq!(
+            *inner.operations.lock().expect("operations"),
+            ["preflight:dependency"]
+        );
+    }
+
+    #[test]
+    fn failed_target_preflight_after_dependency_readiness_prevents_all_mutations() {
+        let mut target = snapshot("target", &["dependency"]);
+        target.root_pid = Some(44);
+        let inner = Arc::new(FakeControl {
+            snapshots: vec![snapshot("dependency", &[]), target],
+            calls: Mutex::new(Vec::new()),
+            operations: Mutex::new(Vec::new()),
+            preflight_failure: Some("target".to_owned()),
+        });
+        let control = DependencyAwareControl::new(inner.clone());
+
+        let error = control
+            .mutate(
+                ControlAction::Restart,
+                "target",
+                Actor::UserCli,
+                Reason::new("target launch path disappeared").expect("reason"),
+            )
+            .expect_err("target preflight should reject the restart plan");
+
+        assert!(error.message().contains("target"));
+        assert!(inner.calls.lock().expect("calls").is_empty());
+        assert_eq!(
+            *inner.operations.lock().expect("operations"),
+            ["preflight:dependency", "preflight:target"]
+        );
+    }
+
+    #[test]
+    fn restart_does_not_preflight_a_dependency_that_is_already_running() {
+        let mut dependency = snapshot("dependency", &[]);
+        dependency.root_pid = Some(31);
+        let mut target = snapshot("target", &["dependency"]);
+        target.root_pid = Some(44);
+        let inner = Arc::new(FakeControl {
+            snapshots: vec![dependency, target],
+            calls: Mutex::new(Vec::new()),
+            operations: Mutex::new(Vec::new()),
+            preflight_failure: Some("dependency".to_owned()),
+        });
+        let control = DependencyAwareControl::new(inner.clone());
+
+        control
+            .mutate(
+                ControlAction::Restart,
+                "target",
+                Actor::UserCli,
+                Reason::new("running dependency has no launch requirement").expect("reason"),
+            )
+            .expect("missing dependency launch files must not block a running dependency");
+
+        assert_eq!(
+            *inner.operations.lock().expect("operations"),
+            ["preflight:target", "Start:dependency", "Restart:target"]
+        );
+        assert_eq!(
+            *inner.calls.lock().expect("calls"),
+            [
+                (ControlAction::Start, "dependency".to_owned()),
+                (ControlAction::Restart, "target".to_owned())
+            ]
+        );
+    }
+
+    #[test]
     fn service_without_dependencies_keeps_single_mutation_behavior() {
         let inner = Arc::new(FakeControl {
             snapshots: vec![snapshot("frontend", &[])],
             calls: Mutex::new(Vec::new()),
+            operations: Mutex::new(Vec::new()),
+            preflight_failure: None,
         });
         let observer = Arc::new(RecordingObserver::default());
         let control = DependencyAwareControl::new(inner.clone()).with_observer(observer.clone());

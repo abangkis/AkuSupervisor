@@ -50,6 +50,17 @@ fn foreground_cli_runs_registered_lifecycle_and_cleans_up() {
                 "ports": [],
                 "restartPolicy": "manual",
                 "shutdownGraceMs": 250
+            },
+            "missing-idle": {
+                "label": "Missing Idle Fixture",
+                "cwd": directory.path.join("missing-idle-cwd"),
+                "command": directory.path.join("missing-idle-command.exe"),
+                "args": [],
+                "environment": {},
+                "health": { "type": "process" },
+                "ports": [],
+                "restartPolicy": "manual",
+                "shutdownGraceMs": 250
             }
         }
     });
@@ -69,6 +80,42 @@ fn foreground_cli_runs_registered_lifecycle_and_cleans_up() {
         .expect("start foreground supervisor");
     let mut guard = ChildGuard::new(child);
     assert_supervisor_stayed_running(&mut guard);
+    let initial_status = run_client(&directory.path, &["status"]);
+    assert!(
+        initial_status.status.success(),
+        "missing idle paths must not block startup status: {initial_status:?}"
+    );
+    let initial_status = String::from_utf8_lossy(&initial_status.stdout);
+    assert!(initial_status.contains("missing-idle"));
+    assert!(initial_status.contains("\"lifecycle\": \"stopped\""));
+    let missing_start = run_client(
+        &directory.path,
+        &["start", "missing-idle", "--reason", "fixture missing path"],
+    );
+    assert!(!missing_start.status.success());
+    let responsive_status = run_client(&directory.path, &["status"]);
+    assert!(
+        responsive_status.status.success(),
+        "a missing idle service must not block other control requests: {responsive_status:?}"
+    );
+    let mut reconciled_config = config.clone();
+    reconciled_config["services"]["reconciled-idle"] = json!({
+        "label": "Reconciled Missing Idle Fixture",
+        "cwd": directory.path.join("reconciled-missing-cwd"),
+        "command": directory.path.join("reconciled-missing-command.exe"),
+        "args": [],
+        "environment": {},
+        "health": { "type": "process" },
+        "ports": [],
+        "restartPolicy": "manual",
+        "shutdownGraceMs": 250
+    });
+    fs::write(
+        &config_path,
+        serde_json::to_vec_pretty(&reconciled_config).expect("serialize reconciled config"),
+    )
+    .expect("write valid static config with unavailable idle paths");
+    wait_for_reconciliation(&directory.path, "reconciled-idle");
     verify_remote_control(&directory.path);
     verify_read_only_mcp(&directory.path, control_port);
 
@@ -107,7 +154,11 @@ fn foreground_cli_runs_registered_lifecycle_and_cleans_up() {
     assert!(stdout.contains(&format!(
         "Read-only MCP: http://127.0.0.1:{control_port}/mcp"
     )));
-    assert!(stdout.contains(&format!("Configuration: {}", config_path.display())));
+    let expected_config_line = format!("Configuration: {}", config_path.display());
+    assert!(
+        stdout.contains(&expected_config_line),
+        "stdout omitted {expected_config_line:?}: {stdout}"
+    );
     assert!(stdout.contains("Configuration source: default user configuration"));
     assert!(stdout.contains("started fixture"));
     assert!(stdout.contains("restart completed for fixture: Restarted"));
@@ -589,6 +640,43 @@ fn run_client(local_app_data: &std::path::Path, arguments: &[&str]) -> std::proc
         .expect("run control client")
 }
 
+fn wait_for_reconciliation(local_app_data: &std::path::Path, added_service_id: &str) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let output = run_client(local_app_data, &["registry-status", "--json"]);
+        assert!(
+            output.status.success(),
+            "registry status request failed: {output:?}"
+        );
+        let value: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("registry status JSON");
+        let registry = value
+            .pointer("/response/registry")
+            .or_else(|| value.get("registry"))
+            .expect("registry response payload");
+        let is_current = registry["state"] == "current"
+            && registry["activeRevision"] == registry["diskRevision"]
+            && registry["added"]
+                .as_array()
+                .is_some_and(|added| added.iter().any(|id| id == added_service_id));
+        if is_current {
+            let status = run_client(local_app_data, &["status"]);
+            assert!(
+                status.status.success(),
+                "status after reconciliation: {status:?}"
+            );
+            let status = String::from_utf8_lossy(&status.stdout);
+            assert!(status.contains(added_service_id));
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "config monitor did not apply the static-valid revision: {value}"
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
 fn available_port() -> u16 {
     TcpListener::bind(("127.0.0.1", 0))
         .expect("reserve ephemeral test port")
@@ -607,10 +695,10 @@ impl TestDirectory {
             .duration_since(UNIX_EPOCH)
             .expect("system clock after epoch")
             .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "aku-supervisor-foreground-{}-{unique}",
-            std::process::id()
-        ));
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("foreground-fixtures")
+            .join(format!("{}-{unique}", std::process::id()));
         fs::create_dir_all(&path).expect("create fixture directory");
         Self { path }
     }
