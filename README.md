@@ -563,6 +563,12 @@ retain the previous snapshot and show an error.
 
 Each service has a Start/Stop control based on its observed lifecycle and process
 ownership. Transitional, unknown, stale, and pending states disable controls.
+Running services also offer Restart beside Stop. Restart is one core operation
+with launch preflight before shutdown, rather than separate browser Stop and
+Start requests. On the Running filter, its target remains visible while the
+request and status refresh are in progress. If restarting fails and leaves the
+service stopped, that row stays visible with its actual state so Start remains
+reachable. It returns to ordinary filtering once a fresh snapshot shows Running.
 Failed or unhealthy services with owned processes offer Stop before another
 Start. Controls follow the same application policy, launch validation, ownership
 safety, and audit path as CLI operations; requests are attributed to `user_ui`.
@@ -573,12 +579,12 @@ Static routes require a loopback peer and `Host`. Browser controls additionally
 require the listener's exact loopback host/port, a matching `Origin`, JSON, and a
 scoped dashboard token held only in page memory. The page obtains this token via
 `GET /dashboard/v1/session` with `X-Dashboard-Request: 1`, then sends
-`POST /dashboard/v1/services/<id>/start` or `/stop` with `X-Dashboard-Token` and a
+`POST /dashboard/v1/services/<id>/start`, `/stop`, or `/restart` with `X-Dashboard-Token` and a
 unique `requestId`. This capability changes when the Supervisor instance changes
 and does not expose the primary bearer token or authorize other control routes.
 Repeated request IDs replay the original result; reuse for a different command
 is rejected. No cross-origin access is enabled. Dashboard controls do not edit
-registration, restart Supervisor, or expose service Restart operations.
+registration or restart Supervisor.
 Responses use a restrictive content security policy, disable caching, and
 prevent MIME sniffing and referrer disclosure.
 
@@ -599,7 +605,7 @@ rustc --edition=2024 tests\fixtures\dashboard_browser.rs -o target\dashboard-bro
 
 Open the printed URL plus `tests/dashboard-browser.html` for the helper
 assertions, or its root for the UI. The fixture serves synthetic services and
-mock Start/Stop actions that change only fixture memory. It exits after ten
+mock Start/Stop/Restart actions that change only fixture memory. It exits after ten
 minutes and never starts Supervisor or managed services. Its
 `/fixture/unavailable` and `/fixture/available` routes toggle a simulated
 services API failure for checking retained snapshots and recovery. Other

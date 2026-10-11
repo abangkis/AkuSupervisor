@@ -23,6 +23,7 @@ struct Fixture {
     services_unavailable: bool,
     session_unavailable: bool,
     fail_next_mutation: bool,
+    fail_next_restart_stopped: bool,
     expire_next_mutation: bool,
     delay_next_mutation_ms: u64,
     delay_services_ms: u64,
@@ -35,6 +36,7 @@ impl Fixture {
             services_unavailable: false,
             session_unavailable: false,
             fail_next_mutation: false,
+            fail_next_restart_stopped: false,
             expire_next_mutation: false,
             delay_next_mutation_ms: 0,
             delay_services_ms: 0,
@@ -268,21 +270,28 @@ fn fixture_control(target: &str, fixture: &mut Fixture, stream: &mut TcpStream) 
             fixture.fail_next_mutation = true;
             plain(
                 stream,
-                "The next mock Start or Stop request will return a simulated error.",
+                "The next mock Start, Stop, or Restart request will return a simulated error.",
+            );
+        }
+        "/fixture/fail-next-restart-stopped" => {
+            fixture.fail_next_restart_stopped = true;
+            plain(
+                stream,
+                "The next mock Restart will leave its service stopped and return a simulated error. No real services are involved.",
             );
         }
         "/fixture/expire-next-mutation" => {
             fixture.expire_next_mutation = true;
             plain(
                 stream,
-                "The next mock Start or Stop request will return 401.",
+                "The next mock Start, Stop, or Restart request will return 401.",
             );
         }
         "/fixture/delay-next-mutation" => {
             fixture.delay_next_mutation_ms = query_milliseconds(query, 30_000);
             plain(
                 stream,
-                "The next mock Start or Stop response is delayed. No real services are involved.",
+                "The next mock Start, Stop, or Restart response is delayed. No real services are involved.",
             );
         }
         "/fixture/delay-services" => {
@@ -309,7 +318,7 @@ fn query_milliseconds(query: &str, maximum: u64) -> u64 {
 fn mutation_route(path: &str) -> Option<(String, String)> {
     let tail = path.strip_prefix("/dashboard/v1/services/")?;
     let (id, action) = tail.rsplit_once('/')?;
-    (matches!(action, "start" | "stop") && !id.is_empty())
+    (matches!(action, "start" | "stop" | "restart") && !id.is_empty())
         .then(|| (id.to_owned(), action.to_owned()))
 }
 
@@ -393,6 +402,10 @@ fn respond(mut stream: TcpStream, fixture: &mut Fixture) {
                 fixture.fail_next_mutation = false;
                 (503, "application/json", br#"{"error":{"code":"fixture_mutation_failure","message":"Simulated mock mutation failure."}}"#.to_vec())
             } else if let Some((service_id, action)) = mutation_route(path) {
+                let fail_restart_stopped = action == "restart" && fixture.fail_next_restart_stopped;
+                if fail_restart_stopped {
+                    fixture.fail_next_restart_stopped = false;
+                }
                 if fixture.delay_next_mutation_ms > 0 {
                     thread::sleep(Duration::from_millis(fixture.delay_next_mutation_ms));
                     fixture.delay_next_mutation_ms = 0;
@@ -423,6 +436,25 @@ fn respond(mut stream: TcpStream, fixture: &mut Fixture) {
                         );
                         (200, "application/json", response.into_bytes())
                     }
+                    Some(service) if action == "restart" && service.lifecycle == "running"
+                        && !service.owned_pids.is_empty() && fail_restart_stopped =>
+                    {
+                        service.lifecycle = "stopped".to_owned();
+                        service.health = "unknown".to_owned();
+                        service.owned_pids.clear();
+                        (503, "application/json", br#"{"error":{"code":"fixture_restart_failure","message":"Simulated restart failure; the mock service stopped."}}"#.to_vec())
+                    }
+                    Some(service) if action == "restart" && service.lifecycle == "running"
+                        && !service.owned_pids.is_empty() =>
+                    {
+                        service.health = "healthy".to_owned();
+                        service.owned_pids = vec![91098];
+                        let response = format!(
+                            r#"{{"serviceId":"{}","outcome":"restarted"}}"#,
+                            json_string(&service.id)
+                        );
+                        (200, "application/json", response.into_bytes())
+                    }
                     Some(_) => (409, "application/json", br#"{"error":{"code":"invalid_fixture_transition","message":"The mock service cannot take that action in its current state."}}"#.to_vec()),
                 }
             } else {
@@ -444,7 +476,7 @@ fn main() {
         listener.local_addr().expect("fixture address")
     );
     println!(
-        "Fixture controls: /fixture/reset, /fixture/unavailable, /fixture/available, /fixture/fail-next-mutation, /fixture/delay-next-mutation?ms=10000"
+        "Fixture controls: /fixture/reset, /fixture/unavailable, /fixture/available, /fixture/fail-next-mutation, /fixture/fail-next-restart-stopped, /fixture/delay-next-mutation?ms=10000"
     );
     let deadline = Instant::now() + Duration::from_secs(600);
     let mut fixture = Fixture::reset();

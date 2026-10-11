@@ -780,7 +780,10 @@ fn dashboard_control_response(
     let Some((_service_id, action)) = parse_mutation_target(target) else {
         return error_response(404, "not_found", "route not found");
     };
-    if !matches!(action, ControlAction::Start | ControlAction::Stop) {
+    if !matches!(
+        action,
+        ControlAction::Start | ControlAction::Stop | ControlAction::Restart
+    ) {
         return error_response(404, "not_found", "route not found");
     }
     if request.method != "POST" {
@@ -821,7 +824,7 @@ fn dashboard_control_response(
         );
     }
     // Reuse authorization, user priority, validation, audit and idempotency semantics.
-    // The browser capability cannot reach restart, shutdown, registry or MCP routes.
+    // The browser capability cannot reach shutdown, registry or MCP routes.
     let forwarded = HttpRequest {
         method: "POST".to_owned(),
         target: target.to_owned(),
@@ -2396,6 +2399,15 @@ mod tests {
                 "POST",
                 "/dashboard/v1/services/running/restart",
                 host.as_str(),
+                None,
+                &mutation_headers[..],
+                &payload[..],
+                403,
+            ),
+            (
+                "POST",
+                "/dashboard/v1/services/running/reload",
+                host.as_str(),
                 Some(origin.as_str()),
                 &mutation_headers[..],
                 &payload[..],
@@ -2454,19 +2466,21 @@ mod tests {
                 ("Content-Type", "application/json"),
                 ("X-Dashboard-Token", candidate),
             ];
-            assert_eq!(
-                raw_request_with_body(
-                    address,
-                    "POST",
-                    start_path,
-                    &host,
-                    Some(&origin),
-                    &headers,
-                    payload
-                )
-                .0,
-                401
-            );
+            for path in [start_path, "/dashboard/v1/services/running/restart"] {
+                assert_eq!(
+                    raw_request_with_body(
+                        address,
+                        "POST",
+                        path,
+                        &host,
+                        Some(&origin),
+                        &headers,
+                        payload
+                    )
+                    .0,
+                    401
+                );
+            }
         }
         let duplicate_headers = [
             ("Content-Type", "application/json"),
@@ -2550,8 +2564,23 @@ mod tests {
             .0,
             200
         );
+        for _ in 0..2 {
+            assert_eq!(
+                raw_request_with_body(
+                    address,
+                    "POST",
+                    "/dashboard/v1/services/running/restart",
+                    &host,
+                    Some(&origin),
+                    &mutation_headers,
+                    br#"{"requestId":"browser-restart"}"#
+                )
+                .0,
+                200
+            );
+        }
         let calls = control.mutation_calls.lock().expect("calls lock");
-        assert_eq!(calls.len(), 2);
+        assert_eq!(calls.len(), 3, "replayed Restart executes once");
         assert_eq!(
             calls[0],
             (
@@ -2563,6 +2592,9 @@ mod tests {
         );
         assert_eq!(calls[1].0, ControlAction::Stop);
         assert_eq!(calls[1].2, Actor::UserUi);
+        assert_eq!(calls[2].0, ControlAction::Restart);
+        assert_eq!(calls[2].1, "running");
+        assert_eq!(calls[2].2, Actor::UserUi);
         drop(calls);
         assert_eq!(
             raw_request_with_body(
@@ -2625,7 +2657,7 @@ mod tests {
             404,
             "non-loopback peer cannot mutate"
         );
-        assert_eq!(*control.mutations.lock().expect("mutation lock"), 2);
+        assert_eq!(*control.mutations.lock().expect("mutation lock"), 3);
         server.shutdown().expect("stop fixture control server");
     }
 

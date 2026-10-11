@@ -1,11 +1,13 @@
 import {
   actionForService,
+  actionsForService,
   applicationUrls,
   filterServices,
   formatTimestamp,
   isActionDisabled,
   isRunning,
   needsAttention,
+  reconcileRunningRetention,
   safeHttpUrl,
 } from "/app.js";
 
@@ -64,33 +66,62 @@ check("timestamps use the English date locale", () => {
 check("Start is offered for stopped or unowned failed services", () => {
   equal(actionForService({ lifecycle: "stopped", rootPid: null, ownedPids: [] }), "start");
   equal(actionForService({ lifecycle: "failed", rootPid: null, ownedPids: [] }), "start");
+  equal(actionsForService({ lifecycle: "stopped", rootPid: null, ownedPids: [] }), ["start"]);
+  equal(actionsForService({ lifecycle: "failed", rootPid: null, ownedPids: [] }), ["start"]);
   equal(actionForService({ lifecycle: "stopped", rootPid: null }), null);
   equal(actionForService({ lifecycle: "failed" }), null);
 });
-check("Stop is offered only for owned running, unhealthy, or failed services", () => {
+check("Stop is offered for owned running, unhealthy, or failed services; Restart only for running", () => {
   equal(actionForService({ lifecycle: "running", rootPid: 42, ownedPids: [] }), "stop");
+  equal(actionsForService({ lifecycle: "running", rootPid: 42, ownedPids: [] }), ["stop", "restart"]);
   equal(actionForService({ lifecycle: "unhealthy", rootPid: null, ownedPids: [43] }), "stop");
+  equal(actionsForService({ lifecycle: "unhealthy", rootPid: null, ownedPids: [43] }), ["stop"]);
   equal(actionForService({ lifecycle: "failed", rootPid: 44, ownedPids: [] }), "stop");
+  equal(actionsForService({ lifecycle: "failed", rootPid: 44, ownedPids: [] }), ["stop"]);
   equal(actionForService({ lifecycle: "running", rootPid: null, ownedPids: [] }), null);
+  equal(actionsForService({ lifecycle: "running", rootPid: null, ownedPids: [] }), []);
 });
 check("transitional, unknown, and inconsistent states have no action", () => {
   for (const lifecycle of ["starting", "stopping", "termination_pending", "unknown", ""]) {
     equal(actionForService({ lifecycle, rootPid: 42, ownedPids: [42] }), null);
+    equal(actionsForService({ lifecycle, rootPid: 42, ownedPids: [42] }), []);
   }
   equal(actionForService({ lifecycle: "stopped", rootPid: 42, ownedPids: [42] }), null);
   equal(actionForService({ lifecycle: "unhealthy", rootPid: null, ownedPids: [] }), null);
 });
 check("actions fail closed for stale data, missing access, or pending work", () => {
-  const service = { lifecycle: "stopped", rootPid: null, ownedPids: [] };
+  const service = { lifecycle: "running", rootPid: 42, ownedPids: [42] };
   const ready = { snapshotFresh: true, sessionAvailable: true };
-  equal(isActionDisabled(service, ready), false);
-  for (const state of [
-    { ...ready, snapshotFresh: false },
-    { ...ready, sessionAvailable: false },
-    { ...ready, mutationPending: true },
-    { ...ready, refreshRequired: true },
-    { ...ready, refreshInFlight: true },
-  ]) equal(isActionDisabled(service, state), true);
+  for (const action of actionsForService(service)) {
+    equal(isActionDisabled(service, ready, action), false);
+    for (const state of [
+      { ...ready, snapshotFresh: false },
+      { ...ready, sessionAvailable: false },
+      { ...ready, mutationPending: true },
+      { ...ready, refreshRequired: true },
+      { ...ready, refreshInFlight: true },
+    ]) equal(isActionDisabled(service, state, action), true);
+  }
+  const startService = { lifecycle: "stopped", rootPid: null, ownedPids: [] };
+  equal(isActionDisabled(startService, ready, "start"), false);
+  equal(isActionDisabled(startService, { ...ready, refreshRequired: true }, "start"), true);
+});
+check("Restart targets stay in Running while stopped, failed, or transitional and search still applies", () => {
+  const stopped = { id: "restart-stopped", label: "Recover stopped", lifecycle: "stopped", rootPid: null, ownedPids: [] };
+  const failed = { id: "restart-failed", label: "Recover failed", lifecycle: "failed", rootPid: null, ownedPids: [] };
+  const transitional = { id: "restart-pending", label: "Recover pending", lifecycle: "stopping", rootPid: 43, ownedPids: [43] };
+  const unrelated = { id: "offline", label: "Unrelated stopped", lifecycle: "stopped", rootPid: null, ownedPids: [] };
+  const running = { id: "healthy", label: "Healthy", lifecycle: "running", rootPid: 44, ownedPids: [44] };
+  const current = [stopped, failed, transitional, unrelated, running];
+  const retained = new Set([stopped.id, failed.id, transitional.id]);
+  equal(filterServices(current, "", "running", retained).map((service) => service.id), [
+    "restart-stopped", "restart-failed", "restart-pending", "healthy",
+  ]);
+  equal(filterServices(current, "recover failed", "running", retained).map((service) => service.id), ["restart-failed"]);
+  equal([...reconcileRunningRetention(retained, current)].sort(), ["restart-failed", "restart-pending", "restart-stopped"]);
+  equal([...reconcileRunningRetention(retained, [failed, transitional, running])].sort(), ["restart-failed", "restart-pending"]);
+  equal(reconcileRunningRetention(new Set([stopped.id]), [{ ...stopped, lifecycle: "running" }]).size, 0);
+  equal(reconcileRunningRetention(new Set([stopped.id]), []).size, 0);
 });
 
 document.getElementById("result").textContent = passed + " passed, " + failed + " failed";

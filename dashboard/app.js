@@ -43,8 +43,16 @@ export function actionForService(service) {
   return null;
 }
 
-export function isActionDisabled(service, state = {}) {
-  return !actionForService(service)
+export function actionsForService(service) {
+  const action = actionForService(service);
+  if (!action) return [];
+  return action === "stop" && normalized(service?.lifecycle) === "running"
+    ? ["stop", "restart"]
+    : [action];
+}
+
+export function isActionDisabled(service, state = {}, action = actionForService(service)) {
+  return !action || !actionsForService(service).includes(action)
     || state.snapshotFresh !== true
     || state.sessionAvailable !== true
     || state.mutationPending === true
@@ -65,10 +73,12 @@ export function applicationUrls(ports) {
   return urls;
 }
 
-export function filterServices(services, query = "", mode = "all") {
+export function filterServices(services, query = "", mode = "all", retainedInRunningFilter = new Set()) {
   const needle = normalized(query).normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
+  const retained = retainedInRunningFilter instanceof Set ? retainedInRunningFilter : new Set();
   return (Array.isArray(services) ? services : []).filter((service) => {
-    if (mode === "running" && !isRunning(service)) return false;
+    const serviceId = service?.id === null || service?.id === undefined ? null : String(service.id);
+    if (mode === "running" && !isRunning(service) && !retained.has(serviceId)) return false;
     if (!needle) return true;
     const searchable = [
       service?.id,
@@ -85,6 +95,14 @@ export function filterServices(services, query = "", mode = "all") {
       .toLocaleLowerCase("en-US").normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
     return searchable.includes(needle);
   });
+}
+
+export function reconcileRunningRetention(retainedIds, services) {
+  const retained = new Set(retainedIds instanceof Set ? [...retainedIds].map(String) : []);
+  const current = new Map((Array.isArray(services) ? services : [])
+    .filter((service) => service?.id !== null && service?.id !== undefined)
+    .map((service) => [String(service.id), service]));
+  return new Set([...retained].filter((id) => current.has(id) && !isRunning(current.get(id))));
 }
 
 export function safeHttpUrl(value) {
@@ -170,6 +188,9 @@ function addStateCell(row, service) {
   const badge = makeElement("span", "badge", enumLabel(service.lifecycle, LIFECYCLE_LABELS));
   badge.dataset.state = lifecycle || "unknown";
   stack.append(badge);
+  if (runningFilterRetained.has(String(service.id)) && !isRunning(service)) {
+    stack.append(makeElement("span", "restart-recovery", "Restart recovery"));
+  }
   stack.append(makeElement("span", "desired-state", "Desired: " + enumLabel(service.desiredState, DESIRED_LABELS)));
   cell.append(stack);
 }
@@ -283,43 +304,53 @@ function actionState() {
 
 function addActionCell(row, service) {
   const cell = appendCell(row, "action-cell");
-  const action = actionForService(service);
-  const button = makeElement("button", "service-action");
+  const actions = actionsForService(service);
   const serviceName = text(service.label, text(service.id, "service"));
-  const actionName = action === "start" ? "Start" : "Stop";
-  const isPending = pendingMutation?.serviceId === service.id;
-  const pendingVerb = pendingMutation?.action === "start" ? "Starting" : "Stopping";
-  button.type = "button";
-  button.setAttribute("aria-describedby", "action-status");
-  if (isPending) {
-    button.classList.add("action-pending");
-    button.textContent = pendingVerb + "…";
-    button.setAttribute("aria-label", pendingVerb + " " + serviceName);
-    button.disabled = true;
-  } else if (!action) {
+  if (!actions.length) {
+    const button = makeElement("button", "service-action");
+    button.type = "button";
+    button.setAttribute("aria-describedby", "action-status");
     button.classList.add("action-unavailable");
     button.textContent = "Unavailable";
-    button.setAttribute("aria-label", "No Start or Stop action available for " + serviceName);
+    button.setAttribute("aria-label", "No Start, Stop, or Restart action available for " + serviceName);
     button.title = "This service state or process ownership does not allow a safe action.";
     button.disabled = true;
-  } else {
-    button.classList.add(action === "start" ? "action-start" : "action-stop");
-    button.textContent = actionName;
-    button.setAttribute("aria-label", actionName + " " + serviceName);
-    if (isActionDisabled(service, actionState())) {
-      button.disabled = true;
-      button.title = !dashboardSession
-        ? "Dashboard access is not available."
-        : !snapshotFresh || mutationRefreshRequired
-          ? "Refresh service status before taking action."
-          : pendingMutation
-            ? "Another service action is in progress."
-            : "Service status is being refreshed.";
-    } else {
-      button.addEventListener("click", () => void mutateService(service, action));
-    }
+    cell.append(button);
+    return;
   }
-  cell.append(button);
+
+  const actionNames = { start: "Start", stop: "Stop", restart: "Restart" };
+  const pendingVerbs = { start: "Starting", stop: "Stopping", restart: "Restarting" };
+  for (const action of actions) {
+    const actionName = actionNames[action];
+    const button = makeElement("button", "service-action action-" + action);
+    const isPending = pendingMutation?.serviceId === service.id && pendingMutation.action === action;
+    button.type = "button";
+    button.setAttribute("aria-describedby", "action-status");
+    if (isPending) {
+      const pendingVerb = pendingVerbs[action];
+      button.classList.add("action-pending");
+      button.textContent = pendingVerb + "…";
+      button.setAttribute("aria-label", pendingVerb + " " + serviceName);
+      button.disabled = true;
+    } else {
+      button.textContent = actionName;
+      button.setAttribute("aria-label", actionName + " " + serviceName);
+      if (isActionDisabled(service, actionState(), action)) {
+        button.disabled = true;
+        button.title = !dashboardSession
+          ? "Dashboard access is not available."
+          : !snapshotFresh || mutationRefreshRequired
+            ? "Refresh service status before taking action."
+            : pendingMutation
+              ? "Another service action is in progress."
+              : "Service status is being refreshed.";
+      } else {
+        button.addEventListener("click", () => void mutateService(service, action));
+      }
+    }
+    cell.append(button);
+  }
 }
 
 function renderRows() {
@@ -328,7 +359,7 @@ function renderRows() {
     if (details.open) expandedServices.add(details.dataset.serviceId);
     else expandedServices.delete(details.dataset.serviceId);
   }
-  const filtered = filterServices(snapshot, searchInput.value, filterInput.value);
+  const filtered = filterServices(snapshot, searchInput.value, filterInput.value, runningFilterRetained);
   if (!snapshot.length) {
     addMessageRow("No services are registered.");
   } else if (!filtered.length) {
@@ -461,11 +492,12 @@ function createRequestId() {
 }
 
 async function mutateService(service, action) {
-  if (isActionDisabled(service, actionState())) return;
+  if (isActionDisabled(service, actionState(), action)) return;
   const serviceId = text(service.id, "");
   const serviceName = text(service.label, serviceId || "service");
-  const actionLabel = action === "start" ? "Start" : "Stop";
+  const actionLabel = { start: "Start", stop: "Stop", restart: "Restart" }[action];
   const requestId = createRequestId();
+  if (action === "restart") runningFilterRetained.add(serviceId);
   pendingMutation = { serviceId, action };
   mutationRefreshRequired = true;
   snapshotFresh = false;
@@ -557,6 +589,7 @@ async function refresh() {
 
   if (servicesResult.status === "fulfilled" && Array.isArray(servicesResult.value?.services)) {
     snapshot = servicesResult.value.services;
+    runningFilterRetained = reconcileRunningRetention(runningFilterRetained, snapshot);
     hasSnapshot = true;
     snapshotFresh = true;
     mutationRefreshRequired = false;
@@ -600,6 +633,7 @@ let pendingMutation = null;
 let dashboardSession = null;
 let sessionPromise = null;
 let refreshTimer = null;
+let runningFilterRetained = new Set();
 const expandedServices = new Set();
 let countTotal;
 let countRunning;

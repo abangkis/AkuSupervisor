@@ -128,6 +128,89 @@ fn dashboard_start_stop_uses_launch_checks_user_holds_and_audit_without_primary_
 }
 
 #[test]
+fn dashboard_restart_is_one_audited_operation_and_preflights_before_stopping() {
+    let fixture = HttpFixture::new();
+    assert_eq!(fixture.mutate("target", "start").status, 200);
+    let address = fixture.server.address();
+    let session = request_with_headers(
+        address,
+        "GET",
+        "/dashboard/v1/session",
+        None,
+        &[("X-Dashboard-Request", "1")],
+    );
+    assert_eq!(session.status, 200);
+    let capability = session.body["token"]
+        .as_str()
+        .expect("dashboard capability");
+    let origin = format!("http://{address}");
+    let headers = [
+        ("Origin", origin.as_str()),
+        ("X-Dashboard-Token", capability),
+    ];
+    let path = "/dashboard/v1/services/target/restart";
+    let body = json!({"requestId":"dashboard-core-restart"});
+    let before = fixture.snapshot("target");
+    let dependency = fixture.snapshot("dependency");
+    let spawn_count = fixture.metrics.spawned.lock().expect("spawn lock").len();
+    let stop_count = fixture.metrics.stopped.lock().expect("stop lock").len();
+    for _ in 0..2 {
+        let restarted = request_with_headers(address, "POST", path, Some(body.clone()), &headers);
+        assert_eq!(restarted.status, 200);
+        assert_eq!(restarted.body["outcome"], "restarted");
+    }
+    let restarted = fixture.snapshot("target");
+    assert_eq!(restarted["lifecycle"], "running");
+    assert_ne!(before["rootPid"], restarted["rootPid"]);
+    assert_eq!(
+        restarted["lastAction"]["actor"],
+        json!({"actorType":"user","actorId":"ui"})
+    );
+    assert_unchanged_target(&dependency, &fixture.snapshot("dependency"));
+    assert_eq!(
+        fixture.metrics.spawned.lock().expect("spawn lock").len(),
+        spawn_count + 1
+    );
+    assert_eq!(
+        fixture.metrics.stopped.lock().expect("stop lock").len(),
+        stop_count + 1
+    );
+    let journal = fs::read_to_string(fixture.directory.path().join("runtime/journal.jsonl"))
+        .expect("read restart audit");
+    let events = journal
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .filter(|event| event["action"] == "restart")
+        .collect::<Vec<_>>();
+    assert_eq!(events.len(), 1, "replayed Restart has one audit event");
+    assert_eq!(
+        events[0]["actor"],
+        json!({"actorType":"user","actorId":"ui"})
+    );
+    assert!(!journal.contains(capability));
+    fs::remove_file(&fixture.paths.target_executable).expect("remove running target command");
+    let failed = request_with_headers(
+        address,
+        "POST",
+        path,
+        Some(json!({"requestId":"dashboard-restart-missing-command"})),
+        &headers,
+    );
+    assert_eq!(failed.status, 500);
+    assert_eq!(failed.body["error"]["code"], "spawn_failed");
+    assert_unchanged_target(&restarted, &fixture.snapshot("target"));
+    assert_unchanged_target(&dependency, &fixture.snapshot("dependency"));
+    assert_eq!(
+        fixture.metrics.spawned.lock().expect("spawn lock").len(),
+        spawn_count + 1
+    );
+    assert_eq!(
+        fixture.metrics.stopped.lock().expect("stop lock").len(),
+        stop_count + 1
+    );
+}
+
+#[test]
 fn authenticated_http_restart_preserves_target_when_executable_or_cwd_disappears() {
     let fixture = HttpFixture::new();
     assert_eq!(fixture.mutate("target", "start").status, 200);
