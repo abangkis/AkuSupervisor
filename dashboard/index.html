@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="id">
+<html lang="en">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -11,27 +11,27 @@
     <main class="page-shell">
       <header class="page-header">
         <div>
-          <p class="eyebrow">SUPERVISOR · LOKAL</p>
+          <p class="eyebrow">LOCAL · SUPERVISOR</p>
           <h1>AkuSupervisor</h1>
-          <p class="subtitle">Ringkasan layanan dan proses yang dikelola.</p>
+          <p class="subtitle">Overview of managed services and processes.</p>
         </div>
         <div class="header-status">
           <span class="status-dot" aria-hidden="true"></span>
-          <span id="supervisor-health" data-state="checking">Memeriksa API Supervisor…</span>
+          <span id="supervisor-health" data-state="checking">Checking Supervisor API…</span>
         </div>
       </header>
 
-      <section class="summary-grid" aria-label="Ringkasan layanan">
+      <section class="summary-grid" aria-label="Service summary">
         <article class="summary-card">
-          <span class="summary-label">Layanan terdaftar</span>
+          <span class="summary-label">Registered services</span>
           <strong id="count-total" class="summary-value" aria-live="polite">—</strong>
         </article>
         <article class="summary-card">
-          <span class="summary-label">Berjalan</span>
+          <span class="summary-label">Running</span>
           <strong id="count-running" class="summary-value" aria-live="polite">—</strong>
         </article>
         <article class="summary-card">
-          <span class="summary-label">Perlu perhatian</span>
+          <span class="summary-label">Needs attention</span>
           <strong id="count-attention" class="summary-value" aria-live="polite">—</strong>
         </article>
       </section>
@@ -39,50 +39,52 @@
       <section class="services-panel" aria-labelledby="services-heading">
         <div class="panel-heading">
           <div>
-            <h2 id="services-heading">Layanan</h2>
-            <p class="updated-line">Diperbarui: <time id="updated-at">Belum tersedia</time></p>
+            <h2 id="services-heading">Services</h2>
+            <p class="updated-line">Updated: <time id="updated-at">Not available</time></p>
           </div>
           <button id="refresh-button" class="refresh-button" type="button" aria-controls="service-table">
-            <span aria-hidden="true">↻</span> Segarkan
+            <span aria-hidden="true">↻</span> Refresh
           </button>
         </div>
 
         <div class="toolbar">
           <label class="search-control">
-            <span class="sr-only">Cari layanan</span>
+            <span class="sr-only">Search services</span>
             <span class="search-icon" aria-hidden="true">⌕</span>
-            <input id="search-input" type="search" autocomplete="off" placeholder="Cari nama, ID, PID, atau port…">
+            <input id="search-input" type="search" autocomplete="off" placeholder="Search name, ID, PID, or port…">
           </label>
           <label class="filter-control">
-            <span class="sr-only">Filter layanan</span>
+            <span class="sr-only">Filter services</span>
             <select id="service-filter">
-              <option value="all">Semua layanan</option>
-              <option value="running">Berjalan</option>
+              <option value="all">All services</option>
+              <option value="running">Running</option>
             </select>
           </label>
         </div>
 
-        <p id="refresh-status" class="refresh-status" data-state="loading" role="status" aria-live="polite">Mengambil data layanan…</p>
-        <div class="table-scroll" tabindex="0" aria-label="Tabel layanan, dapat digulir secara horizontal">
+        <p id="refresh-status" class="refresh-status" data-state="loading" role="status" aria-live="polite">Loading service data…</p>
+        <p id="action-status" class="action-status" data-state="idle" role="status" aria-live="polite"></p>
+        <div class="table-scroll" tabindex="0" aria-label="Services table; scroll horizontally to see all columns">
           <table id="service-table">
-            <caption class="sr-only">Status layanan, URL aplikasi, dan proses yang dikelola AkuSupervisor</caption>
+            <caption class="sr-only">Service status, application URLs, managed processes, and available actions</caption>
             <thead>
               <tr>
-                <th scope="col">Layanan</th>
-                <th scope="col">Siklus · tujuan</th>
-                <th scope="col">Kesehatan</th>
-                <th scope="col">URL aplikasi</th>
-                <th scope="col">PID utama</th>
-                <th scope="col">Proses dimiliki</th>
+                <th scope="col">Service</th>
+                <th scope="col">Lifecycle · desired</th>
+                <th scope="col">Health</th>
+                <th scope="col">Application URL</th>
+                <th scope="col">Root PID</th>
+                <th scope="col">Owned processes</th>
                 <th scope="col">Operator hold</th>
+                <th scope="col">Action</th>
               </tr>
             </thead>
             <tbody id="service-rows">
-              <tr class="message-row"><td colspan="7">Memuat layanan…</td></tr>
+              <tr class="message-row"><td colspan="8">Loading services…</td></tr>
             </tbody>
           </table>
         </div>
-        <p class="panel-footnote">URL dari port terdaftar. Layanan yang berhenti mungkin belum dapat dibuka. Pembaruan otomatis setiap 5 detik.</p>
+        <p class="panel-footnote">Application URLs are inferred from registered ports. A stopped service may not be reachable. Data refreshes every 5 seconds.</p>
       </section>
       <p id="results-summary" class="sr-only" role="status" aria-live="polite"></p>
     </main>

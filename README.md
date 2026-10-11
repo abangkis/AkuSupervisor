@@ -541,7 +541,7 @@ the Job Object PID membership remains the ownership authority. Use
 diverge, `simple-status` prepends one bounded `REGISTRY WARNING` with state,
 active revision, disk revision, and diagnostic detail.
 
-### Single-page status dashboard
+### Single-page service dashboard
 
 Start AkuSupervisor as usual, then open the control listener's loopback address
 in a browser. With the default development configuration, use:
@@ -555,16 +555,31 @@ existing control HTTP listener. No Node.js runtime, npm packages, separate
 dashboard process, or additional Cargo dependency is required. The page reads `/v1/services` and `/v1/health`
 directly. It displays lifecycle and desired state, health, root PID, owned
 processes/PIDs, operator holds, and HTTP shortcuts inferred from registered
-ports. Search, a running-service filter, manual refresh, and five-second
+ports. All interface text is in English. Search, a running-service filter, manual refresh, and five-second
 automatic refresh keep the table compact. A port-based URL is a convenience
 link, not proof that a port serves a web UI; stopped services may be
 unavailable. Services without declared ports have no URL. Failed refreshes
 retain the previous snapshot and show an error.
 
-The dashboard is read-only and its static routes require a loopback peer and a
-loopback `Host`. It adds no lifecycle operation and does not change registration
-or start, stop, restart, or rebuild Supervisor or managed services. Its static
-responses use a restrictive content security policy, disable caching, and
+Each service has a Start/Stop control based on its observed lifecycle and process
+ownership. Transitional, unknown, stale, and pending states disable controls.
+Failed or unhealthy services with owned processes offer Stop before another
+Start. Controls follow the same application policy, launch validation, ownership
+safety, and audit path as CLI operations; requests are attributed to `user_ui`.
+The page displays progress and errors, refreshes after commands, and never
+automatically repeats a command whose outcome is unknown.
+
+Static routes require a loopback peer and `Host`. Browser controls additionally
+require the listener's exact loopback host/port, a matching `Origin`, JSON, and a
+scoped dashboard token held only in page memory. The page obtains this token via
+`GET /dashboard/v1/session` with `X-Dashboard-Request: 1`, then sends
+`POST /dashboard/v1/services/<id>/start` or `/stop` with `X-Dashboard-Token` and a
+unique `requestId`. This capability changes when the Supervisor instance changes
+and does not expose the primary bearer token or authorize other control routes.
+Repeated request IDs replay the original result; reuse for a different command
+is rejected. No cross-origin access is enabled. Dashboard controls do not edit
+registration, restart Supervisor, or expose service Restart operations.
+Responses use a restrictive content security policy, disable caching, and
 prevent MIME sniffing and referrer disclosure.
 
 Rust regression coverage for embedded asset routing and API behavior runs with:
@@ -574,22 +589,23 @@ cargo test --all-features
 ```
 
 Browser helper regressions need only Rust and a browser. From the repository
-root, save a read-only services snapshot from an already running Supervisor,
-then compile and run the disposable fixture:
+root, compile and run the disposable mock fixture:
 
 ```powershell
 New-Item -ItemType Directory -Path target -Force | Out-Null
-Invoke-WebRequest -Uri http://127.0.0.1:11121/v1/services -OutFile target\dashboard-services.json
 rustc --edition=2024 tests\fixtures\dashboard_browser.rs -o target\dashboard-browser-fixture.exe
-.\target\dashboard-browser-fixture.exe target\dashboard-services.json
+.\target\dashboard-browser-fixture.exe
 ```
 
 Open the printed URL plus `tests/dashboard-browser.html` for the helper
-assertions, or its root for the UI. The fixture serves recorded data and exits
-after three minutes; it never starts Supervisor or managed services. Its
+assertions, or its root for the UI. The fixture serves synthetic services and
+mock Start/Stop actions that change only fixture memory. It exits after ten
+minutes and never starts Supervisor or managed services. Its
 `/fixture/unavailable` and `/fixture/available` routes toggle a simulated
-services API failure for checking retained snapshots and recovery. These test
-routes and test pages are not served by the production control listener.
+services API failure for checking retained snapshots and recovery. Other
+`/fixture/*` controls simulate expired access, command errors, and delayed
+responses. These test routes and test pages are not served by the production
+control listener.
 
 After a compatible extension build has been loaded into Chrome once, either the
 user or Codex can request the only browser-side mutation exposed by

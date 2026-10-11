@@ -1,23 +1,55 @@
 const LIFECYCLE_LABELS = {
-  stopped: "Berhenti",
-  starting: "Memulai",
-  running: "Berjalan",
-  stopping: "Menghentikan",
-  termination_pending: "Menunggu terminasi",
-  unhealthy: "Tidak sehat",
-  failed: "Gagal",
+  stopped: "Stopped",
+  starting: "Starting",
+  running: "Running",
+  stopping: "Stopping",
+  termination_pending: "Termination pending",
+  unhealthy: "Unhealthy",
+  failed: "Failed",
 };
 
-const DESIRED_LABELS = { running: "Berjalan", stopped: "Berhenti" };
-const HEALTH_LABELS = { unknown: "Belum diketahui", healthy: "Sehat", unhealthy: "Tidak sehat" };
-const HOLD_LABELS = { none: "Tidak ada", running: "Tahan saat berjalan", stopped: "Tahan saat berhenti" };
+const DESIRED_LABELS = { running: "Running", stopped: "Stopped" };
+const HEALTH_LABELS = { unknown: "Unknown", healthy: "Healthy", unhealthy: "Unhealthy" };
+const HOLD_LABELS = { none: "None", running: "Hold while running", stopped: "Hold while stopped" };
+const REQUEST_TIMEOUT_MS = 4500;
+const MUTATION_TIMEOUT_MS = 180000;
+const REFRESH_INTERVAL_MS = 5000;
 
 function normalized(value) {
-  return String(value ?? "").trim().toLocaleLowerCase("id-ID");
+  return String(value ?? "").trim().toLocaleLowerCase("en-US");
 }
 
 export function isRunning(service) {
   return normalized(service?.lifecycle) === "running";
+}
+
+function hasOwnedProcesses(service) {
+  if (Number.isSafeInteger(service?.rootPid) && service.rootPid > 0) return true;
+  return Array.isArray(service?.ownedPids)
+    && service.ownedPids.some((pid) => Number.isSafeInteger(pid) && pid > 0);
+}
+
+function ownershipIsKnownEmpty(service) {
+  return service?.rootPid === null
+    && Array.isArray(service?.ownedPids)
+    && service.ownedPids.length === 0;
+}
+
+export function actionForService(service) {
+  const lifecycle = normalized(service?.lifecycle);
+  const owned = hasOwnedProcesses(service);
+  if ((lifecycle === "stopped" || lifecycle === "failed") && ownershipIsKnownEmpty(service)) return "start";
+  if ((lifecycle === "running" || lifecycle === "unhealthy" || lifecycle === "failed") && owned) return "stop";
+  return null;
+}
+
+export function isActionDisabled(service, state = {}) {
+  return !actionForService(service)
+    || state.snapshotFresh !== true
+    || state.sessionAvailable !== true
+    || state.mutationPending === true
+    || state.refreshRequired === true
+    || state.refreshInFlight === true;
 }
 
 export function applicationUrls(ports) {
@@ -27,7 +59,7 @@ export function applicationUrls(ports) {
   for (const port of ports) {
     if (!Number.isInteger(port) || port < 1 || port > 65535 || seen.has(port)) continue;
     seen.add(port);
-    const url = safeHttpUrl(`http://127.0.0.1:${port}/`);
+    const url = safeHttpUrl("http://127.0.0.1:" + port + "/");
     if (url) urls.push({ url, port, inferred: true });
   }
   return urls;
@@ -50,7 +82,7 @@ export function filterServices(services, query = "", mode = "all") {
       ...(Array.isArray(service?.ports) ? service.ports : []),
       ...applicationUrls(service?.ports).map((item) => item.url),
     ].filter((value) => value !== null && value !== undefined).join(" ")
-      .toLocaleLowerCase("id-ID").normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
+      .toLocaleLowerCase("en-US").normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
     return searchable.includes(needle);
   });
 }
@@ -74,14 +106,14 @@ export function appUrlLabel(item) {
   const port = item?.port !== null && item?.port !== undefined && String(item.port) !== ""
     ? String(item.port)
     : parsed.port;
-  return `${parsed.protocol}//${parsed.hostname}${port ? `:${port}` : ""}`;
+  return parsed.protocol + "//" + parsed.hostname + (port ? ":" + port : "");
 }
 
 export function formatTimestamp(value) {
-  if (typeof value !== "string" || value.trim() === "") return "Belum tersedia";
+  if (typeof value !== "string" || value.trim() === "") return "Not available";
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "Belum tersedia";
-  return new Intl.DateTimeFormat("id-ID", {
+  if (Number.isNaN(date.getTime())) return "Not available";
+  return new Intl.DateTimeFormat("en-US", {
     dateStyle: "medium",
     timeStyle: "medium",
   }).format(date);
@@ -93,15 +125,15 @@ export function needsAttention(service) {
   return lifecycle === "unhealthy" || lifecycle === "failed" || health === "unhealthy";
 }
 
-function text(value, fallback = "Tidak tersedia") {
+function text(value, fallback = "Not available") {
   if (value === null || value === undefined || value === "") return fallback;
   if (["string", "number", "boolean"].includes(typeof value)) return String(value);
   return fallback;
 }
 
-function enumLabel(value, labels, fallback = "Tidak diketahui") {
+function enumLabel(value, labels, fallback = "Unknown") {
   const key = normalized(value);
-  return labels[key] ?? (key ? `Nilai: ${text(value)}` : fallback);
+  return labels[key] ?? (key ? "Value: " + text(value) : fallback);
 }
 
 function makeElement(tag, className, content) {
@@ -120,15 +152,15 @@ function appendCell(row, className = "") {
 function addMessageRow(message) {
   const row = makeElement("tr", "message-row");
   const cell = makeElement("td", "", message);
-  cell.colSpan = 7;
+  cell.colSpan = 8;
   row.append(cell);
   serviceRows.replaceChildren(row);
 }
 
 function addServiceCell(row, service) {
   const cell = appendCell(row);
-  cell.append(makeElement("span", "service-name", text(service.label, "Layanan tanpa nama")));
-  cell.append(makeElement("span", "service-id", text(service.id, "ID tidak tersedia")));
+  cell.append(makeElement("span", "service-name", text(service.label, "Unnamed service")));
+  cell.append(makeElement("span", "service-id", text(service.id, "ID not available")));
 }
 
 function addStateCell(row, service) {
@@ -138,7 +170,7 @@ function addStateCell(row, service) {
   const badge = makeElement("span", "badge", enumLabel(service.lifecycle, LIFECYCLE_LABELS));
   badge.dataset.state = lifecycle || "unknown";
   stack.append(badge);
-  stack.append(makeElement("span", "desired-state", `Tujuan: ${enumLabel(service.desiredState, DESIRED_LABELS)}`));
+  stack.append(makeElement("span", "desired-state", "Desired: " + enumLabel(service.desiredState, DESIRED_LABELS)));
   cell.append(stack);
 }
 
@@ -158,7 +190,7 @@ function addUrlsCell(row, service) {
   const cell = appendCell(row);
   const urls = applicationUrls(service.ports);
   if (!urls.length) {
-    cell.append(makeElement("span", "empty-value", "Tidak ada URL aplikasi"));
+    cell.append(makeElement("span", "empty-value", "No application URL"));
     return;
   }
   const list = makeElement("div", "url-list");
@@ -170,14 +202,14 @@ function addUrlsCell(row, service) {
     link.href = href;
     link.target = "_blank";
     link.rel = "noopener noreferrer";
-    link.setAttribute("aria-label", `Buka aplikasi pada ${label} di tab baru`);
+    link.setAttribute("aria-label", "Open application at " + label + " in a new tab");
     list.append(link);
     if (item.inferred === true) {
-      link.title = "URL dari port terdaftar; layanan yang berhenti mungkin belum dapat dibuka.";
+      link.title = "This URL is inferred from a registered port; a stopped service may not be reachable.";
     }
   }
   if (!list.childNodes.length) {
-    cell.append(makeElement("span", "empty-value", "URL aplikasi tidak valid"));
+    cell.append(makeElement("span", "empty-value", "No valid application URL"));
   } else {
     cell.append(list);
   }
@@ -186,7 +218,7 @@ function addUrlsCell(row, service) {
 function addPidCell(row, service) {
   const cell = appendCell(row, "pid-value");
   const pid = service.rootPid;
-  cell.textContent = typeof pid === "number" && Number.isFinite(pid) ? String(pid) : "Tidak ada";
+  cell.textContent = typeof pid === "number" && Number.isFinite(pid) ? String(pid) : "None";
   if (!(typeof pid === "number" && Number.isFinite(pid))) cell.className += " empty-value";
 }
 
@@ -197,7 +229,7 @@ function addProcessesCell(row, service) {
   const processesKnown = Array.isArray(service.ownedProcesses);
   const processes = processesKnown ? service.ownedProcesses : [];
   if (pidsKnown && !pids.length && processesKnown && !processes.length) {
-    cell.append(makeElement("span", "empty-value", "Tidak ada"));
+    cell.append(makeElement("span", "empty-value", "None"));
     return;
   }
   const details = makeElement("details", "process-details");
@@ -208,25 +240,25 @@ function addProcessesCell(row, service) {
     if (details.open) expandedServices.add(service.id);
     else expandedServices.delete(service.id);
   });
-  const summary = makeElement("summary", "", `Proses (${pidsKnown ? pids.length : "?"}) · lihat detail`);
+  const summary = makeElement("summary", "", "Processes (" + (pidsKnown ? pids.length : "?") + ") · view details");
   details.append(summary);
   const pidLine = makeElement("p", "");
   pidLine.textContent = pidsKnown
-    ? `Semua PID dimiliki: ${pids.length ? pids.map((pid) => text(pid)).join(", ") : "tidak ada"}`
-    : "Daftar PID tidak tersedia.";
+    ? "All owned PIDs: " + (pids.length ? pids.map((pid) => text(pid)).join(", ") : "none")
+    : "PID list is not available.";
   details.append(pidLine);
   if (!processesKnown) {
-    details.append(makeElement("p", "", "Daftar proses tidak tersedia."));
+    details.append(makeElement("p", "", "Process list is not available."));
   } else if (processes.length) {
     const list = makeElement("ul", "");
     for (const process of processes) {
-      const name = text(process?.name, "Proses tidak diketahui");
+      const name = text(process?.name, "Unknown process");
       const pid = process?.pid;
-      list.append(makeElement("li", "", `${name} · PID ${text(pid)}`));
+      list.append(makeElement("li", "", name + " · PID " + text(pid)));
     }
     details.append(list);
   } else {
-    details.append(makeElement("p", "", "Tidak ada identitas proses."));
+    details.append(makeElement("p", "", "No process identities."));
   }
   cell.append(details);
 }
@@ -239,19 +271,68 @@ function addHoldCell(row, service) {
   cell.append(value);
 }
 
+function actionState() {
+  return {
+    snapshotFresh,
+    sessionAvailable: Boolean(dashboardSession),
+    mutationPending: Boolean(pendingMutation),
+    refreshRequired: mutationRefreshRequired,
+    refreshInFlight,
+  };
+}
+
+function addActionCell(row, service) {
+  const cell = appendCell(row, "action-cell");
+  const action = actionForService(service);
+  const button = makeElement("button", "service-action");
+  const serviceName = text(service.label, text(service.id, "service"));
+  const actionName = action === "start" ? "Start" : "Stop";
+  const isPending = pendingMutation?.serviceId === service.id;
+  const pendingVerb = pendingMutation?.action === "start" ? "Starting" : "Stopping";
+  button.type = "button";
+  button.setAttribute("aria-describedby", "action-status");
+  if (isPending) {
+    button.classList.add("action-pending");
+    button.textContent = pendingVerb + "…";
+    button.setAttribute("aria-label", pendingVerb + " " + serviceName);
+    button.disabled = true;
+  } else if (!action) {
+    button.classList.add("action-unavailable");
+    button.textContent = "Unavailable";
+    button.setAttribute("aria-label", "No Start or Stop action available for " + serviceName);
+    button.title = "This service state or process ownership does not allow a safe action.";
+    button.disabled = true;
+  } else {
+    button.classList.add(action === "start" ? "action-start" : "action-stop");
+    button.textContent = actionName;
+    button.setAttribute("aria-label", actionName + " " + serviceName);
+    if (isActionDisabled(service, actionState())) {
+      button.disabled = true;
+      button.title = !dashboardSession
+        ? "Dashboard access is not available."
+        : !snapshotFresh || mutationRefreshRequired
+          ? "Refresh service status before taking action."
+          : pendingMutation
+            ? "Another service action is in progress."
+            : "Service status is being refreshed.";
+    } else {
+      button.addEventListener("click", () => void mutateService(service, action));
+    }
+  }
+  cell.append(button);
+}
+
 function renderRows() {
   if (!hasSnapshot) return;
-  // Read current disclosure state before replacing rows: native toggle events
-  // can arrive after a search input or refresh has already rendered the table.
   for (const details of serviceRows.querySelectorAll("details[data-service-id]")) {
     if (details.open) expandedServices.add(details.dataset.serviceId);
     else expandedServices.delete(details.dataset.serviceId);
   }
   const filtered = filterServices(snapshot, searchInput.value, filterInput.value);
   if (!snapshot.length) {
-    addMessageRow("Belum ada layanan terdaftar.");
+    addMessageRow("No services are registered.");
   } else if (!filtered.length) {
-    addMessageRow("Tidak ada layanan yang cocok dengan pencarian atau filter.");
+    addMessageRow("No services match your search or filter.");
   } else {
     const fragment = document.createDocumentFragment();
     for (const service of filtered) {
@@ -263,11 +344,12 @@ function renderRows() {
       addPidCell(row, service);
       addProcessesCell(row, service);
       addHoldCell(row, service);
+      addActionCell(row, service);
       fragment.append(row);
     }
     serviceRows.replaceChildren(fragment);
   }
-  resultsSummary.textContent = `Menampilkan ${filtered.length} dari ${snapshot.length} layanan.`;
+  resultsSummary.textContent = "Showing " + filtered.length + " of " + snapshot.length + " services.";
 }
 
 function updateCounts(services) {
@@ -281,26 +363,70 @@ function setRefreshState(state, message) {
   refreshStatus.textContent = message;
 }
 
-async function fetchJson(path) {
+function setActionStatus(state, message) {
+  actionStatus.dataset.state = state;
+  actionStatus.textContent = message;
+}
+
+async function fetchJson(path, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(path, { method: "GET", headers: { Accept: "application/json" }, signal: controller.signal, cache: "no-store" });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const headers = { Accept: "application/json", ...(options.headers ?? {}) };
+    const response = await fetch(path, {
+      method: "GET",
+      ...options,
+      headers,
+      signal: controller.signal,
+      cache: "no-store",
+    });
+    if (!response.ok) throw new Error("HTTP " + response.status);
     return await response.json();
   } finally {
     clearTimeout(timeout);
   }
 }
 
+async function readResponseJson(response) {
+  try {
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+
 function errorMessage(error) {
-  if (error?.name === "AbortError") return "Waktu permintaan habis.";
-  return error instanceof Error ? error.message : "Terjadi kesalahan saat mengambil data.";
+  if (error?.name === "AbortError") return "The request timed out.";
+  return error instanceof Error ? error.message : "An error occurred while loading data.";
+}
+
+function validSession(payload) {
+  return typeof payload?.token === "string"
+    && /^[0-9a-f]{64}$/i.test(payload.token)
+    && typeof payload?.instanceId === "string"
+    && payload.instanceId.trim().length > 0;
+}
+
+async function fetchDashboardSession(force = false) {
+  if (dashboardSession && !force) return dashboardSession;
+  if (sessionPromise) return sessionPromise;
+  dashboardSession = null;
+  sessionPromise = fetchJson("/dashboard/v1/session", {
+    headers: { "X-Dashboard-Request": "1" },
+  }).then((payload) => {
+    if (!validSession(payload)) throw new Error("Invalid dashboard session response.");
+    dashboardSession = { token: payload.token, instanceId: payload.instanceId };
+    if (actionStatus.dataset.state === "unavailable") setActionStatus("idle", "");
+    return dashboardSession;
+  }).finally(() => {
+    sessionPromise = null;
+  });
+  return sessionPromise;
 }
 
 function updateSupervisorHealth(result) {
   if (result.status === "rejected") {
-    supervisorHealth.textContent = "API Supervisor tidak tersedia";
+    supervisorHealth.textContent = "Supervisor API is unavailable";
     supervisorHealth.dataset.state = "unhealthy";
     return;
   }
@@ -310,57 +436,169 @@ function updateSupervisorHealth(result) {
     ? "healthy"
     : ["unhealthy", "error", "down", "failed"].includes(status) ? "unhealthy" : "connected";
   supervisorHealth.textContent = status
-    ? `API Supervisor · ${enumLabel(status, { healthy: "Sehat", ok: "Sehat", ready: "Siap", up: "Aktif", unhealthy: "Tidak sehat", error: "Galat", down: "Tidak aktif", failed: "Gagal" }, text(status))}`
-    : "API Supervisor · Terhubung";
+    ? "Supervisor API · " + enumLabel(status, {
+      healthy: "Healthy",
+      ok: "Healthy",
+      ready: "Ready",
+      up: "Online",
+      unhealthy: "Unhealthy",
+      error: "Error",
+      down: "Offline",
+      failed: "Failed",
+    }, text(status))
+    : "Supervisor API · Connected";
+}
+
+function createRequestId() {
+  const bytes = new Uint8Array(18);
+  if (globalThis.crypto?.getRandomValues) globalThis.crypto.getRandomValues(bytes);
+  else {
+    const seed = Date.now() + Math.floor(Math.random() * 0x7fffffff);
+    for (let index = 0; index < bytes.length; index += 1) bytes[index] = (seed >> (index % 4 * 8)) & 0xff;
+  }
+  const suffix = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return "dashboard-" + Date.now().toString(36) + "-" + suffix;
+}
+
+async function mutateService(service, action) {
+  if (isActionDisabled(service, actionState())) return;
+  const serviceId = text(service.id, "");
+  const serviceName = text(service.label, serviceId || "service");
+  const actionLabel = action === "start" ? "Start" : "Stop";
+  const requestId = createRequestId();
+  pendingMutation = { serviceId, action };
+  mutationRefreshRequired = true;
+  snapshotFresh = false;
+  refreshButton.disabled = true;
+  setActionStatus("progress", "Sending " + actionLabel.toLowerCase() + " request for " + serviceName + "…");
+  renderRows();
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), MUTATION_TIMEOUT_MS);
+  try {
+    const session = dashboardSession;
+    const response = await fetch(
+      "/dashboard/v1/services/" + encodeURIComponent(serviceId) + "/" + action,
+      {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          "X-Dashboard-Token": session.token,
+        },
+        body: JSON.stringify({ requestId }),
+        signal: controller.signal,
+        cache: "no-store",
+      },
+    );
+    const payload = await readResponseJson(response);
+    if (response.status === 401) {
+      dashboardSession = null;
+      setActionStatus("error", "The dashboard session expired. The " + actionLabel.toLowerCase()
+        + " command was not retried; its outcome may be unknown. Refreshing the session and service status.");
+      try {
+        await fetchDashboardSession(true);
+      } catch {
+        setActionStatus("error", "The dashboard session expired. The " + actionLabel.toLowerCase()
+          + " command was not retried and its outcome is unknown. Session access could not be renewed; refresh service status before acting.");
+      }
+    } else if (!response.ok) {
+      const code = text(payload?.error?.code, "request_failed");
+      const message = text(payload?.error?.message, "HTTP " + response.status);
+      setActionStatus("error", actionLabel + " request for " + serviceName + " failed (" + code + "): "
+        + message + " Refreshing service status.");
+    } else if (!payload || payload.serviceId !== serviceId || payload.outcome === undefined) {
+      setActionStatus("error", actionLabel + " request for " + serviceName
+        + " returned an unreadable result. Its outcome is unknown; refreshing service status.");
+    } else {
+      setActionStatus("result", actionLabel + " request for " + serviceName + " returned outcome “"
+        + text(payload.outcome) + "”. Refreshing service status.");
+    }
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      setActionStatus("error", actionLabel + " request timed out after 180 seconds. Its outcome is unknown. "
+        + "Refreshing service status; the command will not be retried.");
+    } else {
+      setActionStatus("error", actionLabel + " request for " + serviceName
+        + " did not receive a response. Its outcome is unknown. Refreshing service status; the command will not be retried.");
+    }
+  } finally {
+    clearTimeout(timeout);
+    pendingMutation = null;
+    mutationRefreshRequired = true;
+    snapshotFresh = false;
+    renderRows();
+    await refresh();
+  }
 }
 
 async function refresh() {
-  if (inFlight) return;
-  inFlight = true;
+  if (refreshInFlight || pendingMutation) return;
+  refreshInFlight = true;
   refreshButton.disabled = true;
   refreshButton.setAttribute("aria-busy", "true");
-  if (!hasSnapshot) setRefreshState("loading", "Mengambil data layanan…");
-  const [servicesResult, healthResult] = await Promise.allSettled([
+  if (!hasSnapshot) setRefreshState("loading", "Loading service data…");
+  if (hasSnapshot) renderRows();
+  const [servicesResult, healthResult, sessionResult] = await Promise.allSettled([
     fetchJson("/v1/services"),
     fetchJson("/v1/health"),
+    fetchDashboardSession(),
   ]);
   updateSupervisorHealth(healthResult);
+
+  if (sessionResult.status === "rejected") {
+    dashboardSession = null;
+    if (actionStatus.dataset.state === "idle" || actionStatus.dataset.state === "unavailable") {
+      setActionStatus("unavailable", "Service controls are unavailable because dashboard access could not be loaded.");
+    }
+  } else if (actionStatus.dataset.state === "unavailable") {
+    setActionStatus("idle", "");
+  }
 
   if (servicesResult.status === "fulfilled" && Array.isArray(servicesResult.value?.services)) {
     snapshot = servicesResult.value.services;
     hasSnapshot = true;
+    snapshotFresh = true;
+    mutationRefreshRequired = false;
     updateCounts(snapshot);
     const fetchedAt = new Date().toISOString();
     const formatted = formatTimestamp(fetchedAt);
     updatedAt.textContent = formatted;
-    if (formatted !== "Belum tersedia") updatedAt.dateTime = fetchedAt;
+    if (formatted !== "Not available") updatedAt.dateTime = fetchedAt;
     else updatedAt.removeAttribute("datetime");
     renderRows();
-    setRefreshState("success", formatted === "Belum tersedia"
-      ? "Data layanan berhasil dimuat; waktu pembaruan tidak tersedia."
-      : `Data layanan berhasil diperbarui pada ${formatted}.`);
+    setRefreshState("success", formatted === "Not available"
+      ? "Service data loaded; update time is not available."
+      : "Service data refreshed at " + formatted + ".");
   } else {
+    snapshotFresh = false;
     const error = servicesResult.status === "rejected"
       ? errorMessage(servicesResult.reason)
-      : "Format respons layanan tidak valid.";
+      : "Invalid service response format.";
     if (hasSnapshot) {
-      setRefreshState("stale", `Pembaruan gagal (${error}); menampilkan data terakhir yang berhasil dimuat.`);
+      setRefreshState("stale", "Refresh failed (" + error + "); showing the last successfully loaded data. Actions are disabled.");
+      renderRows();
     } else {
-      setRefreshState("error", `Data layanan belum tersedia: ${error}`);
-      addMessageRow("Data layanan belum tersedia. Periksa koneksi, lalu segarkan kembali.");
+      setRefreshState("error", "Service data is not available: " + error);
+      addMessageRow("Service data is not available. Check the connection, then refresh.");
     }
   }
 
-  inFlight = false;
+  refreshInFlight = false;
   refreshButton.disabled = false;
   refreshButton.removeAttribute("aria-busy");
+  if (pendingMutation) refreshButton.disabled = true;
+  renderRows();
 }
 
-const REQUEST_TIMEOUT_MS = 4500;
-const REFRESH_INTERVAL_MS = 5000;
 let snapshot = [];
 let hasSnapshot = false;
-let inFlight = false;
+let snapshotFresh = false;
+let refreshInFlight = false;
+let mutationRefreshRequired = false;
+let pendingMutation = null;
+let dashboardSession = null;
+let sessionPromise = null;
 let refreshTimer = null;
 const expandedServices = new Set();
 let countTotal;
@@ -369,6 +607,7 @@ let countAttention;
 let updatedAt;
 let refreshButton;
 let refreshStatus;
+let actionStatus;
 let serviceRows;
 let searchInput;
 let filterInput;
@@ -382,6 +621,7 @@ if (typeof document !== "undefined" && document.getElementById("service-rows")) 
   updatedAt = document.getElementById("updated-at");
   refreshButton = document.getElementById("refresh-button");
   refreshStatus = document.getElementById("refresh-status");
+  actionStatus = document.getElementById("action-status");
   serviceRows = document.getElementById("service-rows");
   searchInput = document.getElementById("search-input");
   filterInput = document.getElementById("service-filter");
@@ -398,7 +638,9 @@ if (typeof document !== "undefined" && document.getElementById("service-rows")) 
       refreshTimer = null;
     } else {
       void refresh();
-      if (refreshTimer === null) refreshTimer = setInterval(() => void refresh(), REFRESH_INTERVAL_MS);
+      if (refreshTimer === null) refreshTimer = setInterval(() => {
+        if (!document.hidden) void refresh();
+      }, REFRESH_INTERVAL_MS);
     }
   });
 

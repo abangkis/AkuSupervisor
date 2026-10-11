@@ -278,7 +278,7 @@ fn serve(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn handle_connection(
     stream: &mut TcpStream,
     peer: SocketAddr,
@@ -300,6 +300,23 @@ fn handle_connection(
             503,
             "shutdown_in_progress",
             "AkuSupervisor is draining; retry after a new instance is ready",
+        );
+        return write_response(stream, &response).map_err(RequestError::Write);
+    }
+    if request.target.starts_with("/dashboard/") {
+        let local_address = stream.local_addr().map_err(RequestError::Read)?;
+        let mut guard = idempotency
+            .lock()
+            .map_err(|_| RequestError::IdempotencyPoisoned)?;
+        let response = route_dashboard_control(
+            &request,
+            peer,
+            local_address,
+            token,
+            control,
+            instance,
+            supervisor_shutdown,
+            &mut guard,
         );
         return write_response(stream, &response).map_err(RequestError::Write);
     }
@@ -668,6 +685,170 @@ fn request_is_authorized(request: &HttpRequest, token: &RuntimeToken) -> bool {
         .is_some_and(|candidate| token.bearer_matches(candidate))
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DashboardMutationRequest {
+    request_id: String,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn route_dashboard_control(
+    request: &HttpRequest,
+    peer: SocketAddr,
+    address: SocketAddr,
+    token: &RuntimeToken,
+    control: &dyn SupervisorControl,
+    instance: &RuntimeInstance,
+    supervisor_shutdown: &SupervisorShutdown,
+    idempotency: &mut IdempotencyStore,
+) -> Response {
+    let mut response = dashboard_control_response(
+        request,
+        peer,
+        address,
+        token,
+        control,
+        instance,
+        supervisor_shutdown,
+        idempotency,
+    );
+    response.dashboard_security_headers = true;
+    response
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn dashboard_control_response(
+    request: &HttpRequest,
+    peer: SocketAddr,
+    address: SocketAddr,
+    token: &RuntimeToken,
+    control: &dyn SupervisorControl,
+    instance: &RuntimeInstance,
+    supervisor_shutdown: &SupervisorShutdown,
+    idempotency: &mut IdempotencyStore,
+) -> Response {
+    let Some(host) = request.host.as_deref() else {
+        return error_response(404, "not_found", "route not found");
+    };
+    let valid_host = [
+        format!("127.0.0.1:{}", address.port()),
+        format!("localhost:{}", address.port()),
+        format!("[::1]:{}", address.port()),
+    ]
+    .iter()
+    .any(|allowed| host == allowed);
+    if !peer.ip().is_loopback() || !address.ip().is_loopback() || !valid_host {
+        return error_response(404, "not_found", "route not found");
+    }
+    let same_origin = format!("http://{host}");
+    if request
+        .origin
+        .as_deref()
+        .is_some_and(|origin| origin != same_origin)
+    {
+        return error_response(
+            403,
+            "origin_forbidden",
+            "same-origin dashboard request required",
+        );
+    }
+    let dashboard_token =
+        token.derive_scoped(&format!("dashboard-v1:{}:{address}", instance.instance_id));
+    if request.target == "/dashboard/v1/session" {
+        if request.method != "GET" {
+            return error_response(405, "method_not_allowed", "GET required");
+        }
+        // A custom header prevents cross-site simple requests. No CORS is enabled.
+        if request.dashboard_request.as_deref() != Some("1") {
+            return error_response(
+                403,
+                "dashboard_header_required",
+                "dashboard request header required",
+            );
+        }
+        return json_response(
+            200,
+            &json!({
+                "token": dashboard_token.expose_for_authorization_header(),
+                "instanceId": instance.instance_id,
+            }),
+        );
+    }
+    let Some(target) = request.target.strip_prefix("/dashboard") else {
+        return error_response(404, "not_found", "route not found");
+    };
+    let Some((_service_id, action)) = parse_mutation_target(target) else {
+        return error_response(404, "not_found", "route not found");
+    };
+    if !matches!(action, ControlAction::Start | ControlAction::Stop) {
+        return error_response(404, "not_found", "route not found");
+    }
+    if request.method != "POST" {
+        return error_response(405, "method_not_allowed", "POST required");
+    }
+    if request.origin.as_deref() != Some(same_origin.as_str()) {
+        return error_response(
+            403,
+            "origin_required",
+            "same-origin dashboard request required",
+        );
+    }
+    if request.content_type.as_deref() != Some("application/json") {
+        return error_response(415, "json_required", "application/json required");
+    }
+    if !request
+        .dashboard_token
+        .as_deref()
+        .is_some_and(|candidate| dashboard_token.bearer_matches(candidate))
+    {
+        return error_response(401, "unauthorized", "valid dashboard token required");
+    }
+    let mutation: DashboardMutationRequest = match serde_json::from_slice(&request.body) {
+        Ok(mutation) => mutation,
+        Err(_) => {
+            return error_response(
+                400,
+                "invalid_request",
+                "requestId is required; no other fields are accepted",
+            );
+        }
+    };
+    if !valid_request_id(&mutation.request_id) || mutation.request_id.len() > 118 {
+        return error_response(
+            400,
+            "invalid_request_id",
+            "requestId must be 1-118 URL-safe ASCII characters",
+        );
+    }
+    // Reuse authorization, user priority, validation, audit and idempotency semantics.
+    // The browser capability cannot reach restart, shutdown, registry or MCP routes.
+    let forwarded = HttpRequest {
+        method: "POST".to_owned(),
+        target: target.to_owned(),
+        authorization: Some(format!(
+            "Bearer {}",
+            token.expose_for_authorization_header()
+        )),
+        body: serde_json::to_vec(&json!({
+            "actor": "user",
+            "reason": "Dashboard service control",
+            "requestId": format!("dashboard-{}", mutation.request_id),
+        }))
+        .expect("serialize dashboard mutation"),
+        ..request.clone()
+    };
+    route_mutation_with_service_actor(
+        &forwarded,
+        token,
+        control,
+        None,
+        supervisor_shutdown,
+        instance,
+        idempotency,
+        Some(Actor::UserUi),
+    )
+}
+
 fn parse_logs_target(target: &str) -> Option<(&str, LogStream, usize)> {
     let suffix = target.strip_prefix("/v1/services/")?;
     let (service_id, query) = suffix.split_once("/logs?")?;
@@ -747,7 +928,6 @@ fn parse_events_target(target: &str) -> Option<(u64, usize)> {
     Some((after, limit))
 }
 
-#[allow(clippy::too_many_lines)]
 fn route_mutation(
     request: &HttpRequest,
     token: &RuntimeToken,
@@ -756,6 +936,29 @@ fn route_mutation(
     supervisor_shutdown: &SupervisorShutdown,
     instance: &RuntimeInstance,
     idempotency: &mut IdempotencyStore,
+) -> Response {
+    route_mutation_with_service_actor(
+        request,
+        token,
+        control,
+        cooperative,
+        supervisor_shutdown,
+        instance,
+        idempotency,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+fn route_mutation_with_service_actor(
+    request: &HttpRequest,
+    token: &RuntimeToken,
+    control: &dyn SupervisorControl,
+    cooperative: Option<&CooperativeOperationManager>,
+    supervisor_shutdown: &SupervisorShutdown,
+    instance: &RuntimeInstance,
+    idempotency: &mut IdempotencyStore,
+    service_actor: Option<Actor>,
 ) -> Response {
     let Some(candidate) = request
         .authorization
@@ -850,7 +1053,8 @@ fn route_mutation(
         return error_response(404, "not_found", "route not found");
     };
 
-    let response = match control.mutate(action, service_id, mutation.actor.domain_actor(), reason) {
+    let actor = service_actor.unwrap_or_else(|| mutation.actor.domain_actor());
+    let response = match control.mutate(action, service_id, actor, reason) {
         Ok(result) => {
             let mut body = json!({
                 "serviceId": service_id,
@@ -1028,7 +1232,7 @@ struct CachedMutation {
     response: Response,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct HttpRequest {
     method: String,
     target: String,
@@ -1037,6 +1241,8 @@ struct HttpRequest {
     accept: Option<String>,
     content_type: Option<String>,
     origin: Option<String>,
+    dashboard_request: Option<String>,
+    dashboard_token: Option<String>,
     mcp_protocol_version: Option<String>,
     body: Vec<u8>,
 }
@@ -1049,6 +1255,7 @@ fn set_host_header(host: &mut Option<String>, value: &str) {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, RequestError> {
     let mut bytes = Vec::new();
     let deadline = Instant::now() + IO_TIMEOUT;
@@ -1083,6 +1290,8 @@ fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, RequestError> {
     let mut accept = None;
     let mut content_type = None;
     let mut origin = None;
+    let mut dashboard_request = None;
+    let mut dashboard_token = None;
     let mut mcp_protocol_version = None;
     let mut content_length = None;
     for line in lines {
@@ -1102,6 +1311,12 @@ fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, RequestError> {
                 set_single_header(&mut content_type, value, "content-type")?;
             }
             "origin" => set_single_header(&mut origin, value, "origin")?,
+            "x-dashboard-request" => {
+                set_single_header(&mut dashboard_request, value, "x-dashboard-request")?;
+            }
+            "x-dashboard-token" => {
+                set_single_header(&mut dashboard_token, value, "x-dashboard-token")?;
+            }
             "mcp-protocol-version" => {
                 set_single_header(&mut mcp_protocol_version, value, "mcp-protocol-version")?;
             }
@@ -1148,6 +1363,8 @@ fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, RequestError> {
         accept,
         content_type,
         origin,
+        dashboard_request,
+        dashboard_token,
         mcp_protocol_version,
         body: bytes[header_end..header_end + content_length].to_vec(),
     })
@@ -1310,6 +1527,7 @@ fn write_response(stream: &mut TcpStream, response: &Response) -> io::Result<()>
         404 => "Not Found",
         409 => "Conflict",
         405 => "Method Not Allowed",
+        415 => "Unsupported Media Type",
         500 => "Internal Server Error",
         _ => "Unknown",
     };
@@ -1815,6 +2033,7 @@ mod tests {
     #[derive(Debug, Default)]
     struct FakeControl {
         mutations: Mutex<u32>,
+        mutation_calls: Mutex<Vec<(ControlAction, String, Actor, String)>>,
         snapshots: Mutex<Vec<ServiceSnapshot>>,
     }
 
@@ -1825,12 +2044,21 @@ mod tests {
 
         fn mutate(
             &self,
-            _action: ControlAction,
-            _service_id: &str,
-            _actor: Actor,
-            _reason: Reason,
+            action: ControlAction,
+            service_id: &str,
+            actor: Actor,
+            reason: Reason,
         ) -> Result<ControlMutationResult, ControlError> {
+            if service_id == "missing" {
+                return Err(ControlError::service_not_found(service_id));
+            }
             *self.mutations.lock().expect("mutation lock") += 1;
+            self.mutation_calls.lock().expect("calls lock").push((
+                action,
+                service_id.to_owned(),
+                actor,
+                reason.as_str().to_owned(),
+            ));
             Ok(ControlMutationResult::new(
                 ControlMutationOutcome::Started,
                 None,
@@ -1881,15 +2109,32 @@ mod tests {
         host: &str,
         origin: Option<&str>,
     ) -> (u16, HashMap<String, String>, Vec<u8>) {
+        raw_request_with_body(address, method, target, host, origin, &[], &[])
+    }
+
+    fn raw_request_with_body(
+        address: SocketAddr,
+        method: &str,
+        target: &str,
+        host: &str,
+        origin: Option<&str>,
+        extra_headers: &[(&str, &str)],
+        body: &[u8],
+    ) -> (u16, HashMap<String, String>, Vec<u8>) {
         let mut stream = TcpStream::connect(address).expect("connect to fixture control server");
         write!(stream, "{method} {target} HTTP/1.1\r\nHost: {host}\r\n")
             .expect("write request line and Host");
         if let Some(origin) = origin {
             write!(stream, "Origin: {origin}\r\n").expect("write request Origin");
         }
+        for (name, value) in extra_headers {
+            write!(stream, "{name}: {value}\r\n").expect("write fixture header");
+        }
+        write!(stream, "Content-Length: {}\r\n", body.len()).expect("write body length");
         stream
             .write_all(b"Connection: close\r\n\r\n")
             .expect("finish raw request");
+        stream.write_all(body).expect("write fixture body");
         let mut bytes = Vec::new();
         stream
             .read_to_end(&mut bytes)
@@ -1944,7 +2189,8 @@ mod tests {
     }
 
     #[test]
-    fn embedded_dashboard_serves_static_assets_safely_and_preserves_read_only_api() {
+    #[allow(clippy::too_many_lines)]
+    fn embedded_dashboard_serves_assets_and_scoped_controls_without_exposing_primary_token() {
         let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("target")
             .join("dashboard-http-fixtures")
@@ -1953,6 +2199,7 @@ mod tests {
         let token_path = root.join("control-token");
         let server_token = RuntimeToken::load_or_create(&token_path, || Ok("d".repeat(64)))
             .expect("create server token");
+        let primary_token = server_token.clone();
         let control = Arc::new(FakeControl::default());
         *control.snapshots.lock().expect("snapshot lock") = vec![
             dashboard_service("running", vec![4321], Some(1234), vec![1234, 1235]),
@@ -2032,6 +2279,353 @@ mod tests {
         let health: Value = serde_json::from_slice(&body).expect("health API JSON");
         assert_eq!(health["status"], "ok");
         assert_eq!(*control.mutations.lock().expect("mutation lock"), 0);
+
+        let origin = format!("http://{host}");
+        let session_path = "/dashboard/v1/session";
+        let session_headers = [("X-Dashboard-Request", "1")];
+        let (status, headers, body) = raw_request_with_body(
+            address,
+            "GET",
+            session_path,
+            &host,
+            None,
+            &session_headers,
+            &[],
+        );
+        assert_eq!(status, 200);
+        assert_eq!(headers["cache-control"], "no-store");
+        assert!(!headers.contains_key("access-control-allow-origin"));
+        let session: Value = serde_json::from_slice(&body).expect("session JSON");
+        let scoped = session["token"].as_str().expect("dashboard token");
+        assert_eq!(scoped.len(), 64);
+        assert!(!primary_token.bearer_matches(scoped));
+        assert_eq!(session["instanceId"], "test-instance");
+        let mutation_headers = [
+            ("Content-Type", "application/json"),
+            ("X-Dashboard-Token", scoped),
+        ];
+        let payload = br#"{"requestId":"browser-1"}"#;
+        let start_path = "/dashboard/v1/services/stopped/start";
+        let stop_path = "/dashboard/v1/services/running/stop";
+
+        // Browser security boundary: no ambient authorization, form POSTs, CORS,
+        // DNS rebinding, wrong port, duplicate security headers or wider capabilities.
+        for (method, path, test_host, test_origin, request_headers, request_body, expected) in [
+            (
+                "GET",
+                session_path,
+                host.as_str(),
+                None,
+                &[][..],
+                &[][..],
+                403,
+            ),
+            (
+                "GET",
+                session_path,
+                "dashboard.example",
+                None,
+                &session_headers[..],
+                &[][..],
+                404,
+            ),
+            (
+                "GET",
+                session_path,
+                "localhost:1",
+                None,
+                &session_headers[..],
+                &[][..],
+                404,
+            ),
+            (
+                "GET",
+                session_path,
+                host.as_str(),
+                Some("http://evil.example"),
+                &session_headers[..],
+                &[][..],
+                403,
+            ),
+            (
+                "POST",
+                session_path,
+                host.as_str(),
+                Some(origin.as_str()),
+                &session_headers[..],
+                &[][..],
+                405,
+            ),
+            (
+                "GET",
+                start_path,
+                host.as_str(),
+                Some(origin.as_str()),
+                &mutation_headers[..],
+                &payload[..],
+                405,
+            ),
+            (
+                "POST",
+                start_path,
+                host.as_str(),
+                None,
+                &mutation_headers[..],
+                &payload[..],
+                403,
+            ),
+            (
+                "POST",
+                start_path,
+                host.as_str(),
+                Some("http://localhost:1"),
+                &mutation_headers[..],
+                &payload[..],
+                403,
+            ),
+            (
+                "POST",
+                start_path,
+                host.as_str(),
+                Some(origin.as_str()),
+                &[][..],
+                &payload[..],
+                415,
+            ),
+            (
+                "POST",
+                "/dashboard/v1/services/running/restart",
+                host.as_str(),
+                Some(origin.as_str()),
+                &mutation_headers[..],
+                &payload[..],
+                404,
+            ),
+            (
+                "POST",
+                "/dashboard/v1/supervisor/shutdown",
+                host.as_str(),
+                Some(origin.as_str()),
+                &mutation_headers[..],
+                &payload[..],
+                404,
+            ),
+            (
+                "POST",
+                "/dashboard/v1/registry",
+                host.as_str(),
+                Some(origin.as_str()),
+                &mutation_headers[..],
+                &payload[..],
+                404,
+            ),
+            (
+                "POST",
+                start_path,
+                host.as_str(),
+                Some(origin.as_str()),
+                &mutation_headers[..],
+                &b"{}"[..],
+                400,
+            ),
+            (
+                "POST",
+                start_path,
+                host.as_str(),
+                Some(origin.as_str()),
+                &mutation_headers[..],
+                &br#"{"requestId":"x","actor":"codex"}"#[..],
+                400,
+            ),
+        ] {
+            let (status, _, _) = raw_request_with_body(
+                address,
+                method,
+                path,
+                test_host,
+                test_origin,
+                request_headers,
+                request_body,
+            );
+            assert_eq!(status, expected, "{method} {path} should be rejected");
+        }
+        for candidate in ["invalid", primary_token.expose_for_authorization_header()] {
+            let headers = [
+                ("Content-Type", "application/json"),
+                ("X-Dashboard-Token", candidate),
+            ];
+            assert_eq!(
+                raw_request_with_body(
+                    address,
+                    "POST",
+                    start_path,
+                    &host,
+                    Some(&origin),
+                    &headers,
+                    payload
+                )
+                .0,
+                401
+            );
+        }
+        let duplicate_headers = [
+            ("Content-Type", "application/json"),
+            ("X-Dashboard-Token", scoped),
+            ("X-Dashboard-Token", scoped),
+        ];
+        assert_eq!(
+            raw_request_with_body(
+                address,
+                "POST",
+                start_path,
+                &host,
+                Some(&origin),
+                &duplicate_headers,
+                payload
+            )
+            .0,
+            400
+        );
+        let bearer = format!("Bearer {scoped}");
+        assert_eq!(
+            raw_request_with_body(
+                address,
+                "POST",
+                "/v1/services/stopped/start",
+                &host,
+                Some(&origin),
+                &[("Authorization", &bearer)],
+                payload
+            )
+            .0,
+            401
+        );
+        assert_eq!(*control.mutations.lock().expect("mutation lock"), 0);
+
+        for _ in 0..2 {
+            let (status, _, body) = raw_request_with_body(
+                address,
+                "POST",
+                start_path,
+                &host,
+                Some(&origin),
+                &mutation_headers,
+                payload,
+            );
+            assert_eq!(status, 200);
+            assert_eq!(
+                serde_json::from_slice::<Value>(&body).unwrap()["serviceId"],
+                "stopped"
+            );
+        }
+        assert_eq!(
+            *control.mutations.lock().expect("mutation lock"),
+            1,
+            "replayed Start executes once"
+        );
+        assert_eq!(
+            raw_request_with_body(
+                address,
+                "POST",
+                stop_path,
+                &host,
+                Some(&origin),
+                &mutation_headers,
+                payload
+            )
+            .0,
+            409,
+            "same request ID with different operation conflicts"
+        );
+        assert_eq!(
+            raw_request_with_body(
+                address,
+                "POST",
+                stop_path,
+                &host,
+                Some(&origin),
+                &mutation_headers,
+                br#"{"requestId":"browser-2"}"#
+            )
+            .0,
+            200
+        );
+        let calls = control.mutation_calls.lock().expect("calls lock");
+        assert_eq!(calls.len(), 2);
+        assert_eq!(
+            calls[0],
+            (
+                ControlAction::Start,
+                "stopped".to_owned(),
+                Actor::UserUi,
+                "Dashboard service control".to_owned()
+            )
+        );
+        assert_eq!(calls[1].0, ControlAction::Stop);
+        assert_eq!(calls[1].2, Actor::UserUi);
+        drop(calls);
+        assert_eq!(
+            raw_request_with_body(
+                address,
+                "POST",
+                "/dashboard/v1/services/missing/start",
+                &host,
+                Some(&origin),
+                &mutation_headers,
+                br#"{"requestId":"missing-service"}"#
+            )
+            .0,
+            404,
+            "core errors propagate to the dashboard"
+        );
+        let request = HttpRequest {
+            method: "POST".to_owned(),
+            target: start_path.to_owned(),
+            host: Some(host.clone()),
+            authorization: None,
+            accept: None,
+            content_type: Some("application/json".to_owned()),
+            origin: Some(origin),
+            dashboard_request: None,
+            dashboard_token: Some(scoped.to_owned()),
+            mcp_protocol_version: None,
+            body: br#"{"requestId":"stale-session"}"#.to_vec(),
+        };
+        let mut next_instance = test_instance();
+        next_instance.instance_id = "next-instance".to_owned();
+        let shutdown = SupervisorShutdown::default();
+        let mut idempotency = IdempotencyStore::default();
+        assert_eq!(
+            route_dashboard_control(
+                &request,
+                address,
+                address,
+                &primary_token,
+                control.as_ref(),
+                &next_instance,
+                &shutdown,
+                &mut idempotency
+            )
+            .status,
+            401,
+            "old session is revoked on a new instance"
+        );
+        assert_eq!(
+            route_dashboard_control(
+                &request,
+                "192.0.2.8:1234".parse().unwrap(),
+                address,
+                &primary_token,
+                control.as_ref(),
+                &test_instance(),
+                &shutdown,
+                &mut idempotency
+            )
+            .status,
+            404,
+            "non-loopback peer cannot mutate"
+        );
+        assert_eq!(*control.mutations.lock().expect("mutation lock"), 2);
         server.shutdown().expect("stop fixture control server");
     }
 
@@ -2211,6 +2805,8 @@ mod tests {
             accept: None,
             content_type: None,
             origin: None,
+            dashboard_request: None,
+            dashboard_token: None,
             mcp_protocol_version: None,
             body: br#"{"actor":"codex","reason":"source changed"}"#.to_vec(),
         };
@@ -2262,6 +2858,8 @@ mod tests {
             accept: None,
             content_type: Some("application/json".to_owned()),
             origin: None,
+            dashboard_request: None,
+            dashboard_token: None,
             mcp_protocol_version: None,
             body: serde_json::to_vec(&json!({
                 "actor": "codex",
@@ -2296,6 +2894,8 @@ mod tests {
             accept: None,
             content_type: None,
             origin: None,
+            dashboard_request: None,
+            dashboard_token: None,
             mcp_protocol_version: None,
             body: Vec::new(),
         };
@@ -2369,6 +2969,8 @@ mod tests {
             accept: None,
             content_type: None,
             origin: None,
+            dashboard_request: None,
+            dashboard_token: None,
             mcp_protocol_version: None,
             body: Vec::new(),
         };
@@ -2436,6 +3038,8 @@ mod tests {
             accept: None,
             content_type: None,
             origin: None,
+            dashboard_request: None,
+            dashboard_token: None,
             mcp_protocol_version: None,
             body: br#"{"actor":"codex","reason":"load build","requestId":"bridge-1"}"#.to_vec(),
         };
@@ -2471,6 +3075,8 @@ mod tests {
             accept: None,
             content_type: None,
             origin: None,
+            dashboard_request: None,
+            dashboard_token: None,
             mcp_protocol_version: None,
             body: Vec::new(),
         };
@@ -2502,6 +3108,8 @@ mod tests {
             accept: None,
             content_type: None,
             origin: None,
+            dashboard_request: None,
+            dashboard_token: None,
             mcp_protocol_version: None,
             body: Vec::new(),
         };
@@ -2549,6 +3157,8 @@ mod tests {
             accept: None,
             content_type: None,
             origin: None,
+            dashboard_request: None,
+            dashboard_token: None,
             mcp_protocol_version: None,
             body: br#"{"actor":"codex","reason":"source changed","requestId":"same-1"}"#.to_vec(),
         };

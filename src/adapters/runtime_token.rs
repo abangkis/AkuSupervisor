@@ -3,6 +3,8 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
 
+use sha2::{Digest, Sha256};
+
 const TOKEN_LENGTH: usize = 64;
 
 /// Authentication secret whose debug output never reveals its value.
@@ -74,6 +76,15 @@ impl RuntimeToken {
     #[must_use]
     pub fn expose_for_authorization_header(&self) -> &str {
         &self.0
+    }
+
+    /// Derives a distinct capability without exposing the primary control secret.
+    pub(crate) fn derive_scoped(&self, scope: &str) -> Self {
+        let mut hash = Sha256::new();
+        hash.update(self.0.as_bytes());
+        hash.update(b"\0aku-supervisor-scoped-token\0");
+        hash.update(scope.as_bytes());
+        Self(format!("{:x}", hash.finalize()))
     }
 
     fn parse(path: &Path, value: &str) -> Result<Self, RuntimeTokenError> {
@@ -183,6 +194,18 @@ mod tests {
     use std::path::Path;
 
     use super::{RuntimeToken, resolve_token_path};
+
+    #[test]
+    fn scoped_capability_is_distinct_bound_to_scope_and_redacted() {
+        let token = RuntimeToken("a".repeat(64));
+        let first = token.derive_scoped("dashboard-v1:first-instance:127.0.0.1:11121");
+        let repeated = token.derive_scoped("dashboard-v1:first-instance:127.0.0.1:11121");
+        let next = token.derive_scoped("dashboard-v1:next-instance:127.0.0.1:11121");
+        assert!(first.bearer_matches(repeated.expose_for_authorization_header()));
+        assert!(!token.bearer_matches(first.expose_for_authorization_header()));
+        assert!(!next.bearer_matches(first.expose_for_authorization_header()));
+        assert_eq!(format!("{first:?}"), "RuntimeToken([REDACTED])");
+    }
 
     #[test]
     fn debug_and_comparison_do_not_weaken_token_boundary() {

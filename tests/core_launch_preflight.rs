@@ -27,6 +27,107 @@ use serde_json::{Value, json};
 const TOKEN: &str = "c9";
 
 #[test]
+fn dashboard_start_stop_uses_launch_checks_user_holds_and_audit_without_primary_bearer() {
+    let fixture = HttpFixture::new();
+    let address = fixture.server.address();
+    let session = request_with_headers(
+        address,
+        "GET",
+        "/dashboard/v1/session",
+        None,
+        &[("X-Dashboard-Request", "1")],
+    );
+    assert_eq!(session.status, 200);
+    let capability = session.body["token"]
+        .as_str()
+        .expect("dashboard capability");
+    let origin = format!("http://{address}");
+    let headers = [
+        ("Origin", origin.as_str()),
+        ("X-Dashboard-Token", capability),
+    ];
+    let start_path = "/dashboard/v1/services/target/start";
+    let start_body = json!({"requestId":"dashboard-core-start"});
+    let start = request_with_headers(
+        address,
+        "POST",
+        start_path,
+        Some(start_body.clone()),
+        &headers,
+    );
+    assert_eq!(start.status, 200);
+    assert_eq!(start.body["outcome"], "started");
+    let started = fixture.snapshot("target");
+    assert_eq!(started["lifecycle"], "running");
+    assert_eq!(started["operatorHold"], "none");
+    assert_eq!(
+        started["lastAction"]["actor"],
+        json!({"actorType":"user","actorId":"ui"})
+    );
+    assert_eq!(fixture.snapshot("dependency")["lifecycle"], "running");
+    let spawn_count = fixture.metrics.spawned.lock().expect("spawn lock").len();
+    assert_eq!(
+        request_with_headers(address, "POST", start_path, Some(start_body), &headers).status,
+        200
+    );
+    assert_eq!(
+        fixture.metrics.spawned.lock().expect("spawn lock").len(),
+        spawn_count
+    );
+
+    let stop = request_with_headers(
+        address,
+        "POST",
+        "/dashboard/v1/services/target/stop",
+        Some(json!({"requestId":"dashboard-core-stop"})),
+        &headers,
+    );
+    assert_eq!(stop.status, 200);
+    assert_eq!(stop.body["outcome"], "stopped");
+    let stopped = fixture.snapshot("target");
+    assert_eq!(stopped["lifecycle"], "stopped");
+    assert_eq!(stopped["rootPid"], Value::Null);
+    assert_eq!(stopped["ownedPids"], json!([]));
+    assert_eq!(stopped["operatorHold"], "stopped");
+    let dependency_before = fixture.snapshot("dependency");
+    let journal = fs::read_to_string(fixture.directory.path().join("runtime/journal.jsonl"))
+        .expect("read fixture audit");
+    let events = journal
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .filter(|event| event["serviceId"] == "target")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        events.len(),
+        2,
+        "replayed Start must not create another audit event"
+    );
+    for event in events {
+        assert_eq!(event["actor"], json!({"actorType":"user","actorId":"ui"}));
+        assert_eq!(event["reason"], "Dashboard service control");
+    }
+    assert!(
+        !journal.contains(capability),
+        "capability must not appear in the audit journal"
+    );
+    fs::remove_file(&fixture.paths.target_executable).expect("remove stopped fixture command");
+    let failure = request_with_headers(
+        address,
+        "POST",
+        start_path,
+        Some(json!({"requestId":"dashboard-core-missing-command"})),
+        &headers,
+    );
+    assert_eq!(failure.status, 500);
+    assert_eq!(failure.body["error"]["code"], "spawn_failed");
+    assert_eq!(
+        fixture.metrics.spawned.lock().expect("spawn lock").len(),
+        spawn_count
+    );
+    assert_unchanged_target(&dependency_before, &fixture.snapshot("dependency"));
+}
+
+#[test]
 fn authenticated_http_restart_preserves_target_when_executable_or_cwd_disappears() {
     let fixture = HttpFixture::new();
     assert_eq!(fixture.mutate("target", "start").status, 200);
@@ -134,7 +235,7 @@ struct HttpFixture {
     server: ControlHttpServer,
     metrics: Arc<ProcessMetrics>,
     paths: FixturePaths,
-    _directory: TestDirectory,
+    directory: TestDirectory,
 }
 
 impl HttpFixture {
@@ -222,7 +323,7 @@ impl HttpFixture {
             server,
             metrics,
             paths,
-            _directory: directory,
+            directory,
         }
     }
 
@@ -414,14 +515,32 @@ struct HttpResponse {
 }
 
 fn request(address: SocketAddr, method: &str, target: &str, body: Option<Value>) -> HttpResponse {
+    let bearer = format!("Bearer {}", TOKEN.repeat(32));
+    request_with_headers(
+        address,
+        method,
+        target,
+        body,
+        &[("Authorization", bearer.as_str())],
+    )
+}
+
+fn request_with_headers(
+    address: SocketAddr,
+    method: &str,
+    target: &str,
+    body: Option<Value>,
+    headers: &[(&str, &str)],
+) -> HttpResponse {
     let body = body.map_or_else(Vec::new, |value| {
         serde_json::to_vec(&value).expect("JSON body")
     });
     let mut stream = TcpStream::connect(address).expect("connect to fixture HTTP server");
-    let mut request = format!(
-        "{method} {target} HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer {}\r\nConnection: close\r\n",
-        TOKEN.repeat(32)
-    );
+    let mut request =
+        format!("{method} {target} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n");
+    for (name, value) in headers {
+        write!(request, "{name}: {value}\r\n").expect("append fixture header");
+    }
     if !body.is_empty() {
         request.push_str("Content-Type: application/json\r\n");
     }
