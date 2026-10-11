@@ -44,7 +44,7 @@ same application-owned invariant.
 flowchart TB
     CLI["Visible CLI"] --> APP["Lifecycle application core"]
     API["Authenticated loopback API"] --> APP
-    UI["Future human dashboard"] --> APP
+    UI["Embedded read-only status dashboard"] --> APP
     MCP["Deferred MCP adapter"] -.-> APP
     APP --> CFG["Validated configuration"]
     APP --> PORTS["Platform-neutral ports"]

@@ -39,6 +39,9 @@ const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const LIVE_LOG_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 const CONTROL_CONNECTION_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_CONTROL_CONNECTIONS: usize = 64;
+const DASHBOARD_HTML: &[u8] = include_bytes!("../../dashboard/index.html");
+const DASHBOARD_CSS: &[u8] = include_bytes!("../../dashboard/app.css");
+const DASHBOARD_JS: &[u8] = include_bytes!("../../dashboard/app.js");
 
 /// Actor vocabulary accepted by the local control protocol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -205,7 +208,7 @@ fn serve(
     let idempotency = Arc::new(Mutex::new(IdempotencyStore::default()));
     while !stop.load(Ordering::Acquire) {
         match listener.accept() {
-            Ok((stream, _peer)) => {
+            Ok((stream, peer)) => {
                 stream.set_read_timeout(Some(IO_TIMEOUT)).ok();
                 stream.set_write_timeout(Some(IO_TIMEOUT)).ok();
                 if active_connections
@@ -244,6 +247,7 @@ fn serve(
                         let mut stream = stream;
                         if let Err(error) = handle_connection(
                             &mut stream,
+                            peer,
                             &worker_token,
                             &worker_mcp_config,
                             worker_control.as_ref(),
@@ -277,6 +281,7 @@ fn serve(
 #[allow(clippy::too_many_arguments)]
 fn handle_connection(
     stream: &mut TcpStream,
+    peer: SocketAddr,
     token: &RuntimeToken,
     mcp_config: &McpConfig,
     control: &dyn SupervisorControl,
@@ -343,7 +348,11 @@ fn handle_connection(
             .map_err(RequestError::Write)?;
         return Ok(());
     }
-    let response = if request.method == "POST" && request.target.starts_with("/v1/services/") {
+    let response = if dashboard_asset(&request.target).is_some()
+        && !dashboard_request_is_loopback(peer, request.host.as_deref())
+    {
+        dashboard_response(404, b"not found", "text/plain; charset=utf-8")
+    } else if request.method == "POST" && request.target.starts_with("/v1/services/") {
         let mut guard = idempotency
             .lock()
             .map_err(|_| RequestError::IdempotencyPoisoned)?;
@@ -437,6 +446,14 @@ fn route(
     supervisor_shutdown: &SupervisorShutdown,
     idempotency: &mut IdempotencyStore,
 ) -> Response {
+    if let Some(asset) = dashboard_asset(&request.target) {
+        return if request.method == "GET" {
+            dashboard_asset_response(asset)
+        } else {
+            dashboard_response(405, b"method not allowed", "text/plain; charset=utf-8")
+        };
+    }
+
     if request.target == mcp::MCP_ENDPOINT {
         return route_mcp(request, token, mcp_config, control, journal, logs);
     }
@@ -1015,12 +1032,21 @@ struct CachedMutation {
 struct HttpRequest {
     method: String,
     target: String,
+    host: Option<String>,
     authorization: Option<String>,
     accept: Option<String>,
     content_type: Option<String>,
     origin: Option<String>,
     mcp_protocol_version: Option<String>,
     body: Vec<u8>,
+}
+
+fn set_host_header(host: &mut Option<String>, value: &str) {
+    if host.is_some() {
+        *host = Some(String::new());
+    } else {
+        *host = Some(value.trim().to_owned());
+    }
 }
 
 fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, RequestError> {
@@ -1052,6 +1078,7 @@ fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, RequestError> {
         return Err(RequestError::Malformed("invalid request line"));
     }
 
+    let mut host = None;
     let mut authorization = None;
     let mut accept = None;
     let mut content_type = None;
@@ -1063,6 +1090,7 @@ fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, RequestError> {
             .split_once(':')
             .ok_or(RequestError::Malformed("invalid header"))?;
         match name.trim().to_ascii_lowercase().as_str() {
+            "host" => set_host_header(&mut host, value),
             "authorization" => {
                 if authorization.replace(value.trim().to_owned()).is_some() {
                     return Err(RequestError::Malformed("duplicate authorization header"));
@@ -1115,6 +1143,7 @@ fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, RequestError> {
     Ok(HttpRequest {
         method,
         target,
+        host,
         authorization,
         accept,
         content_type,
@@ -1174,6 +1203,76 @@ struct Response {
     status: u16,
     body: Vec<u8>,
     content_type: Option<&'static str>,
+    dashboard_security_headers: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DashboardAsset {
+    Html,
+    Css,
+    Javascript,
+}
+
+fn dashboard_asset(target: &str) -> Option<DashboardAsset> {
+    match target {
+        "/" => Some(DashboardAsset::Html),
+        "/app.css" => Some(DashboardAsset::Css),
+        "/app.js" => Some(DashboardAsset::Javascript),
+        _ => None,
+    }
+}
+
+fn dashboard_asset_response(asset: DashboardAsset) -> Response {
+    let (body, content_type) = match asset {
+        DashboardAsset::Html => (DASHBOARD_HTML, "text/html; charset=utf-8"),
+        DashboardAsset::Css => (DASHBOARD_CSS, "text/css; charset=utf-8"),
+        DashboardAsset::Javascript => (DASHBOARD_JS, "text/javascript; charset=utf-8"),
+    };
+    dashboard_response(200, body, content_type)
+}
+
+fn dashboard_response(status: u16, body: &[u8], content_type: &'static str) -> Response {
+    Response {
+        status,
+        body: body.to_vec(),
+        content_type: Some(content_type),
+        dashboard_security_headers: true,
+    }
+}
+
+fn dashboard_request_is_loopback(peer: SocketAddr, host: Option<&str>) -> bool {
+    peer.ip().is_loopback() && host.is_some_and(is_loopback_host)
+}
+
+fn is_loopback_host(authority: &str) -> bool {
+    let authority = authority.trim();
+    if let Some(bracketed) = authority.strip_prefix('[') {
+        let Some((address, suffix)) = bracketed.split_once(']') else {
+            return false;
+        };
+        if !suffix.is_empty()
+            && !suffix.strip_prefix(':').is_some_and(|port| {
+                !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit())
+            })
+        {
+            return false;
+        }
+        return address
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback());
+    }
+
+    let host = authority.split_once(':').map_or(authority, |(host, port)| {
+        if port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit()) {
+            ""
+        } else {
+            host
+        }
+    });
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
 }
 
 fn json_response(status: u16, value: &Value) -> Response {
@@ -1181,6 +1280,7 @@ fn json_response(status: u16, value: &Value) -> Response {
         status,
         body: serde_json::to_vec(&value).expect("JSON value serialization cannot fail"),
         content_type: Some("application/json"),
+        dashboard_security_headers: false,
     }
 }
 
@@ -1189,6 +1289,7 @@ fn empty_response(status: u16) -> Response {
         status,
         body: Vec::new(),
         content_type: None,
+        dashboard_security_headers: false,
     }
 }
 
@@ -1215,6 +1316,14 @@ fn write_response(stream: &mut TcpStream, response: &Response) -> io::Result<()>
     write!(stream, "HTTP/1.1 {} {reason}\r\n", response.status)?;
     if let Some(content_type) = response.content_type {
         write!(stream, "Content-Type: {content_type}\r\n")?;
+    }
+    if response.dashboard_security_headers {
+        stream.write_all(
+            b"Cache-Control: no-store\r\n\
+              X-Content-Type-Options: nosniff\r\n\
+              Referrer-Policy: no-referrer\r\n\
+              Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'\r\n",
+        )?;
     }
     write!(
         stream,
@@ -1631,8 +1740,10 @@ mod tests {
     use crate::adapters::service_logs::LiveLogEventKind;
     use crate::application::{
         ControlError, ControlMutationOutcome, ControlMutationResult, CooperativeActionError,
-        CooperativeActionOutcome, CooperativeActionStatus, ServiceSnapshot,
+        CooperativeActionOutcome, CooperativeActionStatus, HealthSnapshot, ProcessIdentity,
+        ServiceSnapshot,
     };
+    use crate::domain::{DesiredState, LifecycleState, OperatorHold};
 
     use super::*;
 
@@ -1704,11 +1815,12 @@ mod tests {
     #[derive(Debug, Default)]
     struct FakeControl {
         mutations: Mutex<u32>,
+        snapshots: Mutex<Vec<ServiceSnapshot>>,
     }
 
     impl SupervisorControl for FakeControl {
         fn snapshots(&self) -> Result<Vec<ServiceSnapshot>, ControlError> {
-            Ok(Vec::new())
+            Ok(self.snapshots.lock().expect("snapshot lock").clone())
         }
 
         fn mutate(
@@ -1724,6 +1836,203 @@ mod tests {
                 None,
             ))
         }
+    }
+
+    fn dashboard_service(
+        id: &str,
+        ports: Vec<u16>,
+        root_pid: Option<u32>,
+        owned_pids: Vec<u32>,
+    ) -> ServiceSnapshot {
+        ServiceSnapshot {
+            id: id.to_owned(),
+            label: id.to_owned(),
+            depends_on: Vec::new(),
+            ports,
+            lifecycle: if root_pid.is_some() {
+                LifecycleState::Running
+            } else {
+                LifecycleState::Stopped
+            },
+            root_pid,
+            owned_processes: owned_pids
+                .iter()
+                .map(|pid| ProcessIdentity {
+                    pid: *pid,
+                    name: Some("fixture.exe".to_owned()),
+                })
+                .collect(),
+            owned_pids,
+            health: HealthSnapshot::healthy(true, Some(true), "fixture healthy".to_owned()),
+            desired_state: DesiredState::Running,
+            started_at_unix_ms: Some(123),
+            last_exit_code: None,
+            last_exit_at_unix_ms: None,
+            restart_count: 0,
+            operator_hold: OperatorHold::None,
+            last_action: None,
+        }
+    }
+
+    fn raw_request(
+        address: SocketAddr,
+        method: &str,
+        target: &str,
+        host: &str,
+        origin: Option<&str>,
+    ) -> (u16, HashMap<String, String>, Vec<u8>) {
+        let mut stream = TcpStream::connect(address).expect("connect to fixture control server");
+        write!(stream, "{method} {target} HTTP/1.1\r\nHost: {host}\r\n")
+            .expect("write request line and Host");
+        if let Some(origin) = origin {
+            write!(stream, "Origin: {origin}\r\n").expect("write request Origin");
+        }
+        stream
+            .write_all(b"Connection: close\r\n\r\n")
+            .expect("finish raw request");
+        let mut bytes = Vec::new();
+        stream
+            .read_to_end(&mut bytes)
+            .expect("read complete HTTP response");
+        let response = String::from_utf8_lossy(&bytes);
+        let (headers, body) = response
+            .split_once("\r\n\r\n")
+            .expect("response headers and body");
+        let mut lines = headers.split("\r\n");
+        let status = lines
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .and_then(|code| code.parse().ok())
+            .expect("HTTP status");
+        let parsed_headers = lines
+            .filter_map(|line| line.split_once(':'))
+            .map(|(name, value)| (name.to_ascii_lowercase(), value.trim().to_owned()))
+            .collect();
+        (status, parsed_headers, body.as_bytes().to_vec())
+    }
+
+    fn assert_dashboard_asset_response(
+        address: SocketAddr,
+        host: &str,
+        target: &str,
+        mime: &str,
+        asset: &[u8],
+    ) {
+        let (status, headers, body) = raw_request(address, "GET", target, host, None);
+        assert_eq!(status, 200, "{target}");
+        assert_eq!(body, asset, "embedded bytes must match {target}");
+        assert_eq!(headers.get("content-type").map(String::as_str), Some(mime));
+        assert_eq!(
+            headers.get("cache-control").map(String::as_str),
+            Some("no-store")
+        );
+        assert_eq!(
+            headers.get("x-content-type-options").map(String::as_str),
+            Some("nosniff")
+        );
+        assert_eq!(
+            headers.get("referrer-policy").map(String::as_str),
+            Some("no-referrer")
+        );
+        let csp = headers
+            .get("content-security-policy")
+            .expect("dashboard CSP");
+        assert!(csp.contains("default-src 'none'"));
+        assert!(csp.contains("script-src 'self'"));
+        assert!(csp.contains("connect-src 'self'"));
+        assert!(!String::from_utf8_lossy(&body).contains("Bearer "));
+    }
+
+    #[test]
+    fn embedded_dashboard_serves_static_assets_safely_and_preserves_read_only_api() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("dashboard-http-fixtures")
+            .join(std::process::id().to_string());
+        std::fs::create_dir_all(&root).expect("create dashboard HTTP fixture");
+        let token_path = root.join("control-token");
+        let server_token = RuntimeToken::load_or_create(&token_path, || Ok("d".repeat(64)))
+            .expect("create server token");
+        let control = Arc::new(FakeControl::default());
+        *control.snapshots.lock().expect("snapshot lock") = vec![
+            dashboard_service("running", vec![4321], Some(1234), vec![1234, 1235]),
+            dashboard_service("stopped", Vec::new(), None, Vec::new()),
+        ];
+        let journal = Arc::new(
+            FileJournal::open(root.join("journal.jsonl"), Vec::<String>::new())
+                .expect("create dashboard test journal"),
+        );
+        let logs = Arc::new(ServiceLogStore::new(&root, std::iter::empty()));
+        let mut server = ControlHttpServer::start(
+            "127.0.0.1",
+            0,
+            server_token,
+            McpConfig::default(),
+            control.clone(),
+            None,
+            journal,
+            logs,
+            Arc::new(RegistryReconciliationStatus::new("sha256:test".to_owned())),
+            Arc::new(test_instance()),
+            Arc::new(SupervisorShutdown::default()),
+        )
+        .expect("start loopback fixture control server");
+        let address = server.address();
+        let host = format!("127.0.0.1:{}", address.port());
+
+        for (target, mime, asset) in [
+            ("/", "text/html; charset=utf-8", DASHBOARD_HTML),
+            ("/app.css", "text/css; charset=utf-8", DASHBOARD_CSS),
+            ("/app.js", "text/javascript; charset=utf-8", DASHBOARD_JS),
+        ] {
+            assert_dashboard_asset_response(address, &host, target, mime, asset);
+        }
+
+        let (status, _, _) = raw_request(address, "GET", "/", "dashboard.example", None);
+        assert_eq!(status, 404, "non-loopback Host is rejected for the UI");
+        assert!(dashboard_request_is_loopback(address, Some(&host)));
+        assert!(!dashboard_request_is_loopback(
+            address,
+            Some("dashboard.example")
+        ));
+        assert!(!dashboard_request_is_loopback(
+            "192.0.2.8:1234".parse().expect("fixture peer address"),
+            Some(&host)
+        ));
+        assert!(is_loopback_host("localhost:11121"));
+        assert!(is_loopback_host("[::1]:11121"));
+        assert!(!is_loopback_host("localhost.attacker.example:11121"));
+
+        let (status, headers, _body) = raw_request(address, "POST", "/app.js", &host, None);
+        assert_eq!(status, 405, "asset POST must be rejected");
+        assert_eq!(
+            headers.get("cache-control").map(String::as_str),
+            Some("no-store")
+        );
+        assert_eq!(*control.mutations.lock().expect("mutation lock"), 0);
+
+        let (status, _, _) = raw_request(address, "GET", "/not-a-route", &host, None);
+        assert_eq!(status, 404, "unknown paths remain not found");
+
+        let (status, headers, body) = raw_request(address, "GET", "/v1/services", &host, None);
+        assert_eq!(status, 200, "services API remains readable without a token");
+        assert_eq!(
+            headers.get("content-type").map(String::as_str),
+            Some("application/json")
+        );
+        let services: Value = serde_json::from_slice(&body).expect("services API JSON");
+        assert_eq!(services["services"][0]["rootPid"], 1234);
+        assert_eq!(services["services"][0]["ownedPids"], json!([1234, 1235]));
+        assert_eq!(services["services"][0]["ports"], json!([4321]));
+        assert_eq!(services["services"][1]["rootPid"], Value::Null);
+        assert_eq!(services["services"][1]["ports"], json!([]));
+
+        let (status, _, body) = raw_request(address, "GET", "/v1/health", &host, None);
+        assert_eq!(status, 200, "health API remains readable without a token");
+        let health: Value = serde_json::from_slice(&body).expect("health API JSON");
+        assert_eq!(health["status"], "ok");
+        assert_eq!(*control.mutations.lock().expect("mutation lock"), 0);
+        server.shutdown().expect("stop fixture control server");
     }
 
     #[test]
@@ -1897,6 +2206,7 @@ mod tests {
         let request = HttpRequest {
             method: "POST".to_owned(),
             target: "/v1/services/api/start".to_owned(),
+            host: None,
             authorization: Some(format!("Bearer {}", "b".repeat(64))),
             accept: None,
             content_type: None,
@@ -1947,6 +2257,7 @@ mod tests {
         let request = |authorization: Option<String>, request_id: &str| HttpRequest {
             method: "POST".to_owned(),
             target: "/v1/supervisor/shutdown".to_owned(),
+            host: None,
             authorization,
             accept: None,
             content_type: Some("application/json".to_owned()),
@@ -1980,6 +2291,7 @@ mod tests {
         let identity = HttpRequest {
             method: "GET".to_owned(),
             target: "/v1/instance".to_owned(),
+            host: None,
             authorization: Some(format!("Bearer {}", "a".repeat(64))),
             accept: None,
             content_type: None,
@@ -2052,6 +2364,7 @@ mod tests {
         let request = |authorization| HttpRequest {
             method: "GET".to_owned(),
             target: "/v1/registry".to_owned(),
+            host: None,
             authorization,
             accept: None,
             content_type: None,
@@ -2118,6 +2431,7 @@ mod tests {
         let request = HttpRequest {
             method: "POST".to_owned(),
             target: "/v1/cooperative-actions/chrome-extension/reload-self".to_owned(),
+            host: None,
             authorization: Some(format!("Bearer {}", "a".repeat(64))),
             accept: None,
             content_type: None,
@@ -2152,6 +2466,7 @@ mod tests {
         let status_request = HttpRequest {
             method: "GET".to_owned(),
             target: "/v1/cooperative-actions/chrome-extension/requests/bridge-1".to_owned(),
+            host: None,
             authorization: Some(format!("Bearer {}", "a".repeat(64))),
             accept: None,
             content_type: None,
@@ -2182,6 +2497,7 @@ mod tests {
         let active_request = HttpRequest {
             method: "GET".to_owned(),
             target: "/v1/cooperative-actions/chrome-extension/active".to_owned(),
+            host: None,
             authorization: Some(format!("Bearer {}", "a".repeat(64))),
             accept: None,
             content_type: None,
@@ -2228,6 +2544,7 @@ mod tests {
         let request = HttpRequest {
             method: "POST".to_owned(),
             target: "/v1/services/api/start".to_owned(),
+            host: None,
             authorization: Some(format!("Bearer {}", "a".repeat(64))),
             accept: None,
             content_type: None,

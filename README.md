@@ -541,6 +541,56 @@ the Job Object PID membership remains the ownership authority. Use
 diverge, `simple-status` prepends one bounded `REGISTRY WARNING` with state,
 active revision, disk revision, and diagnostic detail.
 
+### Single-page status dashboard
+
+Start AkuSupervisor as usual, then open the control listener's loopback address
+in a browser. With the default development configuration, use:
+
+```powershell
+http://127.0.0.1:11121/
+```
+
+The HTML, CSS, and JavaScript are embedded in the Rust binary and served by the
+existing control HTTP listener. No Node.js runtime, npm packages, separate
+dashboard process, or additional Cargo dependency is required. The page reads `/v1/services` and `/v1/health`
+directly. It displays lifecycle and desired state, health, root PID, owned
+processes/PIDs, operator holds, and HTTP shortcuts inferred from registered
+ports. Search, a running-service filter, manual refresh, and five-second
+automatic refresh keep the table compact. A port-based URL is a convenience
+link, not proof that a port serves a web UI; stopped services may be
+unavailable. Services without declared ports have no URL. Failed refreshes
+retain the previous snapshot and show an error.
+
+The dashboard is read-only and its static routes require a loopback peer and a
+loopback `Host`. It adds no lifecycle operation and does not change registration
+or start, stop, restart, or rebuild Supervisor or managed services. Its static
+responses use a restrictive content security policy, disable caching, and
+prevent MIME sniffing and referrer disclosure.
+
+Rust regression coverage for embedded asset routing and API behavior runs with:
+
+```powershell
+cargo test --all-features
+```
+
+Browser helper regressions need only Rust and a browser. From the repository
+root, save a read-only services snapshot from an already running Supervisor,
+then compile and run the disposable fixture:
+
+```powershell
+New-Item -ItemType Directory -Path target -Force | Out-Null
+Invoke-WebRequest -Uri http://127.0.0.1:11121/v1/services -OutFile target\dashboard-services.json
+rustc --edition=2024 tests\fixtures\dashboard_browser.rs -o target\dashboard-browser-fixture.exe
+.\target\dashboard-browser-fixture.exe target\dashboard-services.json
+```
+
+Open the printed URL plus `tests/dashboard-browser.html` for the helper
+assertions, or its root for the UI. The fixture serves recorded data and exits
+after three minutes; it never starts Supervisor or managed services. Its
+`/fixture/unavailable` and `/fixture/available` routes toggle a simulated
+services API failure for checking retained snapshots and recovery. These test
+routes and test pages are not served by the production control listener.
+
 After a compatible extension build has been loaded into Chrome once, either the
 user or Codex can request the only browser-side mutation exposed by
 AkuSupervisor:

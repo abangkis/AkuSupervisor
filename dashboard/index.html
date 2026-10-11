@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>AkuSupervisor</title>
+    <link rel="stylesheet" href="./app.css">
+  </head>
+  <body>
+    <main class="page-shell">
+      <header class="page-header">
+        <div>
+          <p class="eyebrow">SUPERVISOR · LOKAL</p>
+          <h1>AkuSupervisor</h1>
+          <p class="subtitle">Ringkasan layanan dan proses yang dikelola.</p>
+        </div>
+        <div class="header-status">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span id="supervisor-health" data-state="checking">Memeriksa API Supervisor…</span>
+        </div>
+      </header>
+
+      <section class="summary-grid" aria-label="Ringkasan layanan">
+        <article class="summary-card">
+          <span class="summary-label">Layanan terdaftar</span>
+          <strong id="count-total" class="summary-value" aria-live="polite">—</strong>
+        </article>
+        <article class="summary-card">
+          <span class="summary-label">Berjalan</span>
+          <strong id="count-running" class="summary-value" aria-live="polite">—</strong>
+        </article>
+        <article class="summary-card">
+          <span class="summary-label">Perlu perhatian</span>
+          <strong id="count-attention" class="summary-value" aria-live="polite">—</strong>
+        </article>
+      </section>
+
+      <section class="services-panel" aria-labelledby="services-heading">
+        <div class="panel-heading">
+          <div>
+            <h2 id="services-heading">Layanan</h2>
+            <p class="updated-line">Diperbarui: <time id="updated-at">Belum tersedia</time></p>
+          </div>
+          <button id="refresh-button" class="refresh-button" type="button" aria-controls="service-table">
+            <span aria-hidden="true">↻</span> Segarkan
+          </button>
+        </div>
+
+        <div class="toolbar">
+          <label class="search-control">
+            <span class="sr-only">Cari layanan</span>
+            <span class="search-icon" aria-hidden="true">⌕</span>
+            <input id="search-input" type="search" autocomplete="off" placeholder="Cari nama, ID, PID, atau port…">
+          </label>
+          <label class="filter-control">
+            <span class="sr-only">Filter layanan</span>
+            <select id="service-filter">
+              <option value="all">Semua layanan</option>
+              <option value="running">Berjalan</option>
+            </select>
+          </label>
+        </div>
+
+        <p id="refresh-status" class="refresh-status" data-state="loading" role="status" aria-live="polite">Mengambil data layanan…</p>
+        <div class="table-scroll" tabindex="0" aria-label="Tabel layanan, dapat digulir secara horizontal">
+          <table id="service-table">
+            <caption class="sr-only">Status layanan, URL aplikasi, dan proses yang dikelola AkuSupervisor</caption>
+            <thead>
+              <tr>
+                <th scope="col">Layanan</th>
+                <th scope="col">Siklus · tujuan</th>
+                <th scope="col">Kesehatan</th>
+                <th scope="col">URL aplikasi</th>
+                <th scope="col">PID utama</th>
+                <th scope="col">Proses dimiliki</th>
+                <th scope="col">Operator hold</th>
+              </tr>
+            </thead>
+            <tbody id="service-rows">
+              <tr class="message-row"><td colspan="7">Memuat layanan…</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="panel-footnote">URL dari port terdaftar. Layanan yang berhenti mungkin belum dapat dibuka. Pembaruan otomatis setiap 5 detik.</p>
+      </section>
+      <p id="results-summary" class="sr-only" role="status" aria-live="polite"></p>
+    </main>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
