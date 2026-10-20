@@ -175,7 +175,10 @@ dependencies, and health deadlines. They do not require every service's
 working directory or executable to exist, so status, log reads, stop,
 shutdown, and cooperative commands remain available when launch files are
 missing. Foreground startup and configuration reconciliation use the same
-static contract. Registration validation retains its existing filesystem checks.
+static contract. Registration always checks the full structural contract and
+checks existing paths only for the register/update target. Missing paths for
+unrelated services or managed dependencies do not block registration; start and
+restart preflight still checks services selected by the runtime launch plan.
 
 Before sending start or restart requests, the CLI checks the requested services
 and their transitive managed dependencies for an existing working directory

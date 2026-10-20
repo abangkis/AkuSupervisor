@@ -166,6 +166,7 @@ pub(crate) fn capability_contract() -> Value {
             "reconciliationOutcomes": ["applied", "pending", "deferred", "rejected", "offline"],
             "unrelatedServicesRestarted": false,
             "updateAndUnregisterRequireObservedStoppedState": true,
+            "filesystemValidationScope": "registration validates the full structural contract and only the register/update target paths; launch preflight checks paths for services selected by the runtime launch plan",
             "arbitraryShellCommands": false,
             "secretEnvironmentKeys": "rejected"
         },
@@ -193,7 +194,7 @@ impl RegistrationAuthority {
     /// Returns a typed configuration or runtime-layout failure.
     pub fn open(explicit_config: Option<PathBuf>) -> Result<Self, RegistrationError> {
         let resolved = resolve_config_path(explicit_config).map_err(RegistrationError::from)?;
-        let config = read_valid_config(resolved.path())?;
+        let config = read_structural_config(resolved.path())?;
         ensure_registration_safe_environment(&config)?;
         let token_path = resolve_token_path(resolved.path(), &config.control.token_file);
         let runtime_directory = token_path.parent().ok_or_else(|| {
@@ -255,9 +256,8 @@ impl RegistrationAuthority {
         validate_service_id(service_id)?;
         let current = self.current_config()?;
         let current_revision = current.fingerprint().map_err(config_error)?;
-        let (proposed, mut issues, warnings) =
-            proposed_configuration(&current, operation, service_id, service)?;
-        issues.extend(proposed.validation_issues());
+        let (proposed, issues, warnings) =
+            validate_registration_proposal(&current, operation, service_id, service)?;
         let proposed_revision = issues
             .is_empty()
             .then(|| proposed.fingerprint().map_err(config_error))
@@ -306,13 +306,12 @@ impl RegistrationAuthority {
                 json!({"expected": current_revision, "actual": request.base_revision}),
             ));
         }
-        let (proposed, mut issues, warnings) = proposed_configuration(
+        let (proposed, issues, warnings) = validate_registration_proposal(
             &current,
             request.operation,
             &request.service_id,
             request.service,
         )?;
-        issues.extend(proposed.validation_issues());
         if !issues.is_empty() {
             return Err(RegistrationError::with_details(
                 "service_validation_failed",
@@ -566,8 +565,38 @@ impl RegistrationAuthority {
         ) {
             self.require_observed_stopped(&current, &draft.service_id)?;
         }
-        draft.after_configuration.validate().map_err(config_error)?;
-        write_json_atomic(&self.configuration_path, &draft.after_configuration)?;
+        let service = match draft.operation {
+            RegistrationOperation::Register | RegistrationOperation::Update => Some(
+                draft
+                    .after_configuration
+                    .services
+                    .get(&draft.service_id)
+                    .cloned()
+                    .ok_or_else(|| {
+                        RegistrationError::new(
+                            "draft_integrity_failed",
+                            "registration draft is missing its proposed service",
+                        )
+                    })?,
+            ),
+            RegistrationOperation::Unregister => None,
+        };
+        let (proposed, issues, warnings) =
+            validate_registration_proposal(&current, draft.operation, &draft.service_id, service)?;
+        if !issues.is_empty() {
+            return Err(RegistrationError::with_details(
+                "service_validation_failed",
+                "the proposed configuration is no longer valid",
+                json!({"issues": issues, "warnings": warnings}),
+            ));
+        }
+        if proposed.fingerprint().map_err(config_error)? != draft.proposed_revision {
+            return Err(RegistrationError::new(
+                "draft_integrity_failed",
+                "registration draft no longer matches its operation-bound proposal",
+            ));
+        }
+        write_json_atomic(&self.configuration_path, &proposed)?;
         draft.status = DraftStatus::Committed;
         draft.committed_at_unix_ms = Some(now_ms()?);
         write_json_atomic(&self.draft_path(&draft.draft_id)?, &draft)?;
@@ -669,7 +698,7 @@ impl RegistrationAuthority {
     }
 
     fn current_config(&self) -> Result<SupervisorConfig, RegistrationError> {
-        let config = read_valid_config(&self.configuration_path)?;
+        let config = read_structural_config(&self.configuration_path)?;
         ensure_registration_safe_environment(&config)?;
         Ok(config)
     }
@@ -855,7 +884,7 @@ impl Drop for CommitLock {
     }
 }
 
-fn proposed_configuration(
+fn validate_registration_proposal(
     current: &SupervisorConfig,
     operation: RegistrationOperation,
     service_id: &str,
@@ -914,6 +943,17 @@ fn proposed_configuration(
                 ));
             }
             proposed.services.remove(service_id);
+        }
+    }
+    issues.extend(proposed.structural_contract_issues());
+    if operation != RegistrationOperation::Unregister {
+        for issue in proposed.selected_service_filesystem_issues(&[service_id.to_owned()]) {
+            if !issues
+                .iter()
+                .any(|existing| existing.path == issue.path && existing.code == issue.code)
+            {
+                issues.push(issue);
+            }
         }
     }
     Ok((proposed, issues, warnings))
@@ -1112,7 +1152,7 @@ fn print_approval_review(
     Ok(())
 }
 
-fn read_valid_config(path: &Path) -> Result<SupervisorConfig, RegistrationError> {
+fn read_structural_config(path: &Path) -> Result<SupervisorConfig, RegistrationError> {
     let source = fs::read_to_string(path).map_err(|error| {
         RegistrationError::with_source(
             "configuration_read_failed",
@@ -1121,7 +1161,7 @@ fn read_valid_config(path: &Path) -> Result<SupervisorConfig, RegistrationError>
         )
     })?;
     let config = SupervisorConfig::parse_json(&source).map_err(config_error)?;
-    config.validate().map_err(config_error)?;
+    config.validate_structure().map_err(config_error)?;
     Ok(config)
 }
 
@@ -1254,8 +1294,8 @@ fn service_schema() -> Value {
         "required": ["label", "cwd", "command", "health", "restartPolicy", "shutdownGraceMs"],
         "properties": {
             "label": {"type":"string", "minLength":1, "description":"Human-readable label."},
-            "cwd": {"type":"string", "description":"Absolute existing working directory."},
-            "command": {"type":"string", "description":"Absolute existing executable or command wrapper path; never a shell expression."},
+            "cwd": {"type":"string", "description":"Absolute working-directory path. It must currently exist when this service is registered or updated; unrelated service paths are not checked during registration."},
+            "command": {"type":"string", "description":"Absolute executable or command-wrapper path; never a shell expression. It must currently exist when this service is registered or updated. Start preflight checks services selected by the runtime launch plan."},
             "args": {"type":"array", "items":{"type":"string"}, "default":[], "description":"Fixed argv entries, kept separate from command."},
             "environment": {"type":"object", "additionalProperties":{"type":"string"}, "default":{}, "description":"Non-sensitive fixed overrides only. Likely secret keys are rejected."},
             "dependsOn": {"type":"array", "items":{"type":"string", "pattern":"^[a-z0-9-]+$"}, "uniqueItems":true, "default":[], "description":"Managed service IDs that AkuSupervisor starts first. References, duplicates, self-dependencies, and cycles are rejected."},
@@ -1387,6 +1427,8 @@ impl From<ConfigPathError> for RegistrationError {
 mod tests {
     use std::collections::BTreeMap;
     use std::fs;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -1534,6 +1576,421 @@ mod tests {
     }
 
     #[test]
+    fn registration_checks_only_the_target_files_and_keeps_strict_diagnostics() {
+        let fixture = Fixture::new();
+        let unrelated_executable = fixture.directory.join("unrelated-api.exe");
+        fs::write(&unrelated_executable, b"fixture executable").expect("write fixture executable");
+        let missing_idle_executable = fixture.directory.join("missing-idle.exe");
+        let missing_dependency_executable = fixture.directory.join("missing-dependency.exe");
+        let mut config = fixture.config();
+        config.services.get_mut("api").expect("api service").command = unrelated_executable.clone();
+        for service_id in ["idle-one", "idle-two"] {
+            let mut idle_service = fixture.service(service_id, 0);
+            idle_service.command = missing_idle_executable.clone();
+            config.services.insert(service_id.to_owned(), idle_service);
+        }
+        let mut dependency = fixture.service("Missing dependency", 0);
+        dependency.command = missing_dependency_executable;
+        config.services.insert("dependency".to_owned(), dependency);
+        fixture.write_config(&config);
+
+        let authority = fixture.authority();
+        assert!(authority.capabilities().is_ok());
+        let base_revision = fixture.config().fingerprint().expect("base revision");
+        let mut worker = fixture.service("Worker", 0);
+        worker.depends_on = vec!["dependency".to_owned()];
+        let validation = authority
+            .validate_service(
+                RegistrationOperation::Register,
+                "worker",
+                Some(worker.clone()),
+            )
+            .expect("validate registration");
+        assert!(
+            validation.valid,
+            "unexpected issues: {:?}",
+            validation.issues
+        );
+
+        let draft = authority
+            .prepare(PrepareRegistration {
+                request_id: "missing-idle-files".to_owned(),
+                operation: RegistrationOperation::Register,
+                service_id: "worker".to_owned(),
+                base_revision,
+                service: Some(worker),
+            })
+            .expect("prepare with unrelated and dependency executables missing");
+        assert_eq!(
+            authority
+                .get_draft(&draft.draft_id)
+                .expect("read draft despite missing idle executables")
+                .draft_id,
+            draft.draft_id
+        );
+        authority
+            .approve_with_confirmation(draft.clone(), &draft.confirmation_phrase)
+            .expect("fixture approval");
+
+        fs::remove_file(&unrelated_executable).expect("remove unrelated executable after approval");
+        let commit = authority
+            .commit(&draft.draft_id)
+            .expect("commit despite unrelated and dependency paths being unavailable");
+        assert_eq!(commit.registered_state, "stopped");
+        assert!(fixture.config().services.contains_key("worker"));
+
+        let strict_issues = fixture.config().validation_issues();
+        for (path, code) in [
+            ("services.api.command", "command_missing"),
+            ("services.idle-one.command", "command_missing"),
+            ("services.idle-two.command", "command_missing"),
+            ("services.dependency.command", "command_missing"),
+        ] {
+            assert!(
+                strict_issues
+                    .iter()
+                    .any(|issue| issue.path == path && issue.code == code),
+                "strict diagnostics should retain {path} {code}"
+            );
+        }
+    }
+
+    #[test]
+    fn registration_rejects_missing_target_paths_and_structural_conflicts() {
+        let fixture = Fixture::new();
+        let authority = fixture.authority();
+        let base_revision = fixture.config().fingerprint().expect("base revision");
+        let mut missing_target = fixture.service("Missing target", 0);
+        missing_target.cwd = fixture.directory.join("missing-working-directory");
+        missing_target.command = fixture.directory.join("missing-target.exe");
+
+        let validation = authority
+            .validate_service(
+                RegistrationOperation::Register,
+                "worker",
+                Some(missing_target.clone()),
+            )
+            .expect("validation result");
+        assert!(!validation.valid);
+        for (path, code) in [
+            ("services.worker.cwd", "cwd_missing"),
+            ("services.worker.command", "command_missing"),
+        ] {
+            assert!(
+                validation
+                    .issues
+                    .iter()
+                    .any(|issue| issue.path == path && issue.code == code),
+                "target validation should include {path} {code}"
+            );
+        }
+        let error = authority
+            .prepare(PrepareRegistration {
+                request_id: "missing-target-paths".to_owned(),
+                operation: RegistrationOperation::Register,
+                service_id: "worker".to_owned(),
+                base_revision: base_revision.clone(),
+                service: Some(missing_target),
+            })
+            .expect_err("missing target files must block draft preparation");
+        assert_eq!(error.code(), "service_validation_failed");
+
+        let mut conflicting_target = fixture.service("Port conflict", 0);
+        conflicting_target.ports = vec![fixture.config().control.port];
+        let validation = authority
+            .validate_service(
+                RegistrationOperation::Register,
+                "worker",
+                Some(conflicting_target.clone()),
+            )
+            .expect("validation result");
+        assert!(
+            validation
+                .issues
+                .iter()
+                .any(|issue| issue.code == "declared_port_conflict"),
+            "structural port conflicts remain registration errors"
+        );
+        let error = authority
+            .prepare(PrepareRegistration {
+                request_id: "structural-port-conflict".to_owned(),
+                operation: RegistrationOperation::Register,
+                service_id: "worker".to_owned(),
+                base_revision,
+                service: Some(conflicting_target),
+            })
+            .expect_err("structural conflict must block draft preparation");
+        assert_eq!(error.code(), "service_validation_failed");
+    }
+
+    #[test]
+    fn update_and_unregister_can_repair_a_broken_old_target() {
+        let fixture = Fixture::new();
+        let mut config = fixture.config();
+        let old_target = config.services.get_mut("api").expect("api service");
+        old_target.cwd = fixture.directory.join("missing-old-cwd");
+        old_target.command = fixture.directory.join("missing-old-command.exe");
+        config
+            .services
+            .insert("spare".to_owned(), fixture.service("Spare", 0));
+        fixture.write_config(&config);
+
+        let authority = fixture.authority();
+        let base_revision = fixture.config().fingerprint().expect("base revision");
+        let updated = authority
+            .validate_service(
+                RegistrationOperation::Update,
+                "api",
+                Some(fixture.service("Repaired API", 0)),
+            )
+            .expect("update validation");
+        assert!(updated.valid, "unexpected issues: {:?}", updated.issues);
+        authority
+            .prepare(PrepareRegistration {
+                request_id: "repair-broken-target".to_owned(),
+                operation: RegistrationOperation::Update,
+                service_id: "api".to_owned(),
+                base_revision: base_revision.clone(),
+                service: Some(fixture.service("Repaired API", 0)),
+            })
+            .expect("prepare update for broken old target");
+
+        let unregistered = authority
+            .validate_service(RegistrationOperation::Unregister, "api", None)
+            .expect("unregister validation");
+        assert!(
+            unregistered.valid,
+            "unregister must not require paths for the removed target: {:?}",
+            unregistered.issues
+        );
+        authority
+            .prepare(PrepareRegistration {
+                request_id: "remove-broken-target".to_owned(),
+                operation: RegistrationOperation::Unregister,
+                service_id: "api".to_owned(),
+                base_revision,
+                service: None,
+            })
+            .expect("prepare unregister for broken old target");
+    }
+
+    #[test]
+    fn unregister_preserves_dependency_and_nonempty_registry_constraints() {
+        let fixture = Fixture::new();
+        let authority = fixture.authority();
+        for with_dependent in [false, true] {
+            let mut config = fixture.config();
+            if with_dependent {
+                let mut dependent = fixture.service("Dependent", 0);
+                dependent.depends_on = vec!["api".to_owned()];
+                config.services.insert("dependent".to_owned(), dependent);
+                fixture.write_config(&config);
+            }
+            let before = fs::read(&fixture.config_path).expect("fixture configuration");
+            let expected_code = if with_dependent {
+                "service_dependency_unknown"
+            } else {
+                "services_empty"
+            };
+            let validation = authority
+                .validate_service(RegistrationOperation::Unregister, "api", None)
+                .expect("unregister validation");
+            assert!(!validation.valid);
+            assert!(
+                validation
+                    .issues
+                    .iter()
+                    .any(|issue| issue.code == expected_code)
+            );
+            let error = authority
+                .prepare(PrepareRegistration {
+                    request_id: format!("unregister-constraint-{with_dependent}"),
+                    operation: RegistrationOperation::Unregister,
+                    service_id: "api".to_owned(),
+                    base_revision: config.fingerprint().expect("current revision"),
+                    service: None,
+                })
+                .expect_err("unregister cannot break registry structure");
+            assert_eq!(error.code(), "service_validation_failed");
+            assert_eq!(
+                fs::read(&fixture.config_path).expect("unchanged fixture"),
+                before
+            );
+        }
+    }
+
+    #[test]
+    fn approval_expiry_confirmation_and_tamper_checks_leave_config_unchanged() {
+        let fixture = Fixture::new();
+        let authority = fixture.authority();
+        let original_revision = fixture.config().fingerprint().expect("base revision");
+        let draft = authority
+            .prepare(PrepareRegistration {
+                request_id: "approval-boundaries".to_owned(),
+                operation: RegistrationOperation::Register,
+                service_id: "worker".to_owned(),
+                base_revision: original_revision.clone(),
+                service: Some(fixture.service("Worker", 0)),
+            })
+            .expect("prepare");
+
+        let error = authority
+            .approve_with_confirmation(draft.clone(), "APPROVE worker incorrect")
+            .expect_err("wrong confirmation must fail");
+        assert_eq!(error.code(), "approval_confirmation_mismatch");
+        let mut expired = draft.clone();
+        expired.expires_at_unix_ms = 0;
+        let error = authority
+            .approve_with_confirmation(expired, &draft.confirmation_phrase)
+            .expect_err("expired approval must fail");
+        assert_eq!(error.code(), "draft_expired");
+        assert_eq!(
+            authority
+                .get_draft(&draft.draft_id)
+                .expect("wrong and expired attempts leave prepared draft intact")
+                .status,
+            DraftStatus::Prepared
+        );
+
+        let approved = authority
+            .approve_with_confirmation(draft.clone(), &draft.confirmation_phrase)
+            .expect("approve with exact phrase");
+        let mut expired_approved = approved.clone();
+        expired_approved.expires_at_unix_ms = 0;
+        write_json_atomic(
+            &authority.draft_path(&draft.draft_id).expect("draft path"),
+            &expired_approved,
+        )
+        .expect("persist expired approved fixture");
+        let error = authority
+            .commit(&draft.draft_id)
+            .expect_err("expired approved draft must not commit");
+        assert_eq!(error.code(), "draft_expired");
+
+        let mut tampered = expired_approved;
+        tampered
+            .after_configuration
+            .services
+            .get_mut("worker")
+            .expect("proposed worker")
+            .label = "tampered after approval".to_owned();
+        write_json_atomic(
+            &authority.draft_path(&draft.draft_id).expect("draft path"),
+            &tampered,
+        )
+        .expect("persist tampered fixture draft");
+        let error = authority
+            .get_draft(&draft.draft_id)
+            .expect_err("tampered proposal must fail integrity verification");
+        assert_eq!(error.code(), "draft_integrity_failed");
+        let error = authority
+            .commit(&draft.draft_id)
+            .expect_err("tampered proposal must not commit");
+        assert_eq!(error.code(), "draft_integrity_failed");
+        assert_eq!(
+            fixture.config().fingerprint().expect("final revision"),
+            original_revision
+        );
+    }
+
+    #[test]
+    fn approved_registration_rechecks_target_files_and_retry_recovers() {
+        let fixture = Fixture::new();
+        let authority = fixture.authority();
+        let target_working_directory = fixture.directory.join("temporary-worker-cwd");
+        let target_executable = fixture.directory.join("temporary-worker.exe");
+        fs::create_dir(&target_working_directory).expect("create target working directory");
+        fs::write(&target_executable, b"fixture executable").expect("write target executable");
+        let mut worker = fixture.service("Worker", 0);
+        worker.cwd = target_working_directory.clone();
+        worker.command = target_executable.clone();
+        let draft = authority
+            .prepare(PrepareRegistration {
+                request_id: "target-file-recheck".to_owned(),
+                operation: RegistrationOperation::Register,
+                service_id: "worker".to_owned(),
+                base_revision: fixture.config().fingerprint().expect("base revision"),
+                service: Some(worker),
+            })
+            .expect("prepare");
+        authority
+            .approve_with_confirmation(draft.clone(), &draft.confirmation_phrase)
+            .expect("fixture approval");
+
+        fs::remove_file(&target_executable).expect("remove approved target executable");
+        fs::remove_dir(&target_working_directory)
+            .expect("remove approved target working directory");
+        let error = authority
+            .commit(&draft.draft_id)
+            .expect_err("fresh commit must reject missing target paths");
+        assert_eq!(error.code(), "service_validation_failed");
+        let issues = error
+            .details()
+            .and_then(|details| details["issues"].as_array())
+            .expect("structured target issues");
+        assert!(issues.iter().any(|issue| {
+            issue["path"] == "services.worker.command" && issue["code"] == "command_missing"
+        }));
+        assert!(issues.iter().any(|issue| {
+            issue["path"] == "services.worker.cwd" && issue["code"] == "cwd_missing"
+        }));
+        assert_eq!(
+            authority
+                .get_draft(&draft.draft_id)
+                .expect("approved draft remains readable")
+                .status,
+            DraftStatus::Approved
+        );
+        assert!(!fixture.config().services.contains_key("worker"));
+
+        fs::create_dir(&target_working_directory).expect("restore target working directory");
+        fs::write(&target_executable, b"fixture executable").expect("restore target executable");
+        authority
+            .commit(&draft.draft_id)
+            .expect("the same approval can be retried while it remains valid");
+        assert!(fixture.config().services.contains_key("worker"));
+    }
+
+    #[test]
+    fn interrupted_commit_recovery_does_not_recheck_disappeared_paths() {
+        let fixture = Fixture::new();
+        let authority = fixture.authority();
+        let target_executable = fixture.directory.join("interrupted-worker.exe");
+        fs::write(&target_executable, b"fixture executable").expect("write target executable");
+        let mut worker = fixture.service("Worker", 0);
+        worker.command = target_executable.clone();
+        let draft = authority
+            .prepare(PrepareRegistration {
+                request_id: "interrupted-commit-recovery".to_owned(),
+                operation: RegistrationOperation::Register,
+                service_id: "worker".to_owned(),
+                base_revision: fixture.config().fingerprint().expect("base revision"),
+                service: Some(worker),
+            })
+            .expect("prepare");
+        authority
+            .approve_with_confirmation(draft.clone(), &draft.confirmation_phrase)
+            .expect("fixture approval");
+
+        fixture.write_config(&draft.after_configuration);
+        fs::remove_file(&target_executable).expect("remove target after config replacement");
+        let recovered = authority
+            .commit(&draft.draft_id)
+            .expect("recover already-written configuration despite missing paths");
+        assert_eq!(recovered.registered_state, "stopped");
+        assert_eq!(
+            authority
+                .get_draft(&draft.draft_id)
+                .expect("recovered draft")
+                .status,
+            DraftStatus::Committed
+        );
+        authority
+            .commit(&draft.draft_id)
+            .expect("committed replay must not recheck launch files");
+    }
+
+    #[test]
     fn likely_secret_environment_keys_are_rejected() {
         let fixture = Fixture::new();
         let authority = fixture.authority();
@@ -1552,6 +2009,24 @@ mod tests {
                 .iter()
                 .any(|issue| issue.code == "sensitive_environment_key_rejected")
         );
+    }
+
+    #[test]
+    fn existing_profile_secret_gate_survives_structural_only_reads() {
+        let fixture = Fixture::new();
+        let mut config = fixture.config();
+        config
+            .services
+            .get_mut("api")
+            .expect("api service")
+            .environment
+            .insert("API_TOKEN".to_owned(), "fixture-only-secret".to_owned());
+        fixture.write_config(&config);
+
+        let Err(error) = RegistrationAuthority::open(Some(fixture.config_path.clone())) else {
+            panic!("existing profile secrets must keep registration disabled");
+        };
+        assert_eq!(error.code(), "sensitive_environment_key_rejected");
     }
 
     #[test]
@@ -1579,10 +2054,146 @@ mod tests {
         assert_eq!(fixture.config().services["api"].label, "API");
     }
 
+    #[test]
+    fn stopped_runtime_allows_update_and_unregister() {
+        let fixture = Fixture::new();
+        let mut config = fixture.config();
+        let api = config.services.get_mut("api").expect("api service");
+        api.cwd = fixture.directory.join("missing-old-api-cwd");
+        api.command = fixture.directory.join("missing-old-api-command.exe");
+        config
+            .services
+            .insert("spare".to_owned(), fixture.service("Spare", 0));
+        fixture.write_config(&config);
+        let server = start_runtime_mock(&fixture, "stopped", 4);
+        let authority = fixture.authority();
+
+        let update = authority
+            .prepare(PrepareRegistration {
+                request_id: "stopped-update".to_owned(),
+                operation: RegistrationOperation::Update,
+                service_id: "api".to_owned(),
+                base_revision: fixture.config().fingerprint().expect("base revision"),
+                service: Some(fixture.service("Updated API", 0)),
+            })
+            .expect("prepare update");
+        authority
+            .approve_with_confirmation(update.clone(), &update.confirmation_phrase)
+            .expect("approve update in fixture");
+        authority
+            .commit(&update.draft_id)
+            .expect("stopped update commit");
+        assert_eq!(fixture.config().services["api"].label, "Updated API");
+
+        let mut broken_before_unregister = fixture.config();
+        let api = broken_before_unregister
+            .services
+            .get_mut("api")
+            .expect("updated api service");
+        api.cwd = fixture.directory.join("missing-api-cwd-before-unregister");
+        api.command = fixture
+            .directory
+            .join("missing-api-command-before-unregister.exe");
+        fixture.write_config(&broken_before_unregister);
+
+        let unregister = authority
+            .prepare(PrepareRegistration {
+                request_id: "stopped-unregister".to_owned(),
+                operation: RegistrationOperation::Unregister,
+                service_id: "api".to_owned(),
+                base_revision: fixture.config().fingerprint().expect("updated revision"),
+                service: None,
+            })
+            .expect("prepare unregister");
+        authority
+            .approve_with_confirmation(unregister.clone(), &unregister.confirmation_phrase)
+            .expect("approve unregister in fixture");
+        let result = authority
+            .commit(&unregister.draft_id)
+            .expect("stopped unregister commit");
+        assert_eq!(result.registered_state, "unregistered");
+        assert!(!fixture.config().services.contains_key("api"));
+        server.join().expect("fixture runtime server");
+    }
+
+    #[test]
+    fn running_runtime_still_blocks_update_commit() {
+        let fixture = Fixture::new();
+        let server = start_runtime_mock(&fixture, "running", 1);
+        let authority = fixture.authority();
+        let update = authority
+            .prepare(PrepareRegistration {
+                request_id: "running-update".to_owned(),
+                operation: RegistrationOperation::Update,
+                service_id: "api".to_owned(),
+                base_revision: fixture.config().fingerprint().expect("base revision"),
+                service: Some(fixture.service("Updated API", 0)),
+            })
+            .expect("prepare update");
+        authority
+            .approve_with_confirmation(update.clone(), &update.confirmation_phrase)
+            .expect("approve update in fixture");
+
+        let error = authority
+            .commit(&update.draft_id)
+            .expect_err("running target must block update");
+        assert_eq!(error.code(), "service_must_be_stopped");
+        assert_eq!(fixture.config().services["api"].label, "API");
+        server.join().expect("fixture runtime server");
+    }
+
     struct Fixture {
         directory: PathBuf,
         config_path: PathBuf,
         executable: PathBuf,
+    }
+
+    fn start_runtime_mock(
+        fixture: &Fixture,
+        lifecycle: &str,
+        request_count: usize,
+    ) -> std::thread::JoinHandle<()> {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind fixture runtime port");
+        let port = listener
+            .local_addr()
+            .expect("fixture runtime address")
+            .port();
+        let mut config = fixture.config();
+        config.control.port = port;
+        fixture.write_config(&config);
+        let token_path = fixture.directory.join(".runtime/control-token");
+        fs::create_dir_all(token_path.parent().expect("token parent"))
+            .expect("create runtime token directory");
+        fs::write(&token_path, "a".repeat(64)).expect("write fixture runtime token");
+
+        let lifecycle = lifecycle.to_owned();
+        std::thread::spawn(move || {
+            for _ in 0..request_count {
+                let (mut stream, _) = listener.accept().expect("accept fixture runtime request");
+                let mut request = Vec::new();
+                stream
+                    .read_to_end(&mut request)
+                    .expect("read fixture runtime request");
+                let request_line = String::from_utf8_lossy(&request)
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .to_owned();
+                let body = if request_line.starts_with("GET /v1/services/") {
+                    json!({"service":{"lifecycle":lifecycle.clone()}}).to_string()
+                } else {
+                    "{}".to_owned()
+                };
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .expect("write fixture runtime response");
+                stream.flush().expect("flush fixture runtime response");
+            }
+        })
     }
 
     impl Fixture {
@@ -1637,7 +2248,15 @@ mod tests {
         }
 
         fn config(&self) -> SupervisorConfig {
-            read_valid_config(&self.config_path).expect("read fixture config")
+            read_structural_config(&self.config_path).expect("read fixture config")
+        }
+
+        fn write_config(&self, config: &SupervisorConfig) {
+            fs::write(
+                &self.config_path,
+                serde_json::to_vec_pretty(config).expect("serialize fixture config"),
+            )
+            .expect("write fixture config");
         }
 
         fn service(&self, label: &str, port: u16) -> ServiceConfig {

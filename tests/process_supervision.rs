@@ -98,6 +98,8 @@ fn terminal_tree_is_reaped_and_on_failure_is_capped_and_audited() {
 #[test]
 fn registration_change_preserves_running_service_and_supervisor_process() {
     let directory = TestDirectory::create();
+    let mut unavailable = root_service("Unavailable idle service");
+    unavailable["command"] = json!(directory.path.join("unbuilt-service.exe"));
     let config_directory = directory.path.join("AkuSupervisor");
     fs::create_dir_all(&config_directory).expect("create config directory");
     let registration_directory = config_directory.join(".runtime/registration");
@@ -113,7 +115,9 @@ fn registration_change_preserves_running_service_and_supervisor_process() {
             "tokenFile": ".runtime/control-token"
         },
         "services": {
-            "retained": root_service("Retained")
+            "retained": root_service("Retained"),
+            "unavailable-a": unavailable.clone(),
+            "unavailable-b": unavailable
         }
     });
     fs::write(
@@ -149,7 +153,22 @@ fn registration_change_preserves_running_service_and_supervisor_process() {
         service["rootPid"] == retained_pid && service["lifecycle"] == "running"
     });
     assert_eq!(retained_after["rootPid"], retained_pid);
+    assert_eq!(
+        retained_after["startedAtUnixMs"],
+        retained_before["startedAtUnixMs"]
+    );
+    assert_eq!(
+        retained_after["restartCount"],
+        retained_before["restartCount"]
+    );
     assert_eq!(guard.child_mut().id(), supervisor_pid);
+    for service_id in ["unavailable-a", "unavailable-b"] {
+        let unavailable_after = wait_for_service(&directory.path, service_id, |service| {
+            service["lifecycle"] == "stopped" && service["desiredState"] == "stopped"
+        });
+        assert_eq!(unavailable_after["rootPid"], Value::Null);
+        assert_eq!(unavailable_after["restartCount"], 0);
+    }
 
     let logs = client(&directory.path)
         .args(["logs", "registered", "--stream", "stdout", "--tail", "5"])

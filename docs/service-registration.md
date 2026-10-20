@@ -172,7 +172,16 @@ transaction.
 - Commit takes an exclusive registration lock, rereads the configuration, and
   requires the exact base revision. Concurrent or stale changes fail without
   replacing the file.
-- The new configuration is validated again and written to a temporary file in
+- Every registration operation validates the full structural contract, including
+  paths being absolute, dependency references and cycles, ports, and the
+  non-empty service table. Register and update also require the selected
+  service's working directory and executable to exist both during validation
+  and again at commit. Unregister does not require launch files for the removed
+  service. Missing files for unrelated services do not block registration, and
+  missing files for managed dependencies remain a launch-readiness error when
+  those dependencies are selected for launch by the runtime plan.
+- Commit repeats the operation-specific validation against the fresh base
+  configuration, then writes the proposed configuration to a temporary file in
   the same directory. Windows uses `MoveFileExW` with replace and write-through;
   Linux and macOS use same-filesystem atomic rename behind the platform adapter.
 - If the configuration replacement succeeded but draft bookkeeping was
@@ -237,8 +246,11 @@ stopped entry), start it separately:
 
 Registration accepts a typed executable path plus fixed argv entries, never an
 arbitrary shell expression supplied at lifecycle invocation time. Existing
-configuration validation requires absolute existing `cwd` and `command` paths,
+configuration validation requires absolute `cwd` and `command` paths,
 loopback health checks, bounded deadlines, and non-conflicting declared ports.
+Registration checks that the selected register/update target's paths exist;
+unrelated service files may be missing. Start and restart preflight checks the
+paths for services selected by the runtime launch plan before launching.
 
 Environment values are stored in plain JSON and displayed during approval.
 Keys that look like secrets (`SECRET`, `TOKEN`, `PASSWORD`, `PASSWD`,

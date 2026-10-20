@@ -333,6 +333,13 @@ impl SupervisorConfig {
         self.validation_issues_with_filesystem(true)
     }
 
+    /// Collects the complete structural configuration contract without checking
+    /// whether any service's launch files currently exist.
+    #[must_use]
+    pub fn structural_contract_issues(&self) -> Vec<ConfigIssue> {
+        self.validation_issues_with_filesystem(false)
+    }
+
     /// Validates the static configuration structure without requiring idle
     /// service launch paths to exist.
     ///
@@ -346,12 +353,36 @@ impl SupervisorConfig {
     ///
     /// Returns [`ConfigError::Invalid`] containing every discovered issue.
     pub fn validate_structure(&self) -> Result<(), ConfigError> {
-        let issues = self.validation_issues_with_filesystem(false);
+        let issues = self.structural_contract_issues();
         if issues.is_empty() {
             Ok(())
         } else {
             Err(ConfigError::Invalid(issues))
         }
+    }
+
+    /// Collects filesystem readiness issues for only the named services.
+    ///
+    /// This collector checks absolute paths and filesystem existence but does
+    /// not expand service dependencies. Full structural validation still
+    /// checks every service and all non-path configuration rules.
+    #[must_use]
+    pub fn selected_service_filesystem_issues(&self, service_ids: &[String]) -> Vec<ConfigIssue> {
+        let mut issues = Vec::new();
+        for service_id in service_ids.iter().collect::<BTreeSet<_>>() {
+            let Some(service) = self.services.get(service_id) else {
+                issues.push(ConfigIssue::new(
+                    format!("services.{service_id}"),
+                    "service_not_found",
+                    "service is not registered in the configuration",
+                ));
+                continue;
+            };
+            let prefix = format!("services.{service_id}");
+            validate_directory(&service.cwd, &prefix, true, &mut issues);
+            validate_executable(&service.command, &prefix, true, &mut issues);
+        }
+        issues
     }
 
     /// Checks launch paths for the requested services and all of their
@@ -391,15 +422,11 @@ impl SupervisorConfig {
             };
             pending.extend(service.depends_on.iter().cloned());
         }
-
-        for service_id in relevant {
-            let Some(service) = self.services.get(&service_id) else {
-                continue;
-            };
-            let prefix = format!("services.{service_id}");
-            validate_directory(&service.cwd, &prefix, true, &mut issues);
-            validate_executable(&service.command, &prefix, true, &mut issues);
-        }
+        let relevant_services = relevant
+            .into_iter()
+            .filter(|service_id| self.services.contains_key(service_id))
+            .collect::<Vec<_>>();
+        issues.extend(self.selected_service_filesystem_issues(&relevant_services));
 
         if issues.is_empty() {
             Ok(())
