@@ -309,11 +309,10 @@ function Get-WatchFingerprint {
             $files += Get-Item $path
         }
     }
-    foreach ($dashboardRelativePath in @('dashboard\index.html', 'dashboard\app.css', 'dashboard\app.js')) {
-        $dashboardPath = Join-Path $repository $dashboardRelativePath
-        if (Test-Path -LiteralPath $dashboardPath -PathType Leaf) {
-            $files += Get-Item -LiteralPath $dashboardPath
-        }
+    $dashboardDirectory = Join-Path $repository 'dashboard'
+    if (Test-Path -LiteralPath $dashboardDirectory -PathType Container) {
+        $files += Get-ChildItem -LiteralPath $dashboardDirectory -Recurse -File |
+            Where-Object { $_.Extension -in @('.html', '.css', '.js') }
     }
     if ($null -eq $script:gitIdentityPaths) {
         $script:gitIdentityPaths = @()

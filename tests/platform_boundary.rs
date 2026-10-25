@@ -49,6 +49,7 @@ fn shared_control_plane_does_not_import_windows_implementation_details() {
             );
         }
     }
+    inspect_rust_files(&root.join("src/adapters/control_http"));
 }
 
 #[test]

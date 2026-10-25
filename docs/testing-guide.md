@@ -33,6 +33,32 @@ The important behavioral tests prove that:
 - an invalid bearer token never reaches the lifecycle core; and
 - a user stop hold rejects a later Codex start without changing state.
 
+### Dashboard browser regression
+
+Compile the standalone mock server from the repository root:
+
+```powershell
+rustc --edition=2024 tests/fixtures/dashboard_browser.rs -o target/dashboard-browser-fixture.exe
+.\target\dashboard-browser-fixture.exe
+```
+
+Open the printed random loopback URL with `/tests/dashboard-browser.html` appended.
+The page runs model, detached-DOM view, and injected-transport API regressions. It
+does not require Node.js, npm, or real service registration. The fixture shares
+the production embedded asset allowlist and stores mock service state in memory.
+It exits after ten minutes and can be stopped sooner with Ctrl+C.
+
+For controller verification, open `/`, select Running, visit
+`/fixture/fail-next-restart-stopped` in a second tab, and click Restart for
+Fixture running. Its stopped row must remain visible with Restart recovery and
+an enabled Start button. Start must recover it without changing the filter.
+The fixture also exposes `/fixture/expire-next-mutation` and
+`/fixture/unavailable` to verify session renewal without replay and stale-data
+action disabling. Never substitute the real Supervisor address for these tests.
+
+The Rust suite verifies exact served bytes and security headers for every module,
+watcher detection of module edits, scoped control, and shared MCP host selection.
+
 ## 2. Foreground supervisor
 
 Given a valid service configuration:

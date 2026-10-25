@@ -27,6 +27,50 @@ fn supervisor() -> &'static str {
     env!("CARGO_BIN_EXE_aku-supervisor")
 }
 
+#[test]
+fn shared_mcp_host_selection_rejects_missing_duplicate_and_conflicting_entries() {
+    let directory = TestDirectory::create();
+    let harness = directory.path.join("host-selection.ps1");
+    fs::write(&harness, r#"
+param([string] $CommonPath)
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+. $CommonPath
+$readOnly = '[mcp_servers.aku_supervisor]' + "`n" + 'command = "C:\\fixture\\host.exe"'
+$registration = '[mcp_servers.aku_supervisor_registration]' + "`n" + 'command = "C:\\fixture\\host.exe"'
+$valid = $readOnly + "`n" + $registration
+if ((Get-ConfiguredMcpHost -Content $valid) -ne 'C:\fixture\host.exe') { throw 'Matching hosts must resolve' }
+if ($null -ne (Get-ConfiguredMcpHost -Content '')) { throw 'Missing sections must not resolve' }
+if ($null -ne (Get-ConfiguredMcpHost -Content $readOnly)) { throw 'Partial configuration must not resolve' }
+if ($null -ne (Get-ConfiguredMcpHost -Content ($valid + "`n" + $readOnly))) { throw 'Duplicate sections must not resolve' }
+$conflictRejected = $false
+try { Get-ConfiguredMcpHost -Content ($readOnly + "`n" + $registration.Replace('host.exe', 'other.exe')) }
+catch { $conflictRejected = $_.Exception.Message -like '*select different hosts*' }
+if (-not $conflictRejected) { throw 'Conflicting hosts must be rejected' }
+Write-Output 'PASS host selection'
+"#).expect("write shared host selection regression");
+    let output = Command::new("powershell.exe")
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+        ])
+        .arg(&harness)
+        .arg("-CommonPath")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/mcp-host-common.ps1"))
+        .output()
+        .expect("run read-only host selection harness");
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 fn invoke_installer(config: &Path, host: &Path, extra: &[&str], module_path: &OsStr) -> Output {
     let mut command = Command::new("powershell.exe");
     command

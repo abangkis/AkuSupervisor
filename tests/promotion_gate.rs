@@ -73,6 +73,7 @@ fn dedicated_mcp_host_is_staged_outside_the_core_promotion_target() {
 #[test]
 fn mcp_host_status_is_read_only_and_hash_based() {
     let script = include_str!("../scripts/get-mcp-host-status.ps1");
+    let common = include_str!("../scripts/mcp-host-common.ps1");
 
     assert!(script.contains("Get-FileHash"));
     assert!(script.contains("'CURRENT'"));
@@ -81,7 +82,8 @@ fn mcp_host_status_is_read_only_and_hash_based() {
     assert!(script.contains("'MISSING'"));
     assert!(script.contains("sha256-$sourceHash"));
     assert!(script.contains("'configured-default'"));
-    assert!(script.contains("mcp-contract --json"));
+    assert!(script.contains("mcp-host-common.ps1"));
+    assert!(common.contains("mcp-contract --json"));
     assert!(script.contains("sourceContractFingerprint"));
     assert!(script.contains("hostContractFingerprint"));
     assert!(script.contains("restartCodexRequired"));
@@ -89,6 +91,9 @@ fn mcp_host_status_is_read_only_and_hash_based() {
     assert!(!script.contains("Move-Item"));
     assert!(!script.contains("Remove-Item"));
     assert!(!script.contains("Stop-Process"));
+    for mutation in ["Copy-Item", "Move-Item", "Remove-Item", "Stop-Process"] {
+        assert!(!common.contains(mutation));
+    }
 }
 
 #[test]

@@ -11,7 +11,14 @@ fn embedded_asset_edits_change_the_watcher_fingerprint_without_starting_services
         .join(std::process::id().to_string());
     fs::create_dir_all(root.join("dashboard")).expect("create isolated fixture");
     fs::create_dir_all(root.join("src")).expect("create source fixture");
-    for asset in ["index.html", "app.css", "app.js"] {
+    for asset in [
+        "index.html",
+        "app.css",
+        "app.js",
+        "model.js",
+        "view.js",
+        "api.js",
+    ] {
         fs::write(root.join("dashboard").join(asset), "initial").expect("write fixture asset");
     }
     fs::write(
@@ -55,7 +62,7 @@ if ($null -eq $function) { throw 'Missing fingerprint function' }
 # Execute only this pure file-inspection function. Never dot-source the watcher entrypoint.
 . ([scriptblock]::Create($function.Extent.Text))
 $script:gitIdentityPaths = @()
-foreach ($asset in @('index.html', 'app.css', 'app.js')) {
+foreach ($asset in @('index.html', 'app.css', 'app.js', 'model.js', 'view.js', 'api.js')) {
     $before = Get-WatchFingerprint
     if ($before -notlike ('*dashboard\' + $asset + '*')) { throw ('Asset absent from fingerprint: ' + $asset) }
     Add-Content -LiteralPath (Join-Path $repository ('dashboard\' + $asset)) -Value 'edited asset'

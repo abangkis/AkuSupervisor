@@ -7,7 +7,6 @@
   --surface: #fff;
   --canvas: #f3f6f8;
   --accent: #176b78;
-  --accent-soft: #e5f3f4;
   --green: #24704d;
   --green-soft: #e8f4ed;
   --amber: #8b5b15;
@@ -99,7 +98,6 @@ tbody tr:hover:not(.message-row) { background: #fbfdfe; }
 .url-list { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 185px; }
 .app-link { display: inline-flex; align-items: center; gap: 6px; color: #126c83; font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 12px; text-decoration-thickness: 1px; text-underline-offset: 2px; }
 .app-link:hover { color: #0a4d61; }
-.inferred-note { color: var(--amber); font-family: "Segoe UI", system-ui, sans-serif; font-size: 10px; }
 .empty-value { color: #8896a1; }
 .pid-value { font-variant-numeric: tabular-nums; }
 .process-details { min-width: 145px; max-width: 240px; }
@@ -132,7 +130,6 @@ tbody tr:hover:not(.message-row) { background: #fbfdfe; }
 }
 
 @media (max-width: 430px) {
-  .summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .summary-card { padding-inline: 9px; }
   .summary-label { min-height: 32px; }
   .toolbar { align-items: stretch; flex-direction: column; }

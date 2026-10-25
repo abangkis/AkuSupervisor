@@ -20,6 +20,9 @@ initial AkuWorkspace pilot. Platform-neutral application ports and separate
 Windows, Linux, and macOS adapter boundaries keep future OS ports isolated from
 the lifecycle core. Only the Windows adapter is implemented today.
 
+See [code and dashboard structure](docs/code-structure.md) for module ownership,
+embedded assets, and shared MCP script helpers.
+
 ## OpenAI Build Week role
 
 AkuSupervisor is optional development tooling rather than part of the current

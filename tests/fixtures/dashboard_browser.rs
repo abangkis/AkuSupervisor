@@ -7,6 +7,9 @@ use std::net::{TcpListener, TcpStream};
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[path = "../../src/adapters/dashboard_assets.rs"]
+mod dashboard_assets;
+
 const SESSION_TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 #[derive(Clone)]
@@ -330,22 +333,13 @@ fn respond(mut stream: TcpStream, fixture: &mut Fixture) {
     if method == "GET" && fixture_control(&target, fixture, &mut stream) {
         return;
     }
+    if method == "GET" {
+        if let Some(asset) = dashboard_assets::dashboard_asset(path) {
+            write_response(&mut stream, 200, asset.content_type, asset.body);
+            return;
+        }
+    }
     let (status, mime, response): (u16, &str, Vec<u8>) = match (method.as_str(), path) {
-        ("GET", "/") => (
-            200,
-            "text/html; charset=utf-8",
-            include_bytes!("../../dashboard/index.html").to_vec(),
-        ),
-        ("GET", "/app.js") => (
-            200,
-            "text/javascript; charset=utf-8",
-            include_bytes!("../../dashboard/app.js").to_vec(),
-        ),
-        ("GET", "/app.css") => (
-            200,
-            "text/css; charset=utf-8",
-            include_bytes!("../../dashboard/app.css").to_vec(),
-        ),
         ("GET", "/tests/dashboard-browser.html") => (
             200,
             "text/html; charset=utf-8",
