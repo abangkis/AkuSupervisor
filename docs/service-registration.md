@@ -83,10 +83,18 @@ registration tools or schemas until the installer is applied and Codex is
 restarted. A legacy host without `mcp-contract --json` is conservatively
 classified as outdated and requires a one-time migration.
 
-The agent does not need this document during normal registration. Tool
-descriptions, strict input schemas, structured failures, the current revision,
-workflow, safety policy, approval command, and complete service schema are all
-available from MCP:
+Before using MCP to prepare a draft, apply the
+[application configuration ownership checks](configuration-guide.md#application-configuration-ownership).
+Supervisor is optional lifecycle tooling; an application's feature/model/profile
+change normally belongs in its own configuration. Investigate that mechanism first.
+Preparing a technically valid launch proposal does not establish that registration
+is the right place for the requested setting. Capture this decision in task-local
+handoff notes when needed rather than requiring global per-prompt instructions.
+
+Mutation mechanics are self-described by MCP: tool descriptions, strict input
+schemas, structured failures, the current revision, workflow, safety policy,
+approval command, and complete service schema are all available from these tools.
+That operational schema does not replace the ownership decision above:
 
 1. `supervisor_registration_get_capabilities`
 2. `supervisor_registration_get_schema`

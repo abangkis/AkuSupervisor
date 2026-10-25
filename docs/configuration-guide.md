@@ -14,6 +14,58 @@ in-memory or transactional state should assess their own forced-exit risk.
 Teams that can modify the target should use the maintained
 [cooperative shutdown recipes](cooperative-shutdown-recipes.md).
 
+## Application configuration ownership
+
+AkuSupervisor is an optional process owner, not an application settings service.
+An application must support its documented standalone launch without depending on
+Supervisor APIs, its registry format or an installed Supervisor. Registration should
+normally be an onboarding operation that establishes a stable launch contract.
+
+| Configuration | Owner and normal change path |
+|---|---|
+| Executable, process working directory, ports, health checks, service dependencies, restart/shutdown policy | Deployment/lifecycle configuration in the Supervisor registration when Supervisor is used |
+| Feature behavior, provider/model/reasoning, inference activation, prompts, analysis limits and authentication-profile references | Application-owned configuration or Settings, usable with or without Supervisor |
+| Credentials and existing login sessions | The provider's supported credential/session store; application configuration should reference the selected profile rather than copy credential contents |
+
+A fixed metadata/config-directory argument or stable configuration-file reference is
+appropriate bootstrap configuration. Changing the contents of that application-owned
+file must not require rewriting the Supervisor registration. Model selection and
+inference activation are separate application decisions; a saved preference must not
+silently dispatch work. Applications with active work should freeze its effective
+configuration and apply changes through their documented reload/restart boundary.
+
+Before preparing a registration update:
+
+1. Identify which component owns the setting and inspect the application's supported
+   configuration mechanism.
+2. Use that mechanism for application behavior. Moving the setting into registration
+   environment values, a wrapper script or a duplicate service preserves the same
+   ownership problem.
+3. If an application under development lacks that mechanism, name the application
+   design gap and fix it there. Do not broaden a launcher allowlist just to make a
+   feature change into a registration change.
+4. Update registration only for a concrete deployment/lifecycle change, such as a
+   moved executable, changed port/health contract or service dependency. Obtain the
+   appropriate authorization and use the existing human-gated registration workflow.
+
+A restart is not a registration update. Start/stop/restart the existing approved
+service when that lifecycle action is authorized. Keep status inspection read-only.
+For handoff after a long task, retain a short task-local decision such as
+"optional Supervisor; unchanged registration; behavior configured by the application"
+alongside the actual application configuration location and verification evidence.
+
+For an immutable third-party program that only accepts command-line arguments or
+environment variables, fixed launch values remain supported. Record this constraint
+and the reason for any required registration update; do not require source changes
+or a new settings platform merely to supervise that program. Port/topology changes
+can also legitimately affect both application and Supervisor configuration.
+
+These are integration guidelines, not new schema validation or automatic policy
+enforcement. Supervisor treats program arguments as generic launch data and does not
+classify application-specific flags. See [registration](service-registration.md)
+for approval and mutation mechanics; these ownership checks should precede a draft
+even when an agent enters directly through the registration MCP instead of README.
+
 ## Complete immutable-program example
 
 The copyable template is

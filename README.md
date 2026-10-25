@@ -107,6 +107,19 @@ Use the simpler tool when its boundary is sufficient. AkuSupervisor is justified
 when local browser state, persisted jobs, full-tree cleanup, and cooperative
 cross-component evidence must be treated as one lifecycle contract.
 
+## Before registering or updating an application
+
+AkuSupervisor is optional lifecycle tooling. Applications remain independently
+runnable and own their behavioral configuration. Register a stable launch contract
+during onboarding; ordinary feature, provider/model or authentication-profile
+changes should use the application's configuration, without changing registration.
+
+Before preparing a registration draft, read
+[application configuration ownership](docs/configuration-guide.md#application-configuration-ownership)
+and the application's own configuration documentation. A restart can reuse the
+existing registration. Registration updates are for concrete launch/topology changes,
+not a replacement for an application's missing settings mechanism.
+
 ## Structure
 
 ```text
