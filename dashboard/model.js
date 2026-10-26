@@ -71,9 +71,11 @@ export function applicationUrls(ports) {
   return urls;
 }
 
-export function filterServices(services, query = "", mode = "all", retainedInRunningFilter = new Set()) {
+export function filterServices(services, query = "", mode = "all", retainedInRunningFilter = new Map()) {
   const needle = normalized(query).normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
-  const retained = retainedInRunningFilter instanceof Set ? retainedInRunningFilter : new Set();
+  const retained = new Set(retainedInRunningFilter instanceof Map
+    ? [...retainedInRunningFilter.keys()].map(String)
+    : []);
   return (Array.isArray(services) ? services : []).filter((service) => {
     const serviceId = service?.id === null || service?.id === undefined ? null : String(service.id);
     if (mode === "running" && !isRunning(service) && !retained.has(serviceId)) return false;
@@ -96,11 +98,23 @@ export function filterServices(services, query = "", mode = "all", retainedInRun
 }
 
 export function reconcileRunningRetention(retainedIds, services) {
-  const retained = new Set(retainedIds instanceof Set ? [...retainedIds].map(String) : []);
+  const retained = new Map(retainedIds instanceof Map ? retainedIds : []);
   const current = new Map((Array.isArray(services) ? services : [])
     .filter((service) => service?.id !== null && service?.id !== undefined)
     .map((service) => [String(service.id), service]));
-  return new Set([...retained].filter((id) => current.has(id) && !isRunning(current.get(id))));
+  for (const [id, retention] of retained) {
+    const service = current.get(id);
+    if (!service) {
+      retained.delete(id);
+    } else if (!isRunning(service)) {
+      if (retention?.reason === "stop" && retention.observedNonrunning !== true) {
+        retained.set(id, { ...retention, observedNonrunning: true });
+      }
+    } else if (retention?.reason !== "stop" || retention.observedNonrunning === true) {
+      retained.delete(id);
+    }
+  }
+  return retained;
 }
 
 export function safeHttpUrl(value) {

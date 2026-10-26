@@ -5,7 +5,7 @@ import {
 } from "./model.js";
 
 // Rendering owns DOM and expanded rows; action orchestration stays in app.js.
-export function createDashboardView(document, onAction) {
+export function createDashboardView(document, onAction, onHideRetained) {
   const countTotal = document.getElementById("count-total");
   const countRunning = document.getElementById("count-running");
   const countAttention = document.getElementById("count-attention");
@@ -55,8 +55,19 @@ export function createDashboardView(document, onAction) {
     const badge = makeElement("span", "badge", enumLabel(service.lifecycle, LIFECYCLE_LABELS));
     badge.dataset.state = lifecycle || "unknown";
     stack.append(badge);
-    if (state.runningFilterRetained.has(String(service.id)) && !isRunning(service)) {
-      stack.append(makeElement("span", "restart-recovery", "Restart recovery"));
+    const retention = state.runningFilterRetained.get(String(service.id));
+    if (retention && !isRunning(service)) {
+      const isRestartRecovery = retention.reason === "restart";
+      stack.append(makeElement("span", isRestartRecovery ? "restart-recovery" : "running-retained",
+        isRestartRecovery ? "Restart recovery" : "Kept in Running view"));
+      if (filterInput.value === "running") {
+        const hide = makeElement("button", "retained-view-control", "Hide from this view");
+        hide.type = "button";
+        hide.setAttribute("aria-label", "Hide " + text(service.label, text(service.id, "service"))
+          + " from the Running view");
+        hide.addEventListener("click", () => onHideRetained?.(service));
+        stack.append(hide);
+      }
     }
     stack.append(makeElement("span", "desired-state", "Desired: " + enumLabel(service.desiredState, DESIRED_LABELS)));
     cell.append(stack);

@@ -31,8 +31,8 @@ There is no Node.js runtime, package manager, bundler, or additional dependency.
 | --- | --- |
 | `dashboard/index.html` | Semantic page shell, summary, filters, accessible service table |
 | `dashboard/app.css` | Shared page and responsive presentation |
-| `dashboard/model.js` | Pure lifecycle/action eligibility, filtering, retention, labels, URLs |
-| `dashboard/view.js` | DOM rendering and expanded-row state; action callbacks to the controller |
+| `dashboard/model.js` | Pure lifecycle/action eligibility, filtering, retention after Stop/Restart, labels, URLs |
+| `dashboard/view.js` | DOM rendering, retention labels, hide callbacks, and expanded-row state; action callbacks to the controller |
 | `dashboard/api.js` | Bounded HTTP requests and scoped mutation envelopes; injectable transport for tests |
 | `dashboard/app.js` | Page-local state, refresh/session coordination, mutation ordering, visibility-aware polling |
 
@@ -47,6 +47,13 @@ filter while recovering from a requested restart. A successful running snapshot
 or removal from the registry clears its retention. Search still applies. Expanded
 process details survive refresh and their state is discarded when a service is
 removed.
+
+Stop requests issued in the Running filter also retain their row while the
+service transitions out of running. That marker survives an initially still-
+running snapshot after a timeout or error, then clears after a nonrunning
+snapshot followed by a running one. A retained row can be hidden from the
+Running view locally. Stop retention and hiding last only for the current page
+and never change service state.
 
 When adding an asset, add its explicit route to `dashboard_assets.rs` and extend
 the HTTP asset regression. Cargo watches the dashboard directory; the development

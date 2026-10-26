@@ -43,10 +43,21 @@ rustc --edition=2024 tests/fixtures/dashboard_browser.rs -o target/dashboard-bro
 ```
 
 Open the printed random loopback URL with `/tests/dashboard-browser.html` appended.
-The page runs model, detached-DOM view, and injected-transport API regressions. It
-does not require Node.js, npm, or real service registration. The fixture shares
+The page runs model, detached-DOM view, injected-transport API, and controller
+regressions. The controller cases mount a detached dashboard with a mock API and
+controlled polling callbacks; they cover Stop retention, timeout and delayed-stop snapshots,
+Start recovery, filtering/search, running counts, local hiding, registry removal,
+and page-remount reset. They do not contact real services. The checks do not
+require Node.js, npm, or real service registration. The fixture shares
 the production embedded asset allowlist and stores mock service state in memory.
 It exits after ten minutes and can be stopped sooner with Ctrl+C.
+
+For Stop retention, open `/`, select Running, and stop Fixture running. The same
+row must show Stopped, Kept in Running view, and Start while the Running count is
+zero. Refresh and switch All/Running; the row must remain available. Start clears
+the retention once the service returns to running. Hide from this view only
+removes that retained row from the Running filter, without starting/stopping it.
+A full page reload clears page-local retention.
 
 For controller verification, open `/`, select Running, visit
 `/fixture/fail-next-restart-stopped` in a second tab, and click Restart for

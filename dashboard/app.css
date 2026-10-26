@@ -92,6 +92,10 @@ tbody tr:hover:not(.message-row) { background: #fbfdfe; }
 .badge[data-state="unhealthy"], .badge[data-state="failed"] { background: var(--red-soft); color: var(--red); }
 .badge[data-state="starting"], .badge[data-state="stopping"], .badge[data-state="termination_pending"], .badge[data-state="unknown"] { background: var(--amber-soft); color: var(--amber); }
 .restart-recovery { color: #805d19; font-size: 10px; font-weight: 650; }
+.running-retained { color: #536a78; font-size: 10px; font-weight: 650; }
+.retained-view-control { padding: 0; border: 0; background: transparent; color: #176b78; font-size: 10px; text-align: left; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.retained-view-control:hover { color: #0a4d61; }
+.retained-view-control:focus-visible { outline: 2px solid #79bac4; outline-offset: 2px; }
 .desired-state { color: #71818e; font-size: 11px; }
 .health-cell { min-width: 145px; max-width: 230px; }
 .health-detail { display: block; margin-top: 4px; color: #778591; font-size: 11px; overflow-wrap: anywhere; }

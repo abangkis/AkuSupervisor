@@ -1,13 +1,18 @@
-import { ACTION_LABELS, text, isActionDisabled, reconcileRunningRetention, formatTimestamp } from "./model.js";
+import { ACTION_LABELS, text, isActionDisabled, isRunning, reconcileRunningRetention, formatTimestamp } from "./model.js";
 import { createDashboardApi } from "./api.js";
 import { createDashboardView } from "./view.js";
 
 const REFRESH_INTERVAL_MS = 5000;
 
 // One page controller owns refresh, session renewal, and mutation ordering.
-function mountDashboard(document) {
-  const { fetchJson, sendServiceAction } = createDashboardApi();
-  const view = createDashboardView(document, (service, action) => mutateService(service, action));
+export function mountDashboard(document, options = {}) {
+  const { fetchJson, sendServiceAction } = options.api ?? createDashboardApi();
+  const setIntervalFn = options.setInterval ?? globalThis.setInterval.bind(globalThis);
+  const clearIntervalFn = options.clearInterval ?? globalThis.clearInterval.bind(globalThis);
+  const view = createDashboardView(document, (service, action) => mutateService(service, action), (service) => {
+    runningFilterRetained.delete(String(service.id));
+    renderRows();
+  });
   const { updatedAt, refreshButton, actionStatus, searchInput, filterInput,
     addMessageRow, updateCounts, setRefreshState, setActionStatus, updateSupervisorHealth } = view;
   function renderRows() {
@@ -22,7 +27,7 @@ function mountDashboard(document) {
   let dashboardSession = null;
   let sessionPromise = null;
   let refreshTimer = null;
-  let runningFilterRetained = new Set();
+  let runningFilterRetained = new Map();
 
   function actionState() {
     return {
@@ -80,7 +85,11 @@ function mountDashboard(document) {
     const serviceName = text(service.label, serviceId || "service");
     const actionLabel = ACTION_LABELS[action];
     const requestId = createRequestId();
-    if (action === "restart") runningFilterRetained.add(serviceId);
+    if (action === "restart") {
+      runningFilterRetained.set(serviceId, { reason: "restart", observedNonrunning: false });
+    } else if (action === "stop" && filterInput.value === "running" && isRunning(service)) {
+      runningFilterRetained.set(serviceId, { reason: "stop", observedNonrunning: false });
+    }
     pendingMutation = { serviceId, action };
     mutationRefreshRequired = true;
     snapshotFresh = false;
@@ -189,20 +198,38 @@ function mountDashboard(document) {
     renderRows();
   }
 
-  refreshButton.addEventListener("click", () => void refresh());
-  searchInput.addEventListener("input", renderRows);
-  filterInput.addEventListener("change", renderRows);
+  const onRefreshClick = () => void refresh();
+  const onSearchInput = () => renderRows();
+  const onFilterChange = () => renderRows();
+  refreshButton.addEventListener("click", onRefreshClick);
+  searchInput.addEventListener("input", onSearchInput);
+  filterInput.addEventListener("change", onFilterChange);
 
+  let initialRefresh = Promise.resolve();
   function updatePolling() {
-    if (refreshTimer !== null) clearInterval(refreshTimer);
+    if (refreshTimer !== null) clearIntervalFn(refreshTimer);
     refreshTimer = null;
     if (!document.hidden) {
-      void refresh();
-      refreshTimer = setInterval(() => void refresh(), REFRESH_INTERVAL_MS);
+      initialRefresh = refresh();
+      if (options.polling !== false) {
+        refreshTimer = setIntervalFn(() => void refresh(), REFRESH_INTERVAL_MS);
+      }
     }
   }
   document.addEventListener("visibilitychange", updatePolling);
   updatePolling();
+  return {
+    ready: initialRefresh,
+    refresh,
+    destroy() {
+      if (refreshTimer !== null) clearIntervalFn(refreshTimer);
+      refreshTimer = null;
+      document.removeEventListener("visibilitychange", updatePolling);
+      refreshButton.removeEventListener("click", onRefreshClick);
+      searchInput.removeEventListener("input", onSearchInput);
+      filterInput.removeEventListener("change", onFilterChange);
+    },
+  };
 }
 
 if (document.getElementById("service-rows")) mountDashboard(document);

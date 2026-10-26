@@ -12,6 +12,7 @@ import {
 } from "/model.js";
 import { createDashboardView } from "/view.js";
 import { createDashboardApi } from "/api.js";
+import { mountDashboard } from "/app.js";
 
 let passed = 0;
 let failed = 0;
@@ -115,22 +116,37 @@ await check("Restart targets stay in Running while stopped, failed, or transitio
   const unrelated = { id: "offline", label: "Unrelated stopped", lifecycle: "stopped", rootPid: null, ownedPids: [] };
   const running = { id: "healthy", label: "Healthy", lifecycle: "running", rootPid: 44, ownedPids: [44] };
   const current = [stopped, failed, transitional, unrelated, running];
-  const retained = new Set([stopped.id, failed.id, transitional.id]);
+  const retained = new Map([stopped.id, failed.id, transitional.id]
+    .map((id) => [id, { reason: "restart", observedNonrunning: false }]));
   equal(filterServices(current, "", "running", retained).map((service) => service.id), [
     "restart-stopped", "restart-failed", "restart-pending", "healthy",
   ]);
   equal(filterServices(current, "recover failed", "running", retained).map((service) => service.id), ["restart-failed"]);
-  equal([...reconcileRunningRetention(retained, current)].sort(), ["restart-failed", "restart-pending", "restart-stopped"]);
-  equal([...reconcileRunningRetention(retained, [failed, transitional, running])].sort(), ["restart-failed", "restart-pending"]);
-  equal(reconcileRunningRetention(new Set([stopped.id]), [{ ...stopped, lifecycle: "running" }]).size, 0);
-  equal(reconcileRunningRetention(new Set([stopped.id]), []).size, 0);
+  equal([...reconcileRunningRetention(retained, current).keys()].sort(), ["restart-failed", "restart-pending", "restart-stopped"]);
+  equal([...reconcileRunningRetention(retained, [failed, transitional, running]).keys()].sort(), ["restart-failed", "restart-pending"]);
+  equal(reconcileRunningRetention(new Map([[stopped.id, { reason: "restart" }]]), [{ ...stopped, lifecycle: "running" }]).size, 0);
+  equal(reconcileRunningRetention(new Map([[stopped.id, { reason: "restart" }]]), []).size, 0);
+});
+await check("Stop retention survives the first running snapshot and clears after a nonrunning-to-running transition", () => {
+  const running = { id: "stop-target", lifecycle: "running", rootPid: 42, ownedPids: [42] };
+  const stopped = { id: "stop-target", lifecycle: "stopped", rootPid: null, ownedPids: [] };
+  const retained = new Map([[running.id, { reason: "stop", observedNonrunning: false }]]);
+  const afterDelayedStopSnapshot = reconcileRunningRetention(retained, [running]);
+  equal(afterDelayedStopSnapshot.has(running.id), true);
+  equal(afterDelayedStopSnapshot.get(running.id).observedNonrunning, false);
+  const afterStoppedSnapshot = reconcileRunningRetention(afterDelayedStopSnapshot, [stopped]);
+  equal(afterStoppedSnapshot.get(running.id).observedNonrunning, true);
+  equal(reconcileRunningRetention(afterStoppedSnapshot, [running]).size, 0);
+  equal(reconcileRunningRetention(retained, []).size, 0);
 });
 
 // These tests use detached DOM and injected network adapters, never live services.
 const markup = await (await fetch("/")).text();
 const viewDocument = new DOMParser().parseFromString(markup, "text/html");
 const actions = [];
-const view = createDashboardView(viewDocument, (service, action) => actions.push([service.id, action]));
+const hidden = [];
+const view = createDashboardView(viewDocument, (service, action) => actions.push([service.id, action]),
+  (service) => hidden.push(service.id));
 const service = {
   id: "view-fixture", label: "<img src=x onerror=alert(1)>", lifecycle: "running",
   desiredState: "running", rootPid: 42, ownedPids: [42], ownedProcesses: [{ pid: 42, name: "worker" }],
@@ -138,7 +154,7 @@ const service = {
 };
 const ready = {
   hasSnapshot: true, snapshot: [service], snapshotFresh: true, sessionAvailable: true,
-  runningFilterRetained: new Set(),
+  runningFilterRetained: new Map(),
 };
 await check("view renders untrusted labels as text and safe application links", () => {
   view.renderRows(ready);
@@ -160,9 +176,19 @@ await check("view routes Restart to its controller and blocks pending or stale a
 await check("view retains Restart recovery in Running and offers Start after a failed restart", () => {
   view.filterInput.value = "running";
   view.renderRows({ ...ready, snapshot: [{ ...service, lifecycle: "stopped", rootPid: null, ownedPids: [] }],
-    runningFilterRetained: new Set([service.id]) });
+    runningFilterRetained: new Map([[service.id, { reason: "restart" }]]) });
   equal(view.serviceRows.querySelector(".restart-recovery").textContent, "Restart recovery");
   equal(view.serviceRows.querySelector(".action-start").disabled, false);
+  view.filterInput.value = "all";
+});
+await check("Stop retention is labeled in Running and offers a UI-only hide control", () => {
+  const stopped = { ...service, lifecycle: "stopped", rootPid: null, ownedPids: [] };
+  view.filterInput.value = "running";
+  view.renderRows({ ...ready, snapshot: [stopped],
+    runningFilterRetained: new Map([[service.id, { reason: "stop", observedNonrunning: true }]]) });
+  equal(view.serviceRows.querySelector(".running-retained").textContent, "Kept in Running view");
+  view.serviceRows.querySelector(".retained-view-control").click();
+  equal(hidden, [service.id]);
   view.filterInput.value = "all";
 });
 await check("expanded process rows survive refresh but are released when their service is removed", () => {
@@ -174,6 +200,301 @@ await check("expanded process rows survive refresh but are released when their s
   view.renderRows(ready);
   equal(view.serviceRows.querySelector("details").open, false);
 });
+
+function copyServices(items) {
+  return items.map((item) => ({
+    ...item,
+    ownedPids: Array.isArray(item.ownedPids) ? [...item.ownedPids] : item.ownedPids,
+    ownedProcesses: Array.isArray(item.ownedProcesses) ? item.ownedProcesses.map((process) => ({ ...process })) : item.ownedProcesses,
+    health: item.health ? { ...item.health } : item.health,
+    ports: Array.isArray(item.ports) ? [...item.ports] : item.ports,
+  }));
+}
+function createControllerFixture(initialServices, handleAction, polling = false) {
+  const controllerDocument = new DOMParser().parseFromString(markup, "text/html");
+  Object.defineProperty(controllerDocument, "hidden", { value: false, configurable: true });
+  let currentServices = copyServices(initialServices);
+  let serviceReadError = null;
+  const actionCalls = [];
+  const pollCallbacks = [];
+  const api = {
+    async fetchJson(path) {
+      if (path === "/v1/services") {
+        if (serviceReadError) throw serviceReadError;
+        return { services: copyServices(currentServices) };
+      }
+      if (path === "/v1/health") return { status: "healthy" };
+      if (path === "/dashboard/v1/session") return { token: "a".repeat(64), instanceId: "controller-fixture" };
+      throw new Error("Unexpected dashboard request: " + path);
+    },
+    async sendServiceAction(serviceId, action, token, requestId) {
+      actionCalls.push({ serviceId, action, token, requestId });
+      return handleAction({
+        serviceId,
+        action,
+        setServices(items) { currentServices = copyServices(items); },
+        get services() { return copyServices(currentServices); },
+      });
+    },
+  };
+  const controller = mountDashboard(controllerDocument, {
+    api,
+    polling,
+    setInterval(callback) { pollCallbacks.push(callback); return callback; },
+    clearInterval() {},
+  });
+  return {
+    document: controllerDocument,
+    controller,
+    actionCalls,
+    poll() { pollCallbacks[0]?.(); },
+    setServices(items) { currentServices = copyServices(items); },
+    setServiceReadError(error) { serviceReadError = error; },
+    get services() { return copyServices(currentServices); },
+  };
+}
+function actionResult(serviceId, outcome = "applied") {
+  return {
+    response: new Response("{}", { status: 200 }),
+    payload: { serviceId, outcome },
+  };
+}
+function renderedIds(controllerDocument) {
+  return [...controllerDocument.querySelectorAll("#service-rows .service-id")].map((node) => node.textContent);
+}
+function setFilter(fixture, mode) {
+  const input = fixture.document.getElementById("service-filter");
+  input.value = mode;
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+}
+function setSearch(fixture, value) {
+  const input = fixture.document.getElementById("search-input");
+  input.value = value;
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+async function settleController() {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+const targetRunning = {
+  id: "target", label: "Target service", lifecycle: "running", desiredState: "running",
+  rootPid: 42, ownedPids: [42], ownedProcesses: [{ pid: 42, name: "target" }],
+  health: { status: "healthy" }, operatorHold: "none", ports: [],
+};
+const targetStopped = {
+  ...targetRunning, lifecycle: "stopped", desiredState: "stopped", rootPid: null,
+  ownedPids: [], ownedProcesses: [], health: { status: "unknown" },
+};
+const unrelatedStopped = {
+  id: "unrelated", label: "Unrelated stopped", lifecycle: "stopped", desiredState: "stopped",
+  rootPid: null, ownedPids: [], ownedProcesses: [], health: { status: "unknown" }, operatorHold: "none", ports: [],
+};
+
+await check("controller retains a stopped Running row through refresh and filter changes, then safely starts it", async () => {
+  const fixture = createControllerFixture([targetRunning, unrelatedStopped], async ({ serviceId, action, setServices, services }) => {
+    if (serviceId === targetRunning.id && action === "stop") setServices([targetStopped, services.find((item) => item.id === unrelatedStopped.id)]);
+    if (serviceId === targetRunning.id && action === "start") setServices([targetRunning, services.find((item) => item.id === unrelatedStopped.id)]);
+    return actionResult(serviceId);
+  }, true);
+  try {
+    await fixture.controller.ready;
+    setFilter(fixture, "running");
+    equal(renderedIds(fixture.document), ["target"]);
+    equal(fixture.document.getElementById("count-running").textContent, "1");
+    setSearch(fixture, "Target");
+    equal(renderedIds(fixture.document), ["target"]);
+    setSearch(fixture, "Unrelated");
+    equal(renderedIds(fixture.document), []);
+    equal(fixture.document.getElementById("count-running").textContent, "1");
+    setSearch(fixture, "");
+    fixture.document.querySelector(".action-stop").click();
+    await settleController();
+    equal(fixture.actionCalls.map((call) => call.action), ["stop"]);
+    equal(renderedIds(fixture.document), ["target"]);
+    equal(fixture.document.querySelector(".running-retained").textContent, "Kept in Running view");
+    equal(fixture.document.querySelector(".action-start").disabled, false);
+    equal(fixture.document.getElementById("count-running").textContent, "0");
+    fixture.poll();
+    await settleController();
+    equal(fixture.document.querySelector(".running-retained").textContent, "Kept in Running view");
+    setSearch(fixture, "Unrelated");
+    equal(renderedIds(fixture.document), []);
+    equal(fixture.document.getElementById("count-running").textContent, "0");
+    setSearch(fixture, "Target");
+    equal(renderedIds(fixture.document), ["target"]);
+    setSearch(fixture, "");
+    setFilter(fixture, "all");
+    equal(renderedIds(fixture.document), ["target", "unrelated"]);
+    setFilter(fixture, "running");
+    equal(renderedIds(fixture.document), ["target"]);
+    fixture.document.querySelector(".action-start").click();
+    await settleController();
+    equal(fixture.actionCalls.map((call) => call.action), ["stop", "start"]);
+    equal(fixture.document.querySelector('[data-state="running"]').textContent, "Running");
+    equal(fixture.document.querySelector(".running-retained"), null);
+    equal(fixture.document.getElementById("count-running").textContent, "1");
+  } finally {
+    fixture.controller.destroy();
+  }
+});
+
+await check("controller keeps Stop retention through timeout and delayed Stop snapshots without retry", async () => {
+  const fixture = createControllerFixture([targetRunning], async () => {
+    throw new DOMException("delayed response", "AbortError");
+  });
+  try {
+    await fixture.controller.ready;
+    setFilter(fixture, "running");
+    fixture.document.querySelector(".action-stop").click();
+    await settleController();
+    equal(fixture.actionCalls.map((call) => call.action), ["stop"]);
+    equal(fixture.document.getElementById("action-status").dataset.state, "error");
+    equal(renderedIds(fixture.document), ["target"]);
+    fixture.setServices([targetStopped]);
+    await fixture.controller.refresh();
+    equal(renderedIds(fixture.document), ["target"]);
+    equal(fixture.document.querySelector(".running-retained").textContent, "Kept in Running view");
+    fixture.setServices([targetRunning]);
+    await fixture.controller.refresh();
+    equal(fixture.document.querySelector(".running-retained"), null);
+    fixture.setServices([targetStopped]);
+    await fixture.controller.refresh();
+    equal(renderedIds(fixture.document), []);
+    equal(fixture.actionCalls.map((call) => call.action), ["stop"]);
+  } finally {
+    fixture.controller.destroy();
+  }
+});
+
+await check("controller keeps Stop retention after an HTTP failure and still-running refresh", async () => {
+  const fixture = createControllerFixture([targetRunning], async () => ({
+    response: new Response("{}", { status: 503 }),
+    payload: { error: { code: "temporarily_unavailable", message: "Try later" } },
+  }));
+  try {
+    await fixture.controller.ready;
+    setFilter(fixture, "running");
+    fixture.document.querySelector(".action-stop").click();
+    await settleController();
+    equal(fixture.actionCalls.map((call) => call.action), ["stop"]);
+    equal(renderedIds(fixture.document), ["target"]);
+    equal(fixture.document.getElementById("action-status").dataset.state, "error");
+    fixture.setServices([targetStopped]);
+    await fixture.controller.refresh();
+    equal(renderedIds(fixture.document), ["target"]);
+    equal(fixture.document.querySelector(".running-retained").textContent, "Kept in Running view");
+    equal(fixture.actionCalls.map((call) => call.action), ["stop"]);
+  } finally {
+    fixture.controller.destroy();
+  }
+});
+
+await check("controller prevents a second mutation while pending and after a stale refresh", async () => {
+  const request = deferred();
+  const fixture = createControllerFixture([targetRunning], () => request.promise);
+  try {
+    await fixture.controller.ready;
+    setFilter(fixture, "running");
+    fixture.document.querySelector(".action-stop").click();
+    equal(fixture.actionCalls.map((call) => call.action), ["stop"]);
+    equal([...fixture.document.querySelectorAll(".action-cell button")].every((button) => button.disabled), true);
+    fixture.document.querySelector(".action-stop").click();
+    equal(fixture.actionCalls.map((call) => call.action), ["stop"]);
+    request.resolve(actionResult(targetRunning.id));
+    await settleController();
+    fixture.setServiceReadError(new Error("offline"));
+    await fixture.controller.refresh();
+    equal([...fixture.document.querySelectorAll(".action-cell button")].every((button) => button.disabled), true);
+    fixture.document.querySelector(".action-stop").click();
+    equal(fixture.actionCalls.map((call) => call.action), ["stop"]);
+  } finally {
+    fixture.controller.destroy();
+  }
+});
+
+await check("controller preserves Restart recovery through a failed restart and Start", async () => {
+  const fixture = createControllerFixture([targetRunning], async ({ serviceId, action, setServices }) => {
+    if (action === "restart") {
+      setServices([targetStopped]);
+      return { response: new Response("{}", { status: 503 }), payload: { error: { code: "restart_failed" } } };
+    }
+    if (action === "start") setServices([targetRunning]);
+    return actionResult(serviceId);
+  });
+  try {
+    await fixture.controller.ready;
+    setFilter(fixture, "running");
+    fixture.document.querySelector(".action-restart").click();
+    await settleController();
+    equal(fixture.actionCalls.map((call) => call.action), ["restart"]);
+    equal(fixture.document.querySelector(".restart-recovery").textContent, "Restart recovery");
+    equal(fixture.document.querySelector(".action-start").disabled, false);
+    fixture.document.querySelector(".action-start").click();
+    await settleController();
+    equal(fixture.actionCalls.map((call) => call.action), ["restart", "start"]);
+    equal(fixture.document.querySelector(".restart-recovery"), null);
+    equal(renderedIds(fixture.document), ["target"]);
+  } finally {
+    fixture.controller.destroy();
+  }
+});
+
+await check("controller hides retained rows locally, clears removed IDs, and resets retention on remount", async () => {
+  const fixture = createControllerFixture([targetRunning], async ({ serviceId, action, setServices }) => {
+    if (action === "stop") setServices([targetStopped]);
+    return actionResult(serviceId);
+  });
+  try {
+    await fixture.controller.ready;
+    setFilter(fixture, "running");
+    fixture.document.querySelector(".action-stop").click();
+    await settleController();
+    equal(renderedIds(fixture.document), ["target"]);
+    fixture.document.querySelector(".retained-view-control").click();
+    equal(renderedIds(fixture.document), []);
+    equal(fixture.actionCalls.map((call) => call.action), ["stop"]);
+    await fixture.controller.refresh();
+    equal(renderedIds(fixture.document), []);
+  } finally {
+    fixture.controller.destroy();
+  }
+  const removed = createControllerFixture([targetRunning], async ({ serviceId, action, setServices }) => {
+    if (action === "stop") setServices([targetStopped]);
+    return actionResult(serviceId);
+  });
+  try {
+    await removed.controller.ready;
+    setFilter(removed, "running");
+    removed.document.querySelector(".action-stop").click();
+    await settleController();
+    equal(renderedIds(removed.document), ["target"]);
+    removed.setServices([]);
+    await removed.controller.refresh();
+    removed.setServices([targetStopped]);
+    await removed.controller.refresh();
+    equal(renderedIds(removed.document), []);
+  } finally {
+    removed.controller.destroy();
+  }
+  const remounted = createControllerFixture([targetStopped], async ({ serviceId }) => actionResult(serviceId));
+  try {
+    await remounted.controller.ready;
+    setFilter(remounted, "running");
+    equal(renderedIds(remounted.document), []);
+  } finally {
+    remounted.controller.destroy();
+  }
+});
+
 await check("API preserves scoped mutation envelope and does not retry an expired session", async () => {
   const calls = [];
   const api = createDashboardApi(async (path, options) => {
