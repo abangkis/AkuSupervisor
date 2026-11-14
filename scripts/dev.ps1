@@ -13,6 +13,7 @@ param(
     [string] $Timezone = 'local',
     [switch] $Rebuild,
     [switch] $PartialStart,
+    [switch] $SyncBinary,
     [switch] $ReleaseCheck,
     [string] $ReleaseTag
 )
@@ -785,8 +786,8 @@ if ($ReleaseCheck) {
     if (@($StartService).Count -gt 0) {
         throw '-ReleaseCheck cannot be combined with startup service IDs.'
     }
-    if (-not [string]::IsNullOrWhiteSpace($Config) -or $Rebuild -or $PartialStart) {
-        throw '-ReleaseCheck is configuration-independent and cannot be combined with -Config, -Rebuild, or -PartialStart.'
+    if (-not [string]::IsNullOrWhiteSpace($Config) -or $Rebuild -or $PartialStart -or $SyncBinary) {
+        throw '-ReleaseCheck is configuration-independent and cannot be combined with -Config, -Rebuild, -PartialStart, or -SyncBinary.'
     }
     Write-Host '[watch] Mode: RELEASE VERSION CHECK (watcher and services will not be started).' -ForegroundColor Cyan
     if ([string]::IsNullOrWhiteSpace($ReleaseTag)) {
@@ -798,6 +799,43 @@ if ($ReleaseCheck) {
 }
 if (-not [string]::IsNullOrWhiteSpace($ReleaseTag)) {
     throw '-ReleaseTag requires -ReleaseCheck.'
+}
+
+if ($SyncBinary) {
+    if (@($StartService).Count -gt 0 -or -not [string]::IsNullOrWhiteSpace($Config) -or $Rebuild -or $PartialStart) {
+        throw '-SyncBinary is a standalone MCP maintenance mode and cannot be combined with startup service IDs, -Config, -Rebuild, or -PartialStart.'
+    }
+    Write-Host '[watch] Mode: MCP BINARY SYNC REVIEW (watcher and services will not be started).' -ForegroundColor Cyan
+    $installer = Join-Path $PSScriptRoot 'install-codex-mcp.ps1'
+    if (-not (Test-Path -LiteralPath $devExecutable -PathType Leaf)) {
+        throw 'Development executable is missing. Produce a development build before using -SyncBinary.'
+    }
+    $sourceHash = (Get-FileHash -LiteralPath $devExecutable -Algorithm SHA256).Hash.ToLowerInvariant()
+    $hostPath = Join-Path $repository "target\mcp\sha256-$sourceHash\aku-supervisor-mcp.exe"
+    if (Test-Path -LiteralPath $hostPath -PathType Leaf) {
+        if ((Get-FileHash -LiteralPath $hostPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne $sourceHash) {
+            throw 'Content-addressed MCP host contains unexpected bytes; synchronization requires manual review.'
+        }
+    }
+    $syncOutput = @(& $installer -SourcePath $devExecutable -HostPath $hostPath -Json)
+    if ($LASTEXITCODE -ne 0) { throw "Unable to plan MCP binary synchronization: $($syncOutput -join [Environment]::NewLine)" }
+    $syncPlan = ($syncOutput -join [Environment]::NewLine) | ConvertFrom-Json
+    if ($syncPlan.status -ne 'planned') { throw 'MCP installer did not return a synchronization plan.' }
+    if ($syncPlan.sourceHash -ne "sha256:$sourceHash") { throw 'Development binary changed during synchronization planning; rerun dev.ps1 -SyncBinary.' }
+    if (-not $syncPlan.configurationChanged -and -not $syncPlan.hostChanged) {
+        Write-Host '[watch] MCP host status: CURRENT (binary is identical to the development build); no update is required.' -ForegroundColor Green
+        return
+    }
+    Write-Host "[watch] Source: $($syncPlan.sourcePath) ($($syncPlan.sourceHash))"
+    Write-Host "[watch] Dedicated MCP host: $($syncPlan.hostPath)"
+    Write-Host '[watch] Current MCP configuration:'
+    Write-Host $syncPlan.currentTargetSections
+    Write-Host '[watch] Proposed MCP configuration:'
+    Write-Host $syncPlan.proposedTargetSections
+    Write-Host '[watch] Review and run this exact approval command:' -ForegroundColor Yellow
+    Write-Host $syncPlan.approvalCommand -ForegroundColor Green
+    Write-Host '[watch] Restart Codex after applying the MCP configuration. No build, staging, or runtime change was performed by this review.'
+    return
 }
 
 Push-Location $repository

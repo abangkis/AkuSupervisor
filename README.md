@@ -326,6 +326,25 @@ At startup and after each successful rebuild it also prints `Stable status` as
 `CURRENT`, `OUTDATED`, or `MISSING`, followed by the exact transition commands.
 See the [testing guide](docs/testing-guide.md#7-development-watcher).
 
+To align the Codex MCP host with the exact existing development binary, run
+this standalone maintenance mode, including from a second terminal while the
+watcher is active:
+
+```powershell
+.\scripts\dev.ps1 -SyncBinary
+```
+
+It selects `target\mcp\sha256-<development-binary-hash>\aku-supervisor-mcp.exe`
+even when the installed host already has a matching MCP contract. The command
+is read-only: it prints the current/proposed MCP configuration and the existing
+installer's exact approval command. Review and run that command to stage the
+binary and update both Codex MCP entries, then restart Codex to activate the
+selected host. If the selected binary and configuration are already current,
+it reports `CURRENT` without another apply. This mode does not build or promote
+the core, start a watcher, or control services. It requires an existing
+development binary and cannot be combined with startup service IDs, `-Config`,
+`-Rebuild`, `-PartialStart`, or `-ReleaseCheck`.
+
 Promoting the constant development binary to the normal stable path is a
 separate, fail-closed release action:
 
